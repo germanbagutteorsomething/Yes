@@ -1,0 +1,6 @@
+{
+  "name": "SquareEight",
+  "description": "Clean, offline-capable Chess PWA with local two-player mode and calibrated Stockfish levels, following all FIDE laws of chess.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,1018 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Chess, type PieceSymbol, type Square } from 'chess.js';
+import {
+  ArrowUpDown,
+  Cpu,
+  Flag,
+  Handshake,
+  Moon,
+  RotateCcw,
+  Sun,
+  Undo2,
+  Users,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
+import { ChessBoard } from './components/ChessBoard';
+import { MoveHistoryPanel } from './components/MoveHistoryPanel';
+import { OfflineIndicator } from './components/OfflineIndicator';
+import { PlayerBar } from './components/PlayerBar';
+import { PWAInstallButton } from './components/PWAInstallButton';
+import { stockfishService } from './engine/stockfishService';
+import {
+  STOCKFISH_LEVELS,
+  type BoardTheme,
+  type GameMode,
+  type GameResult,
+  type MoveRecord,
+  type PendingPromotion,
+  type PlayerColor,
+  type PromotionPiece,
+  type SideChoice,
+} from './types/chess';
+import { playChessSound } from './utils/sound';
+
+const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
+const PIECE_VALUES: Record<PieceSymbol, number> = {
+  p: 1,
+  n: 3,
+  b: 3,
+  r: 5,
+  q: 9,
+  k: 0,
+};
+
+const STARTING_COUNTS: Record<Exclude<PieceSymbol, 'k'>, number> = {
+  q: 1,
+  r: 2,
+  b: 2,
+  n: 2,
+  p: 8,
+};
+
+const CAPTURE_ORDER: Exclude<PieceSymbol, 'k'>[] = ['q', 'r', 'b', 'n', 'p'];
+
+function computeMaterialAndCaptures(fen: string) {
+  const temp = new Chess();
+  try {
+    temp.load(fen);
+  } catch {
+    // fallback
+  }
+
+  const onBoard: Record<PlayerColor, Record<PieceSymbol, number>> = {
+    w: { p: 0, n: 0, b: 0, r: 0, q: 0, k: 0 },
+    b: { p: 0, n: 0, b: 0, r: 0, q: 0, k: 0 },
+  };
+
+  for (const row of temp.board()) {
+    for (const cell of row) {
+      if (cell) {
+        onBoard[cell.color][cell.type] += 1;
+      }
+    }
+  }
+
+  const capturedByWhite: PieceSymbol[] = [];
+  const capturedByBlack: PieceSymbol[] = [];
+
+  for (const pieceType of CAPTURE_ORDER) {
+    const missingBlack = Math.max(0, STARTING_COUNTS[pieceType] - onBoard.b[pieceType]);
+    for (let i = 0; i < missingBlack; i++) capturedByWhite.push(pieceType);
+
+    const missingWhite = Math.max(0, STARTING_COUNTS[pieceType] - onBoard.w[pieceType]);
+    for (let i = 0; i < missingWhite; i++) capturedByBlack.push(pieceType);
+  }
+
+  let whiteMaterial = 0;
+  let blackMaterial = 0;
+  for (const pieceType of ['p', 'n', 'b', 'r', 'q'] as PieceSymbol[]) {
+    whiteMaterial += onBoard.w[pieceType] * PIECE_VALUES[pieceType];
+    blackMaterial += onBoard.b[pieceType] * PIECE_VALUES[pieceType];
+  }
+
+  return {
+    capturedByWhite,
+    capturedByBlack,
+    whiteLead: Math.max(0, whiteMaterial - blackMaterial),
+    blackLead: Math.max(0, blackMaterial - whiteMaterial),
+  };
+}
+
+function findCheckedKingSquare(fen: string): Square | null {
+  const temp = new Chess();
+  try {
+    temp.load(fen);
+  } catch {
+    return null;
+  }
+  if (!temp.isCheck()) return null;
+  const turn = temp.turn();
+  const board = temp.board();
+  for (const row of board) {
+    for (const cell of row) {
+      if (cell && cell.type === 'k' && cell.color === turn) {
+        return cell.square;
+      }
+    }
+  }
+  return null;
+}
+
+function evaluateGameEnd(chess: Chess): GameResult | null {
+  if (chess.isCheckmate()) {
+    const winner: PlayerColor = chess.turn() === 'w' ? 'b' : 'w';
+    const winnerName = winner === 'w' ? 'White' : 'Black';
+    return {
+      winner,
+      reason: 'checkmate',
+      headline: `${winnerName} wins by Checkmate`,
+      detail: 'The opposing king has no legal escape.',
+    };
+  }
+  if (chess.isStalemate()) {
+    return {
+      winner: 'draw',
+      reason: 'stalemate',
+      headline: 'Draw by Stalemate',
+      detail: `${chess.turn() === 'w' ? 'White' : 'Black'} has no legal moves and is not in check.`,
+    };
+  }
+  if (chess.isThreefoldRepetition()) {
+    return {
+      winner: 'draw',
+      reason: 'threefold',
+      headline: 'Draw by Threefold Repetition',
+      detail: 'The same board position occurred three times.',
+    };
+  }
+  if (chess.isInsufficientMaterial()) {
+    return {
+      winner: 'draw',
+      reason: 'insufficient',
+      headline: 'Draw by Insufficient Material',
+      detail: 'Neither side has enough material to force checkmate.',
+    };
+  }
+  if (chess.isDrawByFiftyMoves()) {
+    return {
+      winner: 'draw',
+      reason: 'fifty-move',
+      headline: 'Draw by Fifty-Move Rule',
+      detail: '50 consecutive moves occurred without a pawn move or capture.',
+    };
+  }
+  return null;
+}
+
+function resolveSideChoice(choice: SideChoice): PlayerColor {
+  if (choice === 'random') {
+    return Math.random() < 0.5 ? 'w' : 'b';
+  }
+  return choice;
+}
+
+export default function App() {
+  const chessRef = useRef<Chess>(new Chess());
+  const engineAbortRef = useRef<AbortController | null>(null);
+
+  const [gameMode, setGameMode] = useState<GameMode>('stockfish');
+  const [stockfishLevel, setStockfishLevel] = useState<1 | 2 | 3 | 4 | 5 | 6>(3);
+  const [sideChoice, setSideChoice] = useState<SideChoice>('w');
+  const [humanColor, setHumanColor] = useState<PlayerColor>('w');
+  const [autoFlipTwoPlayer, setAutoFlipTwoPlayer] = useState<boolean>(false);
+  const [flipped, setFlipped] = useState<boolean>(false);
+  const [boardTheme, setBoardTheme] = useState<BoardTheme>('tournament');
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const [darkMode, setDarkMode] = useState<boolean>(false);
+
+  const [fen, setFen] = useState<string>(INITIAL_FEN);
+  const [moves, setMoves] = useState<MoveRecord[]>([]);
+  const [turn, setTurn] = useState<PlayerColor>('w');
+  const [isCheck, setIsCheck] = useState<boolean>(false);
+  const [gameResult, setGameResult] = useState<GameResult | null>(null);
+  const [pendingPromotion, setPendingPromotion] = useState<PendingPromotion | null>(null);
+  const [viewIndex, setViewIndex] = useState<number | null>(null);
+  const [isEngineThinking, setIsEngineThinking] = useState<boolean>(false);
+  const [engineError, setEngineError] = useState<string | null>(null);
+
+  // Sync dark mode class on <html>
+  useEffect(() => {
+    const root = document.documentElement;
+    if (darkMode) {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+  }, [darkMode]);
+
+  // Terminate worker on unmount
+  useEffect(() => {
+    return () => {
+      engineAbortRef.current?.abort();
+      stockfishService.terminate();
+    };
+  }, []);
+
+  const currentLevelConfig = useMemo(
+    () => STOCKFISH_LEVELS.find((l) => l.level === stockfishLevel) ?? STOCKFISH_LEVELS[2],
+    [stockfishLevel]
+  );
+
+  const startNewGame = useCallback(
+    (overrides?: {
+      mode?: GameMode;
+      side?: SideChoice;
+      level?: 1 | 2 | 3 | 4 | 5 | 6;
+    }) => {
+      engineAbortRef.current?.abort();
+      stockfishService.cancelPending();
+
+      const nextMode = overrides?.mode ?? gameMode;
+      const nextSide = overrides?.side ?? sideChoice;
+      const resolvedHuman = nextMode === 'stockfish' ? resolveSideChoice(nextSide) : 'w';
+
+      if (overrides?.mode !== undefined) setGameMode(overrides.mode);
+      if (overrides?.side !== undefined) setSideChoice(overrides.side);
+      if (overrides?.level !== undefined) setStockfishLevel(overrides.level);
+
+      chessRef.current = new Chess();
+      setHumanColor(resolvedHuman);
+      setFlipped(nextMode === 'stockfish' ? resolvedHuman === 'b' : false);
+      setFen(INITIAL_FEN);
+      setMoves([]);
+      setTurn('w');
+      setIsCheck(false);
+      setGameResult(null);
+      setPendingPromotion(null);
+      setViewIndex(null);
+      setIsEngineThinking(false);
+      setEngineError(null);
+    },
+    [gameMode, sideChoice]
+  );
+
+  const syncFromChess = useCallback(
+    (newMoveRecord?: MoveRecord) => {
+      const chess = chessRef.current;
+      const nextFen = chess.fen();
+      const nextTurn = chess.turn();
+      const nextCheck = chess.isCheck();
+      const result = evaluateGameEnd(chess);
+
+      setFen(nextFen);
+      setTurn(nextTurn);
+      setIsCheck(nextCheck);
+      setGameResult(result);
+      setViewIndex(null);
+
+      if (newMoveRecord) {
+        setMoves((prev) => [...prev, newMoveRecord]);
+        if (result) {
+          playChessSound(result.winner === 'draw' ? 'draw' : 'gameover', soundEnabled);
+        } else if (newMoveRecord.isCheck) {
+          playChessSound('check', soundEnabled);
+        } else if (newMoveRecord.isPromotion) {
+          playChessSound('promote', soundEnabled);
+        } else if (newMoveRecord.isCastle) {
+          playChessSound('castle', soundEnabled);
+        } else if (newMoveRecord.isCapture) {
+          playChessSound('capture', soundEnabled);
+        } else {
+          playChessSound('move', soundEnabled);
+        }
+      }
+
+      if (gameMode === 'two-player' && autoFlipTwoPlayer && !result) {
+        setFlipped(nextTurn === 'b');
+      }
+    },
+    [autoFlipTwoPlayer, gameMode, soundEnabled]
+  );
+
+  const executeMove = useCallback(
+    (from: Square, to: Square, promotion?: PromotionPiece): boolean => {
+      const chess = chessRef.current;
+      try {
+        const move = chess.move({ from, to, promotion });
+        const record: MoveRecord = {
+          ply: chess.history().length,
+          san: move.san,
+          lan: move.lan,
+          from: move.from,
+          to: move.to,
+          fen: chess.fen(),
+          color: move.color,
+          isCheck: chess.isCheck(),
+          isCheckmate: chess.isCheckmate(),
+          isCapture: move.isCapture(),
+          isCastle: move.isKingsideCastle() || move.isQueensideCastle(),
+          isPromotion: move.isPromotion(),
+        };
+        syncFromChess(record);
+        return true;
+      } catch {
+        playChessSound('illegal', soundEnabled);
+        return false;
+      }
+    },
+    [soundEnabled, syncFromChess]
+  );
+
+  const handleAttemptMove = useCallback(
+    (from: Square, to: Square) => {
+      if (gameResult || viewIndex !== null) return;
+      if (gameMode === 'stockfish' && turn !== humanColor) return;
+
+      const chess = chessRef.current;
+      const legalMoves = chess.moves({ square: from, verbose: true });
+      const matchingMoves = legalMoves.filter((m) => m.to === to);
+
+      if (matchingMoves.length === 0) {
+        playChessSound('illegal', soundEnabled);
+        return;
+      }
+
+      // Check if this move requires pawn promotion choice
+      const needsPromotion = matchingMoves.some((m) => Boolean(m.promotion));
+      if (needsPromotion) {
+        setPendingPromotion({ from, to, color: turn });
+        return;
+      }
+
+      executeMove(from, to);
+    },
+    [executeMove, gameMode, gameResult, humanColor, soundEnabled, turn, viewIndex]
+  );
+
+  const handleSelectPromotion = useCallback(
+    (piece: PromotionPiece) => {
+      if (!pendingPromotion) return;
+      const { from, to } = pendingPromotion;
+      setPendingPromotion(null);
+      executeMove(from, to, piece);
+    },
+    [executeMove, pendingPromotion]
+  );
+
+  const handleCancelPromotion = useCallback(() => {
+    setPendingPromotion(null);
+  }, []);
+
+  // Trigger Stockfish engine automatically when it is the bot's turn
+  useEffect(() => {
+    if (gameMode !== 'stockfish') return;
+    if (gameResult) return;
+    if (turn === humanColor) return;
+
+    const controller = new AbortController();
+    engineAbortRef.current = controller;
+    setIsEngineThinking(true);
+    setEngineError(null);
+
+    const lanHistory = moves.map((m) => m.lan);
+    const startTime = performance.now();
+
+    stockfishService
+      .getBestMove(lanHistory, currentLevelConfig, controller.signal)
+      .then(async (best) => {
+        // Keep a subtle minimum pacing (~320ms) so bot responses read naturally
+        const elapsed = performance.now() - startTime;
+        if (elapsed < 320) {
+          await new Promise((r) => setTimeout(r, 320 - elapsed));
+        }
+        if (controller.signal.aborted) return;
+
+        setIsEngineThinking(false);
+        executeMove(best.from as Square, best.to as Square, best.promotion);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setIsEngineThinking(false);
+        setEngineError(
+          err instanceof Error ? err.message : 'Stockfish failed to respond.'
+        );
+      });
+
+    return () => {
+      controller.abort();
+      stockfishService.cancelPending();
+      setIsEngineThinking(false);
+    };
+  }, [gameMode, gameResult, turn, humanColor, moves, currentLevelConfig, executeMove]);
+
+  const handleUndo = useCallback(() => {
+    if (moves.length === 0 || gameResult) return;
+
+    engineAbortRef.current?.abort();
+    stockfishService.cancelPending();
+    setIsEngineThinking(false);
+    setPendingPromotion(null);
+
+    const chess = chessRef.current;
+
+    if (gameMode === 'two-player') {
+      const undone = chess.undo();
+      if (!undone) return;
+      setMoves((prev) => prev.slice(0, -1));
+      syncFromChess();
+      playChessSound('move', soundEnabled);
+      return;
+    }
+
+    // In Stockfish mode, undo back to human's turn
+    let popCount = 0;
+    if (turn !== humanColor) {
+      // Bot was thinking; undo the human's last move
+      if (chess.undo()) popCount += 1;
+    } else {
+      // It is human's turn; undo bot's reply AND human's previous move
+      if (moves.length >= 2) {
+        if (chess.undo()) popCount += 1;
+        if (chess.undo()) popCount += 1;
+      } else if (humanColor === 'b' && moves.length === 1) {
+        // Special case: human plays Black and hasn't moved yet
+        return;
+      }
+    }
+
+    if (popCount > 0) {
+      setMoves((prev) => prev.slice(0, prev.length - popCount));
+      syncFromChess();
+      playChessSound('move', soundEnabled);
+    }
+  }, [gameMode, gameResult, humanColor, moves.length, soundEnabled, syncFromChess, turn]);
+
+  const handleResign = useCallback(() => {
+    if (gameResult) return;
+    engineAbortRef.current?.abort();
+    stockfishService.cancelPending();
+    setIsEngineThinking(false);
+    setPendingPromotion(null);
+
+    const losingSide: PlayerColor = gameMode === 'stockfish' ? humanColor : turn;
+    const winner: PlayerColor = losingSide === 'w' ? 'b' : 'w';
+    const winnerName = winner === 'w' ? 'White' : 'Black';
+    const loserName = losingSide === 'w' ? 'White' : 'Black';
+
+    setGameResult({
+      winner,
+      reason: 'resignation',
+      headline: `${winnerName} wins by Resignation`,
+      detail: `${loserName} resigned the game.`,
+    });
+    playChessSound('gameover', soundEnabled);
+  }, [gameMode, gameResult, humanColor, soundEnabled, turn]);
+
+  const handleMutualDraw = useCallback(() => {
+    if (gameResult || gameMode !== 'two-player') return;
+    setPendingPromotion(null);
+    setGameResult({
+      winner: 'draw',
+      reason: 'agreement',
+      headline: 'Draw by Agreement',
+      detail: 'Both players agreed to a draw.',
+    });
+    playChessSound('draw', soundEnabled);
+  }, [gameMode, gameResult, soundEnabled]);
+
+  const handleSelectHistoryPly = useCallback(
+    (plyIndex: number | null) => {
+      setViewIndex(plyIndex);
+      const targetIdx = plyIndex === null ? moves.length - 1 : plyIndex;
+      const move = targetIdx >= 0 ? moves[targetIdx] : undefined;
+      if (move) {
+        if (move.isCheck) playChessSound('check', soundEnabled);
+        else if (move.isCastle) playChessSound('castle', soundEnabled);
+        else if (move.isCapture) playChessSound('capture', soundEnabled);
+        else playChessSound('move', soundEnabled);
+      } else if (plyIndex === -1 && moves.length > 0) {
+        playChessSound('select', soundEnabled);
+      }
+    },
+    [moves, soundEnabled]
+  );
+
+  // Keyboard shortcuts for history review and board flip
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (pendingPromotion) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+        return;
+      }
+
+      if (e.key === 'ArrowLeft') {
+        if (moves.length === 0) return;
+        e.preventDefault();
+        const nextIdx =
+          viewIndex === null
+            ? moves.length - 2 >= -1
+              ? moves.length - 2
+              : -1
+            : Math.max(-1, viewIndex - 1);
+        handleSelectHistoryPly(nextIdx);
+      } else if (e.key === 'ArrowRight') {
+        if (viewIndex === null) return;
+        e.preventDefault();
+        const nextIdx = viewIndex + 1 >= moves.length - 1 ? null : viewIndex + 1;
+        handleSelectHistoryPly(nextIdx);
+      } else if (e.key.toLowerCase() === 'f') {
+        setFlipped((f) => !f);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleSelectHistoryPly, moves.length, pendingPromotion, viewIndex]);
+
+  // Compute displayed board FEN & metadata (live or historical)
+  const isReviewingHistory = viewIndex !== null;
+  const displayFen = useMemo(() => {
+    if (viewIndex === null) return fen;
+    if (viewIndex < 0) return INITIAL_FEN;
+    return moves[viewIndex]?.fen ?? fen;
+  }, [fen, moves, viewIndex]);
+
+  const displayLastMove = useMemo(() => {
+    if (viewIndex === null) {
+      const last = moves[moves.length - 1];
+      return last
+        ? { from: last.from, to: last.to, isCapture: last.isCapture }
+        : null;
+    }
+    if (viewIndex < 0) return null;
+    const item = moves[viewIndex];
+    return item
+      ? { from: item.from, to: item.to, isCapture: item.isCapture }
+      : null;
+  }, [moves, viewIndex]);
+
+  const checkedKingSquare = useMemo(
+    () => findCheckedKingSquare(displayFen),
+    [displayFen]
+  );
+
+  const materialStats = useMemo(
+    () => computeMaterialAndCaptures(displayFen),
+    [displayFen]
+  );
+
+  const canInteractWithBoard =
+    !isReviewingHistory &&
+    !gameResult &&
+    (gameMode === 'two-player' || turn === humanColor);
+
+  const canUndo =
+    !gameResult &&
+    moves.length > 0 &&
+    !(gameMode === 'stockfish' && humanColor === 'b' && moves.length === 1);
+
+  const pgnString = useMemo(() => {
+    return chessRef.current.pgn();
+  }, [fen]);
+
+  // Top & Bottom PlayerBar assignments based on board orientation
+  const topColor: PlayerColor = flipped ? 'w' : 'b';
+  const bottomColor: PlayerColor = flipped ? 'b' : 'w';
+
+  const getPlayerLabel = (color: PlayerColor) => {
+    if (gameMode === 'stockfish') {
+      if (color === humanColor) {
+        return 'You';
+      }
+      return `Stockfish · ${currentLevelConfig.name}`;
+    }
+    return color === 'w' ? 'Player 1' : 'Player 2';
+  };
+
+  const getPlayerSubtitle = (color: PlayerColor) => {
+    if (gameMode === 'stockfish') {
+      if (color === humanColor) {
+        return color === 'w' ? 'White' : 'Black';
+      }
+      return `${currentLevelConfig.eloLabel} Elo`;
+    }
+    return color === 'w' ? 'White' : 'Black';
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col bg-stone-100 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
+      {/* Top Bar */}
+      <header className="border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
+        <div className="mx-auto flex h-14 max-w-[1200px] items-center justify-between gap-6 px-4 sm:px-6">
+          <div className="flex items-center gap-2.5 shrink-0">
+            <img
+              src="./icon.svg"
+              alt=""
+              className="h-7 w-7 rounded-md shrink-0"
+              aria-hidden="true"
+            />
+            <span className="font-display text-lg font-bold tracking-tight text-stone-900 dark:text-stone-100 whitespace-nowrap shrink-0">
+              SquareEight
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <PWAInstallButton />
+
+            <button
+              type="button"
+              onClick={() => setSoundEnabled((s) => !s)}
+              aria-label={soundEnabled ? 'Mute board sounds' : 'Enable board sounds'}
+              title={soundEnabled ? 'Sound On' : 'Sound Off'}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 transition-colors shrink-0"
+            >
+              {soundEnabled ? (
+                <Volume2 className="w-4 h-4" />
+              ) : (
+                <VolumeX className="w-4 h-4 text-stone-400" />
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setDarkMode((d) => !d)}
+              aria-label={darkMode ? 'Switch to light theme' : 'Switch to dark theme'}
+              title={darkMode ? 'Light theme' : 'Dark theme'}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 transition-colors shrink-0"
+            >
+              {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => startNewGame()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0"
+            >
+              <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>New Game</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Chess Workspace */}
+      <main className="mx-auto w-full max-w-[1200px] flex-1 px-4 py-4 sm:px-6 sm:py-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start">
+          {/* Board Column */}
+          <div className="flex flex-col items-center">
+            <div className="w-full max-w-[580px] lg:max-w-[min(600px,calc(100vh-220px))] space-y-2.5">
+              {/* Top Player Bar */}
+              <PlayerBar
+                color={topColor}
+                label={getPlayerLabel(topColor)}
+                subtitle={getPlayerSubtitle(topColor)}
+                capturedPieces={
+                  topColor === 'w'
+                    ? materialStats.capturedByWhite
+                    : materialStats.capturedByBlack
+                }
+                materialLead={
+                  topColor === 'w' ? materialStats.whiteLead : materialStats.blackLead
+                }
+                isTurn={turn === topColor}
+                isThinking={
+                  gameMode === 'stockfish' && topColor !== humanColor && isEngineThinking
+                }
+                isCheck={isCheck && turn === topColor}
+                isGameOver={Boolean(gameResult)}
+              />
+
+              {/* Chessboard */}
+              <ChessBoard
+                fen={displayFen}
+                flipped={flipped}
+                canInteract={canInteractWithBoard}
+                activeTurn={turn}
+                lastMove={displayLastMove}
+                checkedKingSquare={checkedKingSquare}
+                theme={boardTheme}
+                soundEnabled={soundEnabled}
+                pendingPromotion={pendingPromotion}
+                onAttemptMove={handleAttemptMove}
+                onSelectPromotion={handleSelectPromotion}
+                onCancelPromotion={handleCancelPromotion}
+                isReviewingHistory={isReviewingHistory}
+                onJumpToLive={() => handleSelectHistoryPly(null)}
+              />
+
+              {/* Bottom Player Bar */}
+              <PlayerBar
+                color={bottomColor}
+                label={getPlayerLabel(bottomColor)}
+                subtitle={getPlayerSubtitle(bottomColor)}
+                capturedPieces={
+                  bottomColor === 'w'
+                    ? materialStats.capturedByWhite
+                    : materialStats.capturedByBlack
+                }
+                materialLead={
+                  bottomColor === 'w' ? materialStats.whiteLead : materialStats.blackLead
+                }
+                isTurn={turn === bottomColor}
+                isThinking={
+                  gameMode === 'stockfish' &&
+                  bottomColor !== humanColor &&
+                  isEngineThinking
+                }
+                isCheck={isCheck && turn === bottomColor}
+                isGameOver={Boolean(gameResult)}
+              />
+
+              {/* Engine Error Banner (if any) */}
+              {engineError && (
+                <div
+                  role="alert"
+                  className="flex items-center justify-between gap-3 rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/60 px-3.5 py-2.5 text-xs text-red-800 dark:text-red-200"
+                >
+                  <span>Engine notice: {engineError}</span>
+                  <button
+                    type="button"
+                    onClick={() => startNewGame()}
+                    className="font-semibold underline whitespace-nowrap"
+                  >
+                    Restart
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Control & Notation Sidebar */}
+          <aside className="space-y-4">
+            {/* Game Over Summary Card */}
+            {gameResult && (
+              <section
+                aria-live="polite"
+                className="rounded-xl border border-emerald-700/35 dark:border-emerald-500/40 bg-white dark:bg-stone-900 p-4 shadow-sm animate-chess-modal"
+              >
+                <div className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                  Game Complete
+                </div>
+                <h2 className="mt-1 font-display text-lg font-bold text-stone-900 dark:text-stone-100">
+                  {gameResult.headline}
+                </h2>
+                <p className="mt-1 text-xs text-stone-600 dark:text-stone-400">
+                  {gameResult.detail}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => startNewGame()}
+                  className="mt-3.5 w-full rounded-lg bg-emerald-700 py-2 text-xs font-semibold text-white hover:bg-emerald-800 transition-colors"
+                >
+                  Play Again
+                </button>
+              </section>
+            )}
+
+            {/* Mode & Engine Settings Card */}
+            <section className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4 space-y-4">
+              {/* Mode Switch */}
+              <div>
+                <label className="block text-xs font-semibold text-stone-700 dark:text-stone-300 mb-2">
+                  Game Mode
+                </label>
+                <div className="grid grid-cols-2 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (gameMode !== 'stockfish') {
+                        startNewGame({ mode: 'stockfish' });
+                      }
+                    }}
+                    className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                      gameMode === 'stockfish'
+                        ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                        : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                    }`}
+                  >
+                    <Cpu className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>vs Stockfish</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (gameMode !== 'two-player') {
+                        startNewGame({ mode: 'two-player' });
+                      }
+                    }}
+                    className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                      gameMode === 'two-player'
+                        ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                        : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                    }`}
+                  >
+                    <Users className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>2 Players</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Stockfish Level & Side Selection */}
+              {gameMode === 'stockfish' ? (
+                <>
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                        Stockfish Strength
+                      </span>
+                      <span className="font-mono text-xs text-stone-500 dark:text-stone-400">
+                        {currentLevelConfig.name} ({currentLevelConfig.eloLabel})
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {STOCKFISH_LEVELS.map((lvl) => {
+                        const active = stockfishLevel === lvl.level;
+                        return (
+                          <button
+                            key={lvl.level}
+                            type="button"
+                            onClick={() => setStockfishLevel(lvl.level)}
+                            className={`flex flex-col items-start rounded-lg border px-2.5 py-2 text-left transition-colors ${
+                              active
+                                ? 'border-emerald-700 bg-emerald-50/70 dark:border-emerald-500 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
+                                : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+                            }`}
+                          >
+                            <span className="text-[11px] font-semibold leading-tight truncate w-full">
+                              {lvl.level}. {lvl.name}
+                            </span>
+                            <span className="font-mono text-[10px] opacity-75 mt-0.5">
+                              {lvl.eloLabel}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="block text-xs font-semibold text-stone-700 dark:text-stone-300 mb-2">
+                      Play As
+                    </span>
+                    <div className="grid grid-cols-3 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-1">
+                      {(
+                        [
+                          { id: 'w', label: 'White' },
+                          { id: 'random', label: 'Random' },
+                          { id: 'b', label: 'Black' },
+                        ] as { id: SideChoice; label: string }[]
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => startNewGame({ side: opt.id })}
+                          className={`rounded-md py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                            sideChoice === opt.id
+                              ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                              : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center justify-between rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 px-3 py-2.5">
+                  <div>
+                    <div className="text-xs font-semibold text-stone-800 dark:text-stone-200">
+                      Auto-Flip Board
+                    </div>
+                    <div className="text-[11px] text-stone-500 dark:text-stone-400">
+                      Rotate perspective after each move
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={autoFlipTwoPlayer}
+                    onClick={() => {
+                      const next = !autoFlipTwoPlayer;
+                      setAutoFlipTwoPlayer(next);
+                      if (next) setFlipped(turn === 'b');
+                    }}
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                      autoFlipTwoPlayer ? 'bg-emerald-700' : 'bg-stone-300 dark:bg-stone-600'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                        autoFlipTwoPlayer ? 'translate-x-4' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+              )}
+
+              {/* Quick Game Controls */}
+              <div className="grid grid-cols-3 gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={handleUndo}
+                  disabled={!canUndo}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-2.5 py-2 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
+                >
+                  <Undo2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Undo</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFlipped((f) => !f)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-2.5 py-2 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 transition-colors whitespace-nowrap"
+                >
+                  <ArrowUpDown className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Flip</span>
+                </button>
+                {gameMode === 'two-player' ? (
+                  <button
+                    type="button"
+                    onClick={handleMutualDraw}
+                    disabled={Boolean(gameResult)}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-2.5 py-2 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
+                  >
+                    <Handshake className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Draw</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleResign}
+                    disabled={Boolean(gameResult) || moves.length === 0}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-2.5 py-2 text-xs font-medium text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
+                  >
+                    <Flag className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Resign</span>
+                  </button>
+                )}
+              </div>
+
+              {gameMode === 'two-player' && (
+                <button
+                  type="button"
+                  onClick={handleResign}
+                  disabled={Boolean(gameResult) || moves.length === 0}
+                  className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-3 py-1.5 text-xs font-medium text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+                >
+                  <Flag className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Resign ({turn === 'w' ? 'White' : 'Black'})</span>
+                </button>
+              )}
+            </section>
+
+            {/* Move History Panel */}
+            <MoveHistoryPanel
+              moves={moves}
+              viewIndex={viewIndex}
+              onSelectPly={handleSelectHistoryPly}
+              pgn={pgnString}
+              fen={displayFen}
+            />
+
+            {/* Board Appearance */}
+            <div className="flex items-center justify-between rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-3.5 py-2.5">
+              <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                Board Style
+              </span>
+              <div className="flex items-center gap-1.5">
+                {(
+                  [
+                    { id: 'tournament', label: 'Green', light: '#EEEED2', dark: '#769656' },
+                    { id: 'walnut', label: 'Walnut', light: '#F0D9B5', dark: '#B58863' },
+                    { id: 'slate', label: 'Slate', light: '#E6E9EE', dark: '#6B7D92' },
+                  ] as const
+                ).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setBoardTheme(item.id)}
+                    aria-label={`${item.label} board theme`}
+                    title={item.label}
+                    className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors ${
+                      boardTheme === item.id
+                        ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/40 text-stone-900 dark:text-stone-100'
+                        : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800'
+                    }`}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-3 w-3 rounded-xs border border-stone-400/50"
+                      style={{
+                        background: `linear-gradient(135deg, ${item.light} 50%, ${item.dark} 50%)`,
+                      }}
+                    />
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </aside>
+        </div>
+      </main>
+
+      <OfflineIndicator />
+    </div>
+  );
+}
