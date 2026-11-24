@@ -1,3 +1,4 @@
+import { Chess, type PieceSymbol, type Square } from 'chess.js';
 import type {
   MatchAnalysisResult,
   MoveAnalysis,
@@ -15,22 +16,166 @@ export interface EngineBestMove {
   promotion?: PromotionPiece;
 }
 
+export interface CandidateMove {
+  uci: string;
+  cp: number;
+  mate: number | null;
+}
+
 declare global {
   interface Window {
     __EMBEDDED_STOCKFISH_ASM__?: string;
   }
 }
 
+const PIECE_VAL: Record<PieceSymbol, number> = {
+  p: 1,
+  n: 3,
+  b: 3,
+  r: 5,
+  q: 9,
+  k: 100,
+};
+
 function scoreToCpEquivalent(evalObj: PositionEval): number {
   if (evalObj.mate !== null) {
-    // Assign large monotonic centipawn value for mate distances
     const sign = evalObj.mate > 0 ? 1 : -1;
     return sign * (10000 - Math.min(Math.abs(evalObj.mate), 99) * 10);
   }
   return evalObj.cp;
 }
 
+function secondBestToCpEquivalent(evalObj: PositionEval): number | null {
+  if (evalObj.secondBestMate !== undefined && evalObj.secondBestMate !== null) {
+    const sign = evalObj.secondBestMate > 0 ? 1 : -1;
+    return sign * (10000 - Math.min(Math.abs(evalObj.secondBestMate), 99) * 10);
+  }
+  if (evalObj.secondBestCp !== undefined && evalObj.secondBestCp !== null) {
+    return evalObj.secondBestCp;
+  }
+  return null;
+}
+
+function uciToSan(fen: string, uci: string): string {
+  if (!uci || uci.length < 4) return '';
+  try {
+    const chess = new Chess(fen);
+    const from = uci.slice(0, 2) as Square;
+    const to = uci.slice(2, 4) as Square;
+    const promo = uci.slice(4, 5) as PromotionPiece | '';
+    const move = chess.move({
+      from,
+      to,
+      promotion:
+        promo === 'q' || promo === 'r' || promo === 'b' || promo === 'n' ? promo : undefined,
+    });
+    return move.san;
+  } catch {
+    return uci;
+  }
+}
+
+/**
+ * Checks if playing `playedLan` from `fenBefore` offers a genuine tactical sacrifice
+ * (either the moved piece can be captured for net material loss on its destination square,
+ * or a valuable friendly piece is intentionally left hanging for tactical compensation).
+ */
+function isTacticalSacrifice(fenBefore: string, playedLan: string): boolean {
+  try {
+    const before = new Chess(fenBefore);
+    const moverColor = before.turn();
+    const from = playedLan.slice(0, 2) as Square;
+    const to = playedLan.slice(2, 4) as Square;
+    const promo = playedLan.slice(4, 5) as PromotionPiece | '';
+
+    const after = new Chess(fenBefore);
+    const moveObj = after.move({
+      from,
+      to,
+      promotion:
+        promo === 'q' || promo === 'r' || promo === 'b' || promo === 'n' ? promo : undefined,
+    });
+
+    // Direct checkmate isn't a sacrifice puzzle unless it already occurred; usually just mate
+    if (after.isCheckmate()) return false;
+
+    const capturedVal = moveObj.captured ? PIECE_VAL[moveObj.captured] : 0;
+    const movedVal = PIECE_VAL[moveObj.piece];
+    const oppReplies = after.moves({ verbose: true });
+
+    // Check 1: Did the moved piece land on a square where the opponent can capture it for a gain?
+    const capturesOnDest = oppReplies.filter((r) => r.to === moveObj.to);
+    if (capturesOnDest.length > 0 && movedVal >= 3) {
+      // Find whether `moveObj.to` is defended by mover after opponent's cheapest capture
+      let minOppRecaptureLoss = Infinity;
+      for (const cap of capturesOnDest) {
+        const sim = new Chess(after.fen());
+        sim.move(cap);
+        const moverRecaptures = sim
+          .moves({ verbose: true })
+          .filter((r) => r.to === moveObj.to);
+
+        // Net material gained by mover if opponent captures on destination:
+        // capturedVal - movedVal + (cheapest defender recapture if defended)
+        const cheapestOppPiece = PIECE_VAL[cap.piece];
+        const canDefend = moverRecaptures.length > 0;
+        const netMoverDelta = canDefend
+          ? capturedVal - movedVal + cheapestOppPiece
+          : capturedVal - movedVal;
+
+        if (netMoverDelta < minOppRecaptureLoss) {
+          minOppRecaptureLoss = netMoverDelta;
+        }
+      }
+
+      if (minOppRecaptureLoss <= -2) {
+        return true;
+      }
+    }
+
+    // Check 2: Did the mover leave another valuable non-pawn piece (>= 3) newly hanging?
+    if (moveObj.piece !== 'k') {
+      // Check what opponent's best capture was BEFORE this move
+      let maxHangingBefore = 0;
+      const beforeOppView = fenBefore.split(' ');
+      if (beforeOppView.length >= 2) {
+        beforeOppView[1] = moverColor === 'w' ? 'b' : 'w';
+        beforeOppView[3] = '-';
+        try {
+          const oppBefore = new Chess(beforeOppView.join(' '));
+          for (const r of oppBefore.moves({ verbose: true })) {
+            if (r.captured && PIECE_VAL[r.captured] >= 3) {
+              maxHangingBefore = Math.max(maxHangingBefore, PIECE_VAL[r.captured]);
+            }
+          }
+        } catch {
+          // Ignore invalid flipped turn FEN when king is in check
+        }
+      }
+
+      for (const r of oppReplies) {
+        if (r.to === moveObj.to || !r.captured) continue;
+        const targetVal = PIECE_VAL[r.captured];
+        if (targetVal < 3 || targetVal <= maxHangingBefore) continue;
+
+        const sim = new Chess(after.fen());
+        sim.move(r);
+        const defended = sim.moves({ verbose: true }).some((rec) => rec.to === r.to);
+        const netLoss = defended ? targetVal - PIECE_VAL[r.piece] : targetVal;
+        if (netLoss - capturedVal >= 2) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function classifyMove(
+  fenBefore: string,
   playedLan: string,
   bestLan: string,
   cpLoss: number,
@@ -38,10 +183,40 @@ function classifyMove(
   evalAfter: PositionEval,
   moverColor: 'w' | 'b'
 ): MoveClassification {
+  const moverSign = moverColor === 'w' ? 1 : -1;
+  const beforeMover = scoreToCpEquivalent(evalBefore) * moverSign;
+  const afterMover = scoreToCpEquivalent(evalAfter) * moverSign;
+
+  const secondBestRaw = secondBestToCpEquivalent(evalBefore);
+  const secondBestMover = secondBestRaw !== null ? secondBestRaw * moverSign : null;
+  const secondBestGap =
+    secondBestMover !== null ? Math.max(0, beforeMover - secondBestMover) : 0;
+
+  const isTopChoice = playedLan === bestLan || cpLoss <= 12;
+
+  // Brilliant (!!): Top move offering a genuine sacrifice in a non-trivial position
+  if (
+    isTopChoice &&
+    beforeMover < 600 &&
+    afterMover >= -25 &&
+    isTacticalSacrifice(fenBefore, playedLan) &&
+    (secondBestGap >= 40 || afterMover >= beforeMover - 5)
+  ) {
+    return 'brilliant';
+  }
+
+  // Great (!): Critical only-move or decisive tactical swing
+  if (
+    isTopChoice &&
+    beforeMover > -500 &&
+    beforeMover < 600 &&
+    secondBestGap >= 115
+  ) {
+    return 'great';
+  }
+
   if (playedLan === bestLan) return 'best';
 
-  // Detect missing a forced mate or walking into forced mate
-  const moverSign = moverColor === 'w' ? 1 : -1;
   const hadMate = evalBefore.mate !== null && evalBefore.mate * moverSign > 0;
   const keptMate = evalAfter.mate !== null && evalAfter.mate * moverSign > 0;
   const walkedIntoMate =
@@ -62,6 +237,8 @@ function classifyMove(
 
 function computeSideSummary(analyses: MoveAnalysis[]): SideAccuracySummary {
   const counts = {
+    brilliant: 0,
+    great: 0,
     best: 0,
     excellent: 0,
     good: 0,
@@ -77,7 +254,6 @@ function computeSideSummary(analyses: MoveAnalysis[]): SideAccuracySummary {
   let totalCpl = 0;
   for (const item of analyses) {
     counts[item.classification] += 1;
-    // Cap per-move CPL at 500 for ACPL stability (standard Lichess-style cap)
     totalCpl += Math.min(item.cpLoss, 500);
   }
 
@@ -94,11 +270,18 @@ class StockfishEngineService {
   private readyPromise: Promise<void> | null = null;
   private isReady = false;
   private activeRequestId = 0;
-  private pendingResolve: ((result: { bestMove: string; cp: number; mate: number | null }) => void) | null =
-    null;
+  private pendingResolve:
+    | ((result: {
+        bestMove: string;
+        cp: number;
+        mate: number | null;
+        candidates: CandidateMove[];
+      }) => void)
+    | null = null;
   private pendingReject: ((err: Error) => void) | null = null;
   private pendingId = 0;
   private lastInfoScore: { cp: number; mate: number | null } = { cp: 0, mate: null };
+  private multiPvMap: Map<number, CandidateMove> = new Map();
 
   private createWorker(): Worker {
     const embeddedAsm =
@@ -157,13 +340,24 @@ class StockfishEngineService {
           }
 
           if (line.startsWith('info ') && line.includes(' score ')) {
-            // Skip lowerbound/upperbound partial scores if an exact score exists, or parse cleanly
             const mateMatch = line.match(/\bscore mate (-?\d+)/);
             const cpMatch = line.match(/\bscore cp (-?\d+)/);
-            if (mateMatch) {
-              this.lastInfoScore = { cp: 0, mate: parseInt(mateMatch[1], 10) };
-            } else if (cpMatch) {
-              this.lastInfoScore = { cp: parseInt(cpMatch[1], 10), mate: null };
+            const mpvMatch = line.match(/\bmultipv (\d+)/);
+            const pvMatch = line.match(/\bpv ([a-h][1-8][a-h][1-8][qrbn]?)/);
+
+            const cpVal = cpMatch ? parseInt(cpMatch[1], 10) : 0;
+            const mateVal = mateMatch ? parseInt(mateMatch[1], 10) : null;
+            const mpvIdx = mpvMatch ? parseInt(mpvMatch[1], 10) : 1;
+
+            if (mpvIdx === 1) {
+              this.lastInfoScore = { cp: cpVal, mate: mateVal };
+            }
+            if (pvMatch) {
+              this.multiPvMap.set(mpvIdx, {
+                uci: pvMatch[1],
+                cp: cpVal,
+                mate: mateVal,
+              });
             }
             return;
           }
@@ -175,6 +369,9 @@ class StockfishEngineService {
             const rejecter = this.pendingReject;
             const reqId = this.pendingId;
             const capturedScore = { ...this.lastInfoScore };
+            const candidates = Array.from(this.multiPvMap.entries())
+              .sort((a, b) => a[0] - b[0])
+              .map((entry) => entry[1]);
 
             this.pendingResolve = null;
             this.pendingReject = null;
@@ -192,6 +389,7 @@ class StockfishEngineService {
               bestMove: uciMove,
               cp: capturedScore.cp,
               mate: capturedScore.mate,
+              candidates,
             });
           }
         };
@@ -218,9 +416,14 @@ class StockfishEngineService {
 
   private async runSearch(
     lanHistory: string[],
-    options: { skillLevel: number; depth?: number; movetime: number },
+    options: { skillLevel: number; depth?: number; movetime: number; multiPv?: number },
     signal?: AbortSignal
-  ): Promise<{ bestMove: string; cp: number; mate: number | null }> {
+  ): Promise<{
+    bestMove: string;
+    cp: number;
+    mate: number | null;
+    candidates: CandidateMove[];
+  }> {
     this.activeRequestId += 1;
     const requestId = this.activeRequestId;
 
@@ -237,6 +440,7 @@ class StockfishEngineService {
 
     worker.postMessage('stop');
     this.lastInfoScore = { cp: 0, mate: null };
+    this.multiPvMap.clear();
 
     return new Promise((resolve, reject) => {
       if (signal?.aborted || requestId !== this.activeRequestId) {
@@ -265,6 +469,7 @@ class StockfishEngineService {
         reject(err);
       };
 
+      worker.postMessage(`setoption name MultiPV value ${options.multiPv ?? 1}`);
       worker.postMessage(`setoption name Skill Level value ${options.skillLevel}`);
       if (lanHistory.length > 0) {
         worker.postMessage(`position startpos moves ${lanHistory.join(' ')}`);
@@ -281,7 +486,7 @@ class StockfishEngineService {
 
   public async getBestMove(
     lanHistory: string[],
-    levelConfig: StockfishLevelConfig,
+    levelConfig: Pick<StockfishLevelConfig, 'skillLevel' | 'depth' | 'movetime'>,
     signal?: AbortSignal
   ): Promise<EngineBestMove> {
     const res = await this.runSearch(
@@ -290,18 +495,43 @@ class StockfishEngineService {
         skillLevel: levelConfig.skillLevel,
         depth: levelConfig.depth,
         movetime: levelConfig.movetime,
+        multiPv: 1,
       },
       signal
     );
 
-    const from = res.bestMove.slice(0, 2);
-    const to = res.bestMove.slice(2, 4);
-    const promoChar = res.bestMove.slice(4, 5) as PromotionPiece | '';
+    return this.parseUciMove(res.bestMove);
+  }
+
+  public async getTopCandidates(
+    lanHistory: string[],
+    options: { skillLevel: number; depth: number; movetime: number; multiPv?: number },
+    signal?: AbortSignal
+  ): Promise<CandidateMove[]> {
+    const res = await this.runSearch(
+      lanHistory,
+      {
+        skillLevel: options.skillLevel,
+        depth: options.depth,
+        movetime: options.movetime,
+        multiPv: options.multiPv ?? 3,
+      },
+      signal
+    );
+    if (res.candidates.length > 0) {
+      return res.candidates;
+    }
+    return [{ uci: res.bestMove, cp: res.cp, mate: res.mate }];
+  }
+
+  public parseUciMove(uci: string): EngineBestMove {
+    const from = uci.slice(0, 2);
+    const to = uci.slice(2, 4);
+    const promoChar = uci.slice(4, 5) as PromotionPiece | '';
     const promotion =
       promoChar === 'q' || promoChar === 'r' || promoChar === 'b' || promoChar === 'n'
         ? promoChar
         : undefined;
-
     return { from, to, promotion };
   }
 
@@ -313,16 +543,19 @@ class StockfishEngineService {
   ): Promise<PositionEval> {
     const res = await this.runSearch(
       lanHistory,
-      { skillLevel: 20, depth: 11, movetime },
+      { skillLevel: 20, depth: 12, movetime, multiPv: 2 },
       signal
     );
 
-    // UCI reports scores from side-to-move perspective; normalize to White's perspective
     const sign = sideToMove === 'w' ? 1 : -1;
+    const second = res.candidates[1];
+
     return {
       cp: res.cp * sign,
       mate: res.mate !== null ? res.mate * sign : null,
       bestMove: res.bestMove,
+      secondBestCp: second ? second.cp * sign : null,
+      secondBestMate: second && second.mate !== null ? second.mate * sign : null,
     };
   }
 
@@ -334,14 +567,12 @@ class StockfishEngineService {
     const totalPositions = moves.length + 1;
     const evals: PositionEval[] = [];
 
-    // Evaluate starting position + every ply position
     for (let i = 0; i < totalPositions; i++) {
       if (signal?.aborted) throw new Error('Analysis cancelled');
 
       const lanSlice = moves.slice(0, i).map((m) => m.lan);
       const sideToMove: 'w' | 'b' = i % 2 === 0 ? 'w' : 'b';
 
-      // Terminal checkmate positions have no legal moves for Stockfish to search
       if (i > 0 && moves[i - 1].isCheckmate) {
         const winnerSign = moves[i - 1].color === 'w' ? 1 : -1;
         evals.push({
@@ -351,11 +582,10 @@ class StockfishEngineService {
         });
       } else {
         try {
-          const ev = await this.evaluatePosition(lanSlice, sideToMove, 110, signal);
+          const ev = await this.evaluatePosition(lanSlice, sideToMove, 115, signal);
           evals.push(ev);
         } catch (err) {
           if (signal?.aborted) throw err;
-          // Terminal draw/stalemate where Stockfish returns bestmove (none)
           evals.push({ cp: 0, mate: null, bestMove: '' });
         }
       }
@@ -363,9 +593,11 @@ class StockfishEngineService {
       onProgress(i + 1, totalPositions);
     }
 
+    const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     const moveAnalyses: MoveAnalysis[] = [];
     for (let i = 0; i < moves.length; i++) {
       const m = moves[i];
+      const fenBefore = i === 0 ? INITIAL_FEN : moves[i - 1].fen;
       const evalBefore = evals[i];
       const evalAfter = evals[i + 1];
 
@@ -375,6 +607,7 @@ class StockfishEngineService {
       const cpLoss = Math.max(0, Math.round(beforeMover - afterMover));
 
       const classification = classifyMove(
+        fenBefore,
         m.lan,
         evalBefore.bestMove,
         cpLoss,
@@ -387,8 +620,10 @@ class StockfishEngineService {
         ply: m.ply,
         san: m.san,
         color: m.color,
+        to: m.to as Square,
         playedLan: m.lan,
         bestLan: evalBefore.bestMove,
+        bestSan: uciToSan(fenBefore, evalBefore.bestMove),
         evalBefore,
         evalAfter,
         cpLoss,

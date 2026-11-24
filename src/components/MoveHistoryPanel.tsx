@@ -23,6 +23,8 @@ interface MoveHistoryPanelProps {
 }
 
 const BADGE_SYMBOL: Partial<Record<MoveClassification, { text: string; cls: string }>> = {
+  brilliant: { text: '!!', cls: 'text-cyan-600 dark:text-cyan-400' },
+  great: { text: '!', cls: 'text-sky-600 dark:text-sky-400' },
   inaccuracy: { text: '?!', cls: 'text-amber-600 dark:text-amber-400' },
   mistake: { text: '?', cls: 'text-orange-600 dark:text-orange-400' },
   blunder: { text: '??', cls: 'text-red-600 dark:text-red-400' },

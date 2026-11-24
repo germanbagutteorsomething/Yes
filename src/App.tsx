@@ -2,10 +2,14 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Chess, type PieceSymbol, type Square } from 'chess.js';
 import {
   ArrowUpDown,
+  BarChart3,
+  Bot,
+  ChevronRight,
   Cpu,
   FileDown,
   Flag,
   Handshake,
+  Loader2,
   Moon,
   RotateCcw,
   Sun,
@@ -21,19 +25,24 @@ import { MoveHistoryPanel } from './components/MoveHistoryPanel';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PlayerBar } from './components/PlayerBar';
 import { PWAInstallButton } from './components/PWAInstallButton';
+import { getBotMove } from './engine/botService';
 import { stockfishService } from './engine/stockfishService';
 import {
+  BOT_PROFILES,
   STOCKFISH_LEVELS,
   TIME_CONTROLS,
   type BoardTheme,
+  type BotId,
   type GameMode,
   type GameResult,
   type MatchAnalysisResult,
   type MoveRecord,
+  type OpponentKind,
   type PendingPromotion,
   type PlayerColor,
   type PromotionPiece,
   type SideChoice,
+  type StockfishLevelNumber,
   type TimeControlId,
 } from './types/chess';
 import { playChessSound } from './utils/sound';
@@ -201,7 +210,9 @@ export default function App() {
   const analysisAbortRef = useRef<AbortController | null>(null);
 
   const [gameMode, setGameMode] = useState<GameMode>('stockfish');
-  const [stockfishLevel, setStockfishLevel] = useState<1 | 2 | 3 | 4 | 5 | 6>(3);
+  const [opponentKind, setOpponentKind] = useState<OpponentKind>('stockfish');
+  const [stockfishLevel, setStockfishLevel] = useState<StockfishLevelNumber>(4);
+  const [selectedBotId, setSelectedBotId] = useState<BotId>('tara');
   const [sideChoice, setSideChoice] = useState<SideChoice>('w');
   const [humanColor, setHumanColor] = useState<PlayerColor>('w');
   const [timeControlId, setTimeControlId] = useState<TimeControlId>('blitz-5');
@@ -254,8 +265,13 @@ export default function App() {
   }, []);
 
   const currentLevelConfig = useMemo(
-    () => STOCKFISH_LEVELS.find((l) => l.level === stockfishLevel) ?? STOCKFISH_LEVELS[2],
+    () => STOCKFISH_LEVELS.find((l) => l.level === stockfishLevel) ?? STOCKFISH_LEVELS[3],
     [stockfishLevel]
+  );
+
+  const currentBot = useMemo(
+    () => BOT_PROFILES.find((b) => b.id === selectedBotId) ?? BOT_PROFILES[2],
+    [selectedBotId]
   );
 
   const currentTimeControl = useMemo(
@@ -320,8 +336,10 @@ export default function App() {
   const startNewGame = useCallback(
     (overrides?: {
       mode?: GameMode;
+      opponentKind?: OpponentKind;
       side?: SideChoice;
-      level?: 1 | 2 | 3 | 4 | 5 | 6;
+      level?: StockfishLevelNumber;
+      botId?: BotId;
       timeControl?: TimeControlId;
     }) => {
       engineAbortRef.current?.abort();
@@ -335,8 +353,10 @@ export default function App() {
       const resolvedHuman = nextMode === 'stockfish' ? resolveSideChoice(nextSide) : 'w';
 
       if (overrides?.mode !== undefined) setGameMode(overrides.mode);
+      if (overrides?.opponentKind !== undefined) setOpponentKind(overrides.opponentKind);
       if (overrides?.side !== undefined) setSideChoice(overrides.side);
       if (overrides?.level !== undefined) setStockfishLevel(overrides.level);
+      if (overrides?.botId !== undefined) setSelectedBotId(overrides.botId);
       if (overrides?.timeControl !== undefined) setTimeControlId(overrides.timeControl);
 
       chessRef.current = new Chess();
@@ -492,7 +512,7 @@ export default function App() {
     setPendingPromotion(null);
   }, []);
 
-  // Trigger Stockfish engine automatically when it is the bot's turn
+  // Trigger Stockfish engine or selected Bot automatically when it is the AI's turn
   useEffect(() => {
     if (gameMode !== 'stockfish') return;
     if (gameResult) return;
@@ -507,16 +527,22 @@ export default function App() {
     const lanHistory = moves.map((m) => m.lan);
     const startTime = performance.now();
 
-    stockfishService
-      .getBestMove(lanHistory, currentLevelConfig, controller.signal)
-      .then(async (best) => {
-        // Keep a subtle minimum pacing (~320ms) so bot responses read naturally
-        const elapsed = performance.now() - startTime;
-        if (elapsed < 320) {
-          await new Promise((r) => setTimeout(r, 320 - elapsed));
-        }
-        if (controller.signal.aborted) return;
+    const movePromise =
+      opponentKind === 'bot'
+        ? getBotMove(fen, lanHistory, currentBot, controller.signal)
+        : stockfishService
+            .getBestMove(lanHistory, currentLevelConfig, controller.signal)
+            .then(async (best) => {
+              const elapsed = performance.now() - startTime;
+              if (elapsed < 320) {
+                await new Promise((r) => setTimeout(r, 320 - elapsed));
+              }
+              return best;
+            });
 
+    movePromise
+      .then((best) => {
+        if (controller.signal.aborted) return;
         setIsEngineThinking(false);
         executeMove(best.from as Square, best.to as Square, best.promotion);
       })
@@ -524,7 +550,7 @@ export default function App() {
         if (controller.signal.aborted) return;
         setIsEngineThinking(false);
         setEngineError(
-          err instanceof Error ? err.message : 'Stockfish failed to respond.'
+          err instanceof Error ? err.message : 'Engine failed to respond.'
         );
       });
 
@@ -533,7 +559,19 @@ export default function App() {
       stockfishService.cancelPending();
       setIsEngineThinking(false);
     };
-  }, [gameMode, gameResult, isAnalyzing, turn, humanColor, moves, currentLevelConfig, executeMove]);
+  }, [
+    gameMode,
+    opponentKind,
+    gameResult,
+    isAnalyzing,
+    turn,
+    humanColor,
+    moves,
+    fen,
+    currentBot,
+    currentLevelConfig,
+    executeMove,
+  ]);
 
   const handleStartAnalysis = useCallback(() => {
     if (moves.length === 0 || isAnalyzing) return;
@@ -774,6 +812,19 @@ export default function App() {
     };
   }, [currentDisplayedEval]);
 
+  const currentMoveMarker = useMemo(() => {
+    if (!analysisResult) return null;
+    if (viewIndex === -1) return null;
+    const idx = viewIndex === null ? moves.length - 1 : viewIndex;
+    if (idx < 0) return null;
+    const item = analysisResult.moves[idx];
+    if (!item) return null;
+    return {
+      square: item.to,
+      classification: item.classification,
+    };
+  }, [analysisResult, moves.length, viewIndex]);
+
   // Top & Bottom PlayerBar assignments based on board orientation
   const topColor: PlayerColor = flipped ? 'w' : 'b';
   const bottomColor: PlayerColor = flipped ? 'b' : 'w';
@@ -782,6 +833,9 @@ export default function App() {
     if (gameMode === 'stockfish') {
       if (color === humanColor) {
         return 'You';
+      }
+      if (opponentKind === 'bot') {
+        return currentBot.name;
       }
       return `Stockfish · ${currentLevelConfig.name}`;
     }
@@ -793,7 +847,10 @@ export default function App() {
       if (color === humanColor) {
         return color === 'w' ? 'White' : 'Black';
       }
-      return `${currentLevelConfig.eloLabel} Elo`;
+      if (opponentKind === 'bot') {
+        return `${currentBot.tagline} · ${currentBot.eloLabel}`;
+      }
+      return `Lv ${currentLevelConfig.level} · ${currentLevelConfig.eloLabel} Elo`;
     }
     return color === 'w' ? 'White' : 'Black';
   };
@@ -919,6 +976,7 @@ export default function App() {
                     isReviewingHistory={isReviewingHistory}
                     onJumpToLive={() => handleSelectHistoryPly(null)}
                     bestMoveArrow={bestMoveArrow}
+                    moveMarker={currentMoveMarker}
                   />
                 </div>
               </div>
@@ -970,28 +1028,129 @@ export default function App() {
 
           {/* Control & Notation Sidebar */}
           <aside className="space-y-4">
-            {/* Game Over Summary Card */}
+            {/* Game Over Summary & Post-Match Analysis Card */}
             {gameResult && (
               <section
                 aria-live="polite"
-                className="rounded-xl border border-emerald-700/35 dark:border-emerald-500/40 bg-white dark:bg-stone-900 p-4 shadow-sm animate-chess-modal"
+                className="rounded-xl border border-emerald-700/35 dark:border-emerald-500/40 bg-white dark:bg-stone-900 p-4 shadow-sm animate-chess-modal space-y-3"
               >
-                <div className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
-                  Game Complete
+                <div>
+                  <div className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                    Game Complete
+                  </div>
+                  <h2 className="mt-1 font-display text-lg font-bold text-stone-900 dark:text-stone-100">
+                    {gameResult.headline}
+                  </h2>
+                  <p className="mt-1 text-xs text-stone-600 dark:text-stone-400">
+                    {gameResult.detail}
+                  </p>
                 </div>
-                <h2 className="mt-1 font-display text-lg font-bold text-stone-900 dark:text-stone-100">
-                  {gameResult.headline}
-                </h2>
-                <p className="mt-1 text-xs text-stone-600 dark:text-stone-400">
-                  {gameResult.detail}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => startNewGame()}
-                  className="mt-3.5 w-full rounded-lg bg-emerald-700 py-2 text-xs font-semibold text-white hover:bg-emerald-800 transition-colors"
-                >
-                  Play Again
-                </button>
+
+                {isAnalyzing && (
+                  <div className="space-y-1.5 rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 p-2.5">
+                    <div className="flex items-center justify-between text-[11px] text-stone-600 dark:text-stone-300">
+                      <span className="inline-flex items-center gap-1.5 font-medium">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-700 dark:text-emerald-400" />
+                        <span>Analyzing all moves…</span>
+                      </span>
+                      <span className="font-mono tabular-nums">
+                        {analysisProgress.completed}/{analysisProgress.total}
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-stone-200 dark:bg-stone-700">
+                      <div
+                        className="h-full bg-emerald-700 dark:bg-emerald-500 transition-[width] duration-150"
+                        style={{
+                          width: `${
+                            analysisProgress.total > 0
+                              ? Math.round(
+                                  (analysisProgress.completed / analysisProgress.total) * 100
+                                )
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {analysisResult && !isAnalyzing && (
+                  <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/80 dark:bg-stone-800/50 p-2.5 space-y-2">
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <div className="text-[10px] text-stone-500 dark:text-stone-400">
+                          White Accuracy
+                        </div>
+                        <div className="font-mono text-sm font-bold text-stone-900 dark:text-stone-100 tabular-nums">
+                          {analysisResult.white.accuracy.toFixed(1)}%
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-stone-500 dark:text-stone-400">
+                          Black Accuracy
+                        </div>
+                        <div className="font-mono text-sm font-bold text-stone-900 dark:text-stone-100 tabular-nums">
+                          {analysisResult.black.accuracy.toFixed(1)}%
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono tabular-nums">
+                      {(analysisResult.white.brilliant + analysisResult.black.brilliant) > 0 && (
+                        <span className="font-semibold text-cyan-600 dark:text-cyan-400">
+                          !! {analysisResult.white.brilliant + analysisResult.black.brilliant} Brilliant
+                        </span>
+                      )}
+                      {(analysisResult.white.great + analysisResult.black.great) > 0 && (
+                        <span className="font-semibold text-sky-600 dark:text-sky-400">
+                          ! {analysisResult.white.great + analysisResult.black.great} Great
+                        </span>
+                      )}
+                      <span className="text-emerald-700 dark:text-emerald-400">
+                        ★ {analysisResult.white.best + analysisResult.black.best} Best
+                      </span>
+                      {(analysisResult.white.blunder + analysisResult.black.blunder) > 0 && (
+                        <span className="font-semibold text-red-600 dark:text-red-400">
+                          ?? {analysisResult.white.blunder + analysisResult.black.blunder} Blunder
+                        </span>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleSelectHistoryPly(moves.length > 0 ? 0 : null);
+                        document
+                          .getElementById('match-analysis-panel')
+                          ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                      }}
+                      className="w-full inline-flex items-center justify-center gap-1 rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 py-1.5 text-[11px] font-semibold text-stone-800 dark:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors"
+                    >
+                      <span>Step Through All Moves</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                <div className={`grid gap-2 ${moves.length > 0 && !analysisResult && !isAnalyzing ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                  {moves.length > 0 && !analysisResult && !isAnalyzing && (
+                    <button
+                      type="button"
+                      onClick={handleStartAnalysis}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-700/40 dark:border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-950/40 py-2 px-3 text-xs font-semibold text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100/70 dark:hover:bg-emerald-950/70 transition-colors whitespace-nowrap"
+                    >
+                      <BarChart3 className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Analyze Match</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => startNewGame()}
+                    className="w-full rounded-lg bg-emerald-700 py-2 px-3 text-xs font-semibold text-white hover:bg-emerald-800 transition-colors whitespace-nowrap"
+                  >
+                    Play Again
+                  </button>
+                </div>
               </section>
             )}
 
@@ -1017,7 +1176,7 @@ export default function App() {
                     }`}
                   >
                     <Cpu className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>vs Stockfish</span>
+                    <span>vs Engine</span>
                   </button>
                   <button
                     type="button"
@@ -1038,42 +1197,127 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Stockfish Level & Side Selection */}
+              {/* Engine / Bot & Side Selection */}
               {gameMode === 'stockfish' ? (
                 <>
+                  {/* Stockfish (10 Levels) vs Chess Bots (6 Personalities) */}
                   <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
-                        Stockfish Strength
-                      </span>
-                      <span className="font-mono text-xs text-stone-500 dark:text-stone-400">
-                        {currentLevelConfig.name} ({currentLevelConfig.eloLabel})
-                      </span>
+                    <div className="grid grid-cols-2 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-1 mb-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (opponentKind !== 'stockfish') {
+                            startNewGame({ opponentKind: 'stockfish' });
+                          }
+                        }}
+                        className={`flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                          opponentKind === 'stockfish'
+                            ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                            : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                        }`}
+                      >
+                        <Cpu className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Stockfish (10)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (opponentKind !== 'bot') {
+                            startNewGame({ opponentKind: 'bot' });
+                          }
+                        }}
+                        className={`flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                          opponentKind === 'bot'
+                            ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                            : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                        }`}
+                      >
+                        <Bot className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Chess Bots (6)</span>
+                      </button>
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {STOCKFISH_LEVELS.map((lvl) => {
-                        const active = stockfishLevel === lvl.level;
-                        return (
-                          <button
-                            key={lvl.level}
-                            type="button"
-                            onClick={() => setStockfishLevel(lvl.level)}
-                            className={`flex flex-col items-start rounded-lg border px-2.5 py-2 text-left transition-colors ${
-                              active
-                                ? 'border-emerald-700 bg-emerald-50/70 dark:border-emerald-500 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
-                                : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
-                            }`}
-                          >
-                            <span className="text-[11px] font-semibold leading-tight truncate w-full">
-                              {lvl.level}. {lvl.name}
-                            </span>
-                            <span className="font-mono text-[10px] opacity-75 mt-0.5">
-                              {lvl.eloLabel}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
+
+                    {opponentKind === 'stockfish' ? (
+                      <>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                            Stockfish Level
+                          </span>
+                          <span className="font-mono text-xs text-stone-500 dark:text-stone-400 tabular-nums">
+                            {currentLevelConfig.name} ({currentLevelConfig.eloLabel})
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-5 gap-1">
+                          {STOCKFISH_LEVELS.map((lvl) => {
+                            const active = stockfishLevel === lvl.level;
+                            return (
+                              <button
+                                key={lvl.level}
+                                type="button"
+                                title={`${lvl.level}. ${lvl.name} (${lvl.eloLabel})`}
+                                onClick={() => setStockfishLevel(lvl.level)}
+                                className={`flex flex-col items-center justify-center rounded-lg border px-1 py-1.5 text-center transition-colors ${
+                                  active
+                                    ? 'border-emerald-700 bg-emerald-50/70 dark:border-emerald-500 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
+                                    : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+                                }`}
+                              >
+                                <span className="text-xs font-semibold leading-tight tabular-nums">
+                                  {lvl.level}
+                                </span>
+                                <span className="font-mono text-[10px] opacity-75 mt-0.5 tabular-nums">
+                                  {lvl.eloLabel}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                            Select Opponent
+                          </span>
+                          <span className="font-mono text-xs text-stone-500 dark:text-stone-400 tabular-nums">
+                            {currentBot.name} ({currentBot.eloLabel})
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {BOT_PROFILES.map((bot) => {
+                            const active = selectedBotId === bot.id;
+                            return (
+                              <button
+                                key={bot.id}
+                                type="button"
+                                onClick={() => {
+                                  if (selectedBotId !== bot.id) {
+                                    startNewGame({ opponentKind: 'bot', botId: bot.id });
+                                  }
+                                }}
+                                className={`flex flex-col items-start rounded-lg border px-2.5 py-2 text-left transition-colors ${
+                                  active
+                                    ? 'border-emerald-700 bg-emerald-50/70 dark:border-emerald-500 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
+                                    : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-1 w-full">
+                                  <span className="text-[11px] font-semibold leading-tight truncate">
+                                    {bot.name}
+                                  </span>
+                                  <span className="font-mono text-[10px] opacity-80 shrink-0 tabular-nums">
+                                    {bot.eloLabel}
+                                  </span>
+                                </div>
+                                <span className="text-[10px] opacity-70 mt-0.5 truncate w-full">
+                                  {bot.tagline}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   <div>

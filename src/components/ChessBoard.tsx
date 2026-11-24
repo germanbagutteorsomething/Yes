@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type Square, type PieceSymbol } from 'chess.js';
-import type { BoardTheme, PendingPromotion, PlayerColor, PromotionPiece } from '../types/chess';
+import type {
+  BoardTheme,
+  MoveClassification,
+  PendingPromotion,
+  PlayerColor,
+  PromotionPiece,
+} from '../types/chess';
 import { playChessSound } from '../utils/sound';
 import { ChessPieceSvg } from './ChessPieceSvg';
 
@@ -20,6 +26,7 @@ interface ChessBoardProps {
   isReviewingHistory: boolean;
   onJumpToLive: () => void;
   bestMoveArrow?: { from: string; to: string } | null;
+  moveMarker?: { square: Square; classification: MoveClassification } | null;
 }
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const;
@@ -73,6 +80,52 @@ type PieceMotion = {
   key: string;
 };
 
+const MOVE_MARKER_META: Record<
+  MoveClassification,
+  { symbol: string; title: string; className: string }
+> = {
+  brilliant: {
+    symbol: '!!',
+    title: 'Brilliant Move',
+    className: 'bg-cyan-500 text-white ring-white',
+  },
+  great: {
+    symbol: '!',
+    title: 'Great Move',
+    className: 'bg-sky-500 text-white ring-white',
+  },
+  best: {
+    symbol: '★',
+    title: 'Best Move',
+    className: 'bg-emerald-600 text-white ring-white',
+  },
+  excellent: {
+    symbol: '✓',
+    title: 'Excellent Move',
+    className: 'bg-emerald-500 text-white ring-white',
+  },
+  good: {
+    symbol: '✓',
+    title: 'Good Move',
+    className: 'bg-stone-600 text-white ring-white',
+  },
+  inaccuracy: {
+    symbol: '?!',
+    title: 'Inaccuracy',
+    className: 'bg-amber-400 text-stone-950 ring-white',
+  },
+  mistake: {
+    symbol: '?',
+    title: 'Mistake',
+    className: 'bg-orange-500 text-white ring-white',
+  },
+  blunder: {
+    symbol: '??',
+    title: 'Blunder',
+    className: 'bg-red-600 text-white ring-white',
+  },
+};
+
 export const ChessBoard: React.FC<ChessBoardProps> = ({
   fen,
   flipped,
@@ -89,6 +142,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
   isReviewingHistory,
   onJumpToLive,
   bestMoveArrow = null,
+  moveMarker = null,
 }) => {
   const boardRef = useRef<HTMLDivElement>(null);
   const lastDraggedMoveRef = useRef<string | null>(null);
@@ -517,6 +571,20 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                       className="pointer-events-none absolute inset-[6%] z-20 rounded-full border-[5px] border-stone-900/25 animate-chess-dot"
                     />
                   )}
+
+                  {/* Analysis move classification marker (!! Brilliant, ! Great, etc.) */}
+                  {moveMarker && moveMarker.square === sq && (() => {
+                    const meta = MOVE_MARKER_META[moveMarker.classification];
+                    return (
+                      <span
+                        title={meta.title}
+                        aria-label={meta.title}
+                        className={`pointer-events-none absolute top-0.5 right-0.5 z-30 flex h-[18px] min-w-[18px] sm:h-[21px] sm:min-w-[21px] items-center justify-center rounded-full px-0.5 font-mono text-[9px] sm:text-[10px] font-extrabold leading-none shadow-md ring-1.5 ${meta.className}`}
+                      >
+                        {meta.symbol}
+                      </span>
+                    );
+                  })()}
                 </button>
               );
             })

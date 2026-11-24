@@ -1,6 +1,17 @@
 import React from 'react';
-import { BarChart3, Loader2, X } from 'lucide-react';
-import type { MatchAnalysisResult, MoveAnalysis, MoveClassification } from '../types/chess';
+import {
+  BarChart3,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  Sparkles,
+  X,
+} from 'lucide-react';
+import type {
+  MatchAnalysisResult,
+  MoveAnalysis,
+  MoveClassification,
+} from '../types/chess';
 import { formatEvalLabel } from './EvalBar';
 
 interface MatchAnalysisPanelProps {
@@ -18,46 +29,127 @@ interface MatchAnalysisPanelProps {
 
 const CLASSIFICATION_STYLES: Record<
   MoveClassification,
-  { label: string; symbol: string; colorClass: string }
+  {
+    label: string;
+    symbol: string;
+    colorClass: string;
+    badgeBgClass: string;
+  }
 > = {
+  brilliant: {
+    label: 'Brilliant',
+    symbol: '!!',
+    colorClass: 'text-cyan-600 dark:text-cyan-400',
+    badgeBgClass: 'bg-cyan-500 text-white',
+  },
+  great: {
+    label: 'Great',
+    symbol: '!',
+    colorClass: 'text-sky-600 dark:text-sky-400',
+    badgeBgClass: 'bg-sky-500 text-white',
+  },
   best: {
     label: 'Best',
     symbol: '★',
     colorClass: 'text-emerald-700 dark:text-emerald-400',
+    badgeBgClass: 'bg-emerald-600 text-white',
   },
   excellent: {
     label: 'Excellent',
-    symbol: '!',
+    symbol: '✓',
     colorClass: 'text-emerald-600 dark:text-emerald-400',
+    badgeBgClass: 'bg-emerald-500 text-white',
   },
   good: {
     label: 'Good',
     symbol: '✓',
     colorClass: 'text-stone-600 dark:text-stone-300',
+    badgeBgClass: 'bg-stone-500 text-white',
   },
   inaccuracy: {
     label: 'Inaccuracy',
     symbol: '?!',
     colorClass: 'text-amber-600 dark:text-amber-400',
+    badgeBgClass: 'bg-amber-400 text-stone-950',
   },
   mistake: {
     label: 'Mistake',
     symbol: '?',
     colorClass: 'text-orange-600 dark:text-orange-400',
+    badgeBgClass: 'bg-orange-500 text-white',
   },
   blunder: {
     label: 'Blunder',
     symbol: '??',
     colorClass: 'text-red-600 dark:text-red-400',
+    badgeBgClass: 'bg-red-600 text-white',
   },
 };
+
+const BREAKDOWN_ROWS: {
+  key: 'brilliant' | 'great' | 'best' | 'inaccuracy' | 'mistake' | 'blunder';
+  label: string;
+  symbol: string;
+  dotColor: string;
+  textColor: string;
+}[] = [
+  {
+    key: 'brilliant',
+    label: 'Brilliant',
+    symbol: '!!',
+    dotColor: 'bg-cyan-500 text-white',
+    textColor: 'text-cyan-700 dark:text-cyan-400',
+  },
+  {
+    key: 'great',
+    label: 'Great',
+    symbol: '!',
+    dotColor: 'bg-sky-500 text-white',
+    textColor: 'text-sky-700 dark:text-sky-400',
+  },
+  {
+    key: 'best',
+    label: 'Best',
+    symbol: '★',
+    dotColor: 'bg-emerald-600 text-white',
+    textColor: 'text-emerald-700 dark:text-emerald-400',
+  },
+  {
+    key: 'inaccuracy',
+    label: 'Inaccuracy',
+    symbol: '?!',
+    dotColor: 'bg-amber-400 text-stone-950',
+    textColor: 'text-amber-700 dark:text-amber-400',
+  },
+  {
+    key: 'mistake',
+    label: 'Mistake',
+    symbol: '?',
+    dotColor: 'bg-orange-500 text-white',
+    textColor: 'text-orange-700 dark:text-orange-400',
+  },
+  {
+    key: 'blunder',
+    label: 'Blunder',
+    symbol: '??',
+    dotColor: 'bg-red-600 text-white',
+    textColor: 'text-red-700 dark:text-red-400',
+  },
+];
+
+const KEY_MOMENT_TYPES = new Set<MoveClassification>([
+  'brilliant',
+  'great',
+  'inaccuracy',
+  'mistake',
+  'blunder',
+]);
 
 function evalToGraphY(cp: number, mate: number | null, height: number): number {
   let norm = 0;
   if (mate !== null) {
     norm = mate >= 0 ? 1 : -1;
   } else {
-    // Clamp +/- 700cp nicely to chart bounds
     const clamped = Math.max(-700, Math.min(700, cp));
     norm = Math.tanh(clamped / 320);
   }
@@ -85,8 +177,31 @@ export const MatchAnalysisPanel: React.FC<MatchAnalysisPanelProps> = ({
   const pct =
     progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
 
+  const handleJumpNextKeyMove = () => {
+    if (!analysis || analysis.moves.length === 0) return;
+    const startSearch = activeMoveIdx + 1;
+    let foundIdx = analysis.moves.findIndex(
+      (m, idx) => idx >= startSearch && KEY_MOMENT_TYPES.has(m.classification)
+    );
+    if (foundIdx === -1) {
+      foundIdx = analysis.moves.findIndex((m) =>
+        KEY_MOMENT_TYPES.has(m.classification)
+      );
+    }
+    if (foundIdx !== -1) {
+      onSelectPly(foundIdx === totalMoves - 1 ? null : foundIdx);
+    }
+  };
+
+  const hasKeyMoments = Boolean(
+    analysis?.moves.some((m) => KEY_MOMENT_TYPES.has(m.classification))
+  );
+
   return (
-    <section className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4 space-y-3">
+    <section
+      id="match-analysis-panel"
+      className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4 space-y-3"
+    >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <BarChart3
@@ -114,7 +229,7 @@ export const MatchAnalysisPanel: React.FC<MatchAnalysisPanelProps> = ({
             disabled={!hasMoves}
             className="inline-flex items-center gap-1.5 rounded-md bg-emerald-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-800 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
           >
-            <span>{analysis ? 'Re-analyze' : 'Analyze Match'}</span>
+            <span>{analysis ? 'Re-analyze' : 'Analyze All Moves'}</span>
           </button>
         )}
       </div>
@@ -124,7 +239,7 @@ export const MatchAnalysisPanel: React.FC<MatchAnalysisPanelProps> = ({
           <div className="flex items-center justify-between text-[11px] text-stone-600 dark:text-stone-400">
             <span className="inline-flex items-center gap-1.5">
               <Loader2 className="w-3 h-3 animate-spin text-emerald-700 dark:text-emerald-400" />
-              <span>Evaluating positions…</span>
+              <span>Evaluating all moves…</span>
             </span>
             <span className="font-mono tabular-nums">
               {progress.completed}/{progress.total} ({pct}%)
@@ -146,7 +261,7 @@ export const MatchAnalysisPanel: React.FC<MatchAnalysisPanelProps> = ({
       {!isAnalyzing && !analysis && !error && (
         <p className="text-xs text-stone-500 dark:text-stone-400">
           {hasMoves
-            ? 'Run Stockfish over every move to calculate accuracy, find blunders, and inspect best lines.'
+            ? 'Run Stockfish across every move to calculate accuracy, spot Brilliant (!!) sacrifices, and find mistakes or best lines.'
             : 'Play a few moves to unlock Stockfish post-match or mid-game analysis.'}
         </p>
       )}
@@ -198,7 +313,6 @@ export const MatchAnalysisPanel: React.FC<MatchAnalysisPanelProps> = ({
                   role="img"
                   aria-label="Stockfish evaluation advantage graph"
                 >
-                  {/* Midline */}
                   <line
                     x1="0"
                     y1="32"
@@ -208,7 +322,6 @@ export const MatchAnalysisPanel: React.FC<MatchAnalysisPanelProps> = ({
                     strokeWidth="1"
                   />
 
-                  {/* Filled white advantage area */}
                   {(() => {
                     const width = Math.max(analysis.moves.length * 14, 140);
                     const step = width / analysis.moves.length;
@@ -232,7 +345,11 @@ export const MatchAnalysisPanel: React.FC<MatchAnalysisPanelProps> = ({
                           const y = evalToGraphY(m.evalAfter.cp, m.evalAfter.mate, 64);
                           const isSelected = activeMoveIdx === idx;
                           const dotColor =
-                            m.classification === 'blunder'
+                            m.classification === 'brilliant'
+                              ? '#06B6D4'
+                              : m.classification === 'great'
+                              ? '#0EA5E9'
+                              : m.classification === 'blunder'
                               ? '#EF4444'
                               : m.classification === 'mistake'
                               ? '#F97316'
@@ -268,7 +385,7 @@ export const MatchAnalysisPanel: React.FC<MatchAnalysisPanelProps> = ({
                                 <circle
                                   cx={x}
                                   cy={y}
-                                  r={isSelected ? 3.2 : 2.3}
+                                  r={isSelected ? 3.4 : 2.5}
                                   fill={isSelected ? '#10B981' : dotColor}
                                 />
                               )}
@@ -283,65 +400,128 @@ export const MatchAnalysisPanel: React.FC<MatchAnalysisPanelProps> = ({
             </div>
           )}
 
-          {/* Quality Breakdown */}
-          <div className="grid grid-cols-4 gap-1.5 text-center text-[11px]">
-            <div className="rounded-md border border-stone-200 dark:border-stone-800 py-1.5 px-1">
-              <div className="font-mono font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums">
-                {analysis.white.best + analysis.black.best}
-              </div>
-              <div className="text-[10px] text-stone-500 dark:text-stone-400">Best</div>
+          {/* Move Quality Breakdown (White vs Black) */}
+          <div className="rounded-lg border border-stone-200 dark:border-stone-800 overflow-hidden text-[11px]">
+            <div className="grid grid-cols-[1fr_2.75rem_2.75rem] items-center bg-stone-50 dark:bg-stone-800/60 px-2.5 py-1.5 text-[10px] font-semibold text-stone-500 dark:text-stone-400">
+              <span>Move Rating</span>
+              <span className="text-center">White</span>
+              <span className="text-center">Black</span>
             </div>
-            <div className="rounded-md border border-stone-200 dark:border-stone-800 py-1.5 px-1">
-              <div className="font-mono font-semibold text-amber-600 dark:text-amber-400 tabular-nums">
-                {analysis.white.inaccuracy + analysis.black.inaccuracy}
-              </div>
-              <div className="text-[10px] text-stone-500 dark:text-stone-400">Inacc.</div>
-            </div>
-            <div className="rounded-md border border-stone-200 dark:border-stone-800 py-1.5 px-1">
-              <div className="font-mono font-semibold text-orange-600 dark:text-orange-400 tabular-nums">
-                {analysis.white.mistake + analysis.black.mistake}
-              </div>
-              <div className="text-[10px] text-stone-500 dark:text-stone-400">Mistake</div>
-            </div>
-            <div className="rounded-md border border-stone-200 dark:border-stone-800 py-1.5 px-1">
-              <div className="font-mono font-semibold text-red-600 dark:text-red-400 tabular-nums">
-                {analysis.white.blunder + analysis.black.blunder}
-              </div>
-              <div className="text-[10px] text-stone-500 dark:text-stone-400">Blunder</div>
+            <div className="divide-y divide-stone-100 dark:divide-stone-800/80">
+              {BREAKDOWN_ROWS.map((row) => (
+                <div
+                  key={row.key}
+                  className="grid grid-cols-[1fr_2.75rem_2.75rem] items-center px-2.5 py-1"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-mono text-[9px] font-extrabold leading-none ${row.dotColor}`}
+                    >
+                      {row.symbol}
+                    </span>
+                    <span className={`font-medium ${row.textColor}`}>
+                      {row.label}
+                    </span>
+                  </div>
+                  <span className="text-center font-mono font-semibold text-stone-800 dark:text-stone-200 tabular-nums">
+                    {analysis.white[row.key]}
+                  </span>
+                  <span className="text-center font-mono font-semibold text-stone-800 dark:text-stone-200 tabular-nums">
+                    {analysis.black[row.key]}
+                  </span>
+                </div>
+              ))}
             </div>
           </div>
 
-          {/* Inspected Move Detail */}
+          {/* Inspected Move Detail + Step Controls */}
           {inspectedMove && (
-            <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 px-3 py-2 text-xs">
+            <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 px-3 py-2.5 text-xs space-y-2">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
-                  <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1 font-mono text-[10px] font-extrabold leading-none ${
+                      CLASSIFICATION_STYLES[inspectedMove.classification].badgeBgClass
+                    }`}
+                  >
+                    {CLASSIFICATION_STYLES[inspectedMove.classification].symbol}
+                  </span>
+                  <span className="font-mono font-semibold text-stone-900 dark:text-stone-100 truncate">
                     {Math.ceil(inspectedMove.ply / 2)}
                     {inspectedMove.color === 'w' ? '.' : '...'} {inspectedMove.san}
                   </span>
                   <span
-                    className={`font-semibold ${
+                    className={`font-semibold shrink-0 ${
                       CLASSIFICATION_STYLES[inspectedMove.classification].colorClass
                     }`}
                   >
-                    · {CLASSIFICATION_STYLES[inspectedMove.classification].label}
+                    {CLASSIFICATION_STYLES[inspectedMove.classification].label}
                   </span>
                 </div>
-                <span className="font-mono text-[11px] font-medium text-stone-600 dark:text-stone-300 tabular-nums">
+                <span className="font-mono text-[11px] font-medium text-stone-600 dark:text-stone-300 tabular-nums shrink-0">
+                  {formatEvalLabel(inspectedMove.evalBefore)} →{' '}
                   {formatEvalLabel(inspectedMove.evalAfter)}
                 </span>
               </div>
+
               {inspectedMove.bestLan &&
                 inspectedMove.playedLan !== inspectedMove.bestLan && (
-                  <div className="mt-1 text-[11px] text-stone-500 dark:text-stone-400">
-                    Stockfish best:{' '}
-                    <span className="font-mono font-semibold text-emerald-700 dark:text-emerald-400">
-                      {inspectedMove.bestLan}
-                    </span>{' '}
-                    (shown with green arrow)
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-stone-500 dark:text-stone-400">
+                    <span>
+                      Best move:{' '}
+                      <span className="font-mono font-semibold text-emerald-700 dark:text-emerald-400">
+                        {inspectedMove.bestSan || inspectedMove.bestLan}
+                      </span>
+                    </span>
+                    {inspectedMove.cpLoss > 0 && (
+                      <span className="font-mono text-[10px] tabular-nums">
+                        −{(inspectedMove.cpLoss / 100).toFixed(2)} eval
+                      </span>
+                    )}
                   </div>
                 )}
+
+              <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-stone-200/80 dark:border-stone-700/70">
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onSelectPly(activeMoveIdx <= 0 ? -1 : activeMoveIdx - 1)
+                    }
+                    disabled={activeMoveIdx < 0}
+                    className="inline-flex items-center gap-0.5 rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-2 py-1 text-[11px] font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                    <span>Prev</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeMoveIdx + 1 >= totalMoves - 1) {
+                        onSelectPly(null);
+                      } else {
+                        onSelectPly(activeMoveIdx + 1);
+                      }
+                    }}
+                    disabled={activeMoveIdx >= totalMoves - 1}
+                    className="inline-flex items-center gap-0.5 rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-2 py-1 text-[11px] font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+                  >
+                    <span>Next</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {hasKeyMoments && (
+                  <button
+                    type="button"
+                    onClick={handleJumpNextKeyMove}
+                    className="inline-flex items-center gap-1 rounded-md border border-emerald-700/30 dark:border-emerald-500/30 bg-emerald-50/70 dark:bg-emerald-950/40 px-2 py-1 text-[11px] font-medium text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100/70 dark:hover:bg-emerald-950/70 transition-colors whitespace-nowrap"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    <span>Key Move</span>
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>

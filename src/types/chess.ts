@@ -1,13 +1,17 @@
 import type { Square } from 'chess.js';
 
 export type GameMode = 'stockfish' | 'two-player';
+export type OpponentKind = 'stockfish' | 'bot';
 export type PlayerColor = 'w' | 'b';
 export type SideChoice = 'w' | 'b' | 'random';
 export type BoardTheme = 'tournament' | 'walnut' | 'slate';
 export type PromotionPiece = 'q' | 'r' | 'b' | 'n';
+export type StockfishLevelNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+export type BotId = 'randy' | 'gary' | 'tara' | 'sam' | 'bella' | 'mikhail';
+export type BotPlayStyle = 'random' | 'greedy' | 'aggressive' | 'solid' | 'blitz';
 
 export interface StockfishLevelConfig {
-  level: 1 | 2 | 3 | 4 | 5 | 6;
+  level: StockfishLevelNumber;
   name: string;
   eloLabel: string;
   skillLevel: number;
@@ -16,12 +20,97 @@ export interface StockfishLevelConfig {
 }
 
 export const STOCKFISH_LEVELS: StockfishLevelConfig[] = [
-  { level: 1, name: 'Beginner', eloLabel: '~600', skillLevel: 0, depth: 1, movetime: 120 },
-  { level: 2, name: 'Casual', eloLabel: '~1000', skillLevel: 3, depth: 3, movetime: 200 },
-  { level: 3, name: 'Club', eloLabel: '~1400', skillLevel: 7, depth: 6, movetime: 350 },
-  { level: 4, name: 'Intermediate', eloLabel: '~1800', skillLevel: 12, depth: 10, movetime: 550 },
-  { level: 5, name: 'Master', eloLabel: '~2200', skillLevel: 16, depth: 13, movetime: 800 },
-  { level: 6, name: 'Grandmaster', eloLabel: 'Max', skillLevel: 20, depth: 16, movetime: 1200 },
+  { level: 1, name: 'Novice', eloLabel: '~400', skillLevel: 0, depth: 1, movetime: 80 },
+  { level: 2, name: 'Beginner', eloLabel: '~650', skillLevel: 1, depth: 2, movetime: 120 },
+  { level: 3, name: 'Casual', eloLabel: '~950', skillLevel: 3, depth: 3, movetime: 180 },
+  { level: 4, name: 'Amateur', eloLabel: '~1200', skillLevel: 5, depth: 5, movetime: 260 },
+  { level: 5, name: 'Club', eloLabel: '~1450', skillLevel: 8, depth: 7, movetime: 360 },
+  { level: 6, name: 'Tournament', eloLabel: '~1700', skillLevel: 11, depth: 9, movetime: 480 },
+  { level: 7, name: 'Intermediate', eloLabel: '~1950', skillLevel: 14, depth: 11, movetime: 620 },
+  { level: 8, name: 'Candidate', eloLabel: '~2150', skillLevel: 16, depth: 13, movetime: 780 },
+  { level: 9, name: 'Master', eloLabel: '~2400', skillLevel: 18, depth: 15, movetime: 980 },
+  { level: 10, name: 'Grandmaster', eloLabel: 'Max', skillLevel: 20, depth: 17, movetime: 1300 },
+];
+
+export interface BotProfile {
+  id: BotId;
+  name: string;
+  eloLabel: string;
+  tagline: string;
+  style: BotPlayStyle;
+  skillLevel: number;
+  depth: number;
+  movetime: number;
+  minDelayMs: number;
+}
+
+export const BOT_PROFILES: BotProfile[] = [
+  {
+    id: 'randy',
+    name: 'Random Randy',
+    eloLabel: '~300',
+    tagline: 'Unpredictable',
+    style: 'random',
+    skillLevel: 0,
+    depth: 1,
+    movetime: 60,
+    minDelayMs: 360,
+  },
+  {
+    id: 'gary',
+    name: 'Greedy Gary',
+    eloLabel: '~750',
+    tagline: 'Material Hunter',
+    style: 'greedy',
+    skillLevel: 1,
+    depth: 2,
+    movetime: 100,
+    minDelayMs: 420,
+  },
+  {
+    id: 'tara',
+    name: 'Tactical Tara',
+    eloLabel: '~1150',
+    tagline: 'Aggressive',
+    style: 'aggressive',
+    skillLevel: 4,
+    depth: 4,
+    movetime: 260,
+    minDelayMs: 380,
+  },
+  {
+    id: 'sam',
+    name: 'Solid Sam',
+    eloLabel: '~1500',
+    tagline: 'Positional',
+    style: 'solid',
+    skillLevel: 8,
+    depth: 7,
+    movetime: 380,
+    minDelayMs: 360,
+  },
+  {
+    id: 'bella',
+    name: 'Blitz Bella',
+    eloLabel: '~1850',
+    tagline: 'Speed Demon',
+    style: 'blitz',
+    skillLevel: 13,
+    depth: 9,
+    movetime: 180,
+    minDelayMs: 140,
+  },
+  {
+    id: 'mikhail',
+    name: 'Mikhail',
+    eloLabel: '~2250',
+    tagline: 'Attacking Master',
+    style: 'aggressive',
+    skillLevel: 17,
+    depth: 14,
+    movetime: 820,
+    minDelayMs: 350,
+  },
 ];
 
 export type TimeControlId =
@@ -98,6 +187,8 @@ export interface MoveRecord {
 }
 
 export type MoveClassification =
+  | 'brilliant'
+  | 'great'
   | 'best'
   | 'excellent'
   | 'good'
@@ -112,14 +203,20 @@ export interface PositionEval {
   mate: number | null;
   /** Best UCI move in this position (e.g. "e2e4"). */
   bestMove: string;
+  /** Second-best move score from White's perspective, if available. */
+  secondBestCp?: number | null;
+  /** Second-best move mate score from White's perspective, if available. */
+  secondBestMate?: number | null;
 }
 
 export interface MoveAnalysis {
   ply: number; // 1-indexed ply matching MoveRecord.ply
   san: string;
   color: PlayerColor;
+  to: Square;
   playedLan: string;
   bestLan: string;
+  bestSan: string;
   evalBefore: PositionEval;
   evalAfter: PositionEval;
   cpLoss: number;
@@ -129,6 +226,8 @@ export interface MoveAnalysis {
 export interface SideAccuracySummary {
   accuracy: number;
   acpl: number;
+  brilliant: number;
+  great: number;
   best: number;
   excellent: number;
   good: number;
