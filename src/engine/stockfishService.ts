@@ -6,14 +6,41 @@ export interface EngineBestMove {
   promotion?: PromotionPiece;
 }
 
+declare global {
+  interface Window {
+    __EMBEDDED_STOCKFISH_ASM__?: string;
+  }
+}
+
 class StockfishEngineService {
   private worker: Worker | null = null;
+  private workerBlobUrl: string | null = null;
   private readyPromise: Promise<void> | null = null;
   private isReady = false;
   private activeRequestId = 0;
   private pendingResolve: ((move: EngineBestMove) => void) | null = null;
   private pendingReject: ((err: Error) => void) | null = null;
   private pendingId = 0;
+
+  private createWorker(): Worker {
+    const embeddedAsm =
+      typeof window !== 'undefined' ? window.__EMBEDDED_STOCKFISH_ASM__ : undefined;
+
+    if (embeddedAsm && (window.location.protocol === 'file:' || embeddedAsm.length > 0)) {
+      // In standalone HTML mode (or file://), use embedded Stockfish ASM via same-origin Blob URL
+      if (window.location.protocol === 'file:' || embeddedAsm) {
+        const blob = new Blob([embeddedAsm], { type: 'application/javascript' });
+        this.workerBlobUrl = URL.createObjectURL(blob);
+        return new Worker(this.workerBlobUrl);
+      }
+    }
+
+    const workerUrl = new URL(
+      './stockfish/stockfish-19-lite-single.js',
+      window.location.href
+    ).toString();
+    return new Worker(workerUrl);
+  }
 
   private init(): Promise<void> {
     if (this.isReady && this.worker) {
@@ -25,11 +52,7 @@ class StockfishEngineService {
 
     this.readyPromise = new Promise<void>((resolve, reject) => {
       try {
-        const workerUrl = new URL(
-          './stockfish/stockfish-19-lite-single.js',
-          window.location.href
-        ).toString();
-        const worker = new Worker(workerUrl);
+        const worker = this.createWorker();
         this.worker = worker;
 
         let uciOk = false;
@@ -39,7 +62,7 @@ class StockfishEngineService {
             reject(new Error('Stockfish engine timed out while initializing.'));
             this.terminate();
           }
-        }, 15000);
+        }, 20000);
 
         worker.onmessage = (event: MessageEvent<string>) => {
           const line = typeof event.data === 'string' ? event.data.trim() : '';
@@ -128,7 +151,6 @@ class StockfishEngineService {
       throw new Error('Stockfish worker unavailable');
     }
 
-    // Cancel any previous in-flight search
     worker.postMessage('stop');
 
     return new Promise<EngineBestMove>((resolve, reject) => {
@@ -186,6 +208,10 @@ class StockfishEngineService {
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;
+    }
+    if (this.workerBlobUrl) {
+      URL.revokeObjectURL(this.workerBlobUrl);
+      this.workerBlobUrl = null;
     }
     this.isReady = false;
     this.readyPromise = null;

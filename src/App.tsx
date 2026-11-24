@@ -3,6 +3,7 @@ import { Chess, type PieceSymbol, type Square } from 'chess.js';
 import {
   ArrowUpDown,
   Cpu,
+  FileDown,
   Flag,
   Handshake,
   Moon,
@@ -602,12 +603,25 @@ export default function App() {
       <header className="border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
         <div className="mx-auto flex h-14 max-w-[1200px] items-center justify-between gap-6 px-4 sm:px-6">
           <div className="flex items-center gap-2.5 shrink-0">
-            <img
-              src="./icon.svg"
-              alt=""
+            <svg
+              viewBox="0 0 512 512"
+              fill="none"
               className="h-7 w-7 rounded-md shrink-0"
               aria-hidden="true"
-            />
+            >
+              <rect width="512" height="512" rx="112" fill="#1C1917" />
+              <rect x="88" y="88" width="168" height="168" rx="18" fill="#2F6F4E" />
+              <rect x="256" y="88" width="168" height="168" rx="18" fill="#F5F5F4" />
+              <rect x="88" y="256" width="168" height="168" rx="18" fill="#F5F5F4" />
+              <rect x="256" y="256" width="168" height="168" rx="18" fill="#2F6F4E" />
+              <g transform="translate(256 256)">
+                <circle cx="0" cy="0" r="98" fill="#1C1917" />
+                <path
+                  d="M-38 52h76v16h-76V52zm6-14l8-56h48l8 56h-64zm-10-80h16v14h14v-14h16v14h14v-14h16v26h-92v-26z"
+                  fill="#F5F5F4"
+                />
+              </g>
+            </svg>
             <span className="font-display text-lg font-bold tracking-tight text-stone-900 dark:text-stone-100 whitespace-nowrap shrink-0">
               SquareEight
             </span>
@@ -1008,6 +1022,17 @@ export default function App() {
                 ))}
               </div>
             </div>
+
+            {typeof window !== 'undefined' && !window.__EMBEDDED_STOCKFISH_ASM__ && (
+              <a
+                href="./squareeight-chess.html"
+                download="squareeight-chess.html"
+                className="flex items-center justify-between rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-3.5 py-2.5 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors"
+              >
+                <span>Download Standalone HTML</span>
+                <FileDown className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" aria-hidden="true" />
+              </a>
+            )}
           </aside>
         </div>
       </main>

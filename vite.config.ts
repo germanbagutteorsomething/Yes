@@ -54,6 +54,7 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,wasm,woff,woff2}'],
+          globIgnores: ['**/squareeight-chess.html'],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           runtimeCaching: [
             {
