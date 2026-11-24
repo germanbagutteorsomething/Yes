@@ -19,6 +19,7 @@ interface ChessBoardProps {
   onCancelPromotion: () => void;
   isReviewingHistory: boolean;
   onJumpToLive: () => void;
+  bestMoveArrow?: { from: string; to: string } | null;
 }
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const;
@@ -87,6 +88,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
   onCancelPromotion,
   isReviewingHistory,
   onJumpToLive,
+  bestMoveArrow = null,
 }) => {
   const boardRef = useRef<HTMLDivElement>(null);
   const lastDraggedMoveRef = useRef<string | null>(null);
@@ -520,6 +522,59 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
             })
           )}
         </div>
+
+        {/* Stockfish Best-Move Analysis Arrow */}
+        {bestMoveArrow && (() => {
+          const fromFile = bestMoveArrow.from[0] as (typeof FILES)[number];
+          const fromRank = bestMoveArrow.from[1] as (typeof RANKS)[number];
+          const toFile = bestMoveArrow.to[0] as (typeof FILES)[number];
+          const toRank = bestMoveArrow.to[1] as (typeof RANKS)[number];
+
+          const fromCol = displayFiles.indexOf(fromFile);
+          const fromRow = displayRanks.indexOf(fromRank);
+          const toCol = displayFiles.indexOf(toFile);
+          const toRow = displayRanks.indexOf(toRank);
+
+          if (fromCol === -1 || fromRow === -1 || toCol === -1 || toRow === -1) {
+            return null;
+          }
+
+          const x1 = fromCol * 100 + 50;
+          const y1 = fromRow * 100 + 50;
+          const x2 = toCol * 100 + 50;
+          const y2 = toRow * 100 + 50;
+
+          const angle = Math.atan2(y2 - y1, x2 - x1);
+          const headLen = 26;
+          const endX = x2 - Math.cos(angle) * 14;
+          const endY = y2 - Math.sin(angle) * 14;
+          const leftX = x2 - Math.cos(angle - Math.PI / 6) * headLen;
+          const leftY = y2 - Math.sin(angle - Math.PI / 6) * headLen;
+          const rightX = x2 - Math.cos(angle + Math.PI / 6) * headLen;
+          const rightY = y2 - Math.sin(angle + Math.PI / 6) * headLen;
+
+          return (
+            <svg
+              viewBox="0 0 800 800"
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 z-25 h-full w-full"
+            >
+              <line
+                x1={x1}
+                y1={y1}
+                x2={endX}
+                y2={endY}
+                stroke="rgba(16, 185, 129, 0.85)"
+                strokeWidth="15"
+                strokeLinecap="round"
+              />
+              <polygon
+                points={`${x2},${y2} ${leftX},${leftY} ${rightX},${rightY}`}
+                fill="rgba(16, 185, 129, 0.92)"
+              />
+            </svg>
+          );
+        })()}
 
         {/* History Review Notice */}
         {isReviewingHistory && (

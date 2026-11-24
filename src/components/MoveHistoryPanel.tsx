@@ -7,7 +7,11 @@ import {
   Copy,
   Check,
 } from 'lucide-react';
-import type { MoveRecord } from '../types/chess';
+import type {
+  MatchAnalysisResult,
+  MoveClassification,
+  MoveRecord,
+} from '../types/chess';
 
 interface MoveHistoryPanelProps {
   moves: MoveRecord[];
@@ -15,7 +19,14 @@ interface MoveHistoryPanelProps {
   onSelectPly: (plyIndex: number | null) => void;
   pgn: string;
   fen: string;
+  analysis?: MatchAnalysisResult | null;
 }
+
+const BADGE_SYMBOL: Partial<Record<MoveClassification, { text: string; cls: string }>> = {
+  inaccuracy: { text: '?!', cls: 'text-amber-600 dark:text-amber-400' },
+  mistake: { text: '?', cls: 'text-orange-600 dark:text-orange-400' },
+  blunder: { text: '??', cls: 'text-red-600 dark:text-red-400' },
+};
 
 export const MoveHistoryPanel: React.FC<MoveHistoryPanelProps> = ({
   moves,
@@ -23,6 +34,7 @@ export const MoveHistoryPanel: React.FC<MoveHistoryPanelProps> = ({
   onSelectPly,
   pgn,
   fen,
+  analysis,
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copiedField, setCopiedField] = useState<'pgn' | 'fen' | null>(null);
@@ -35,7 +47,13 @@ export const MoveHistoryPanel: React.FC<MoveHistoryPanelProps> = ({
     }
   }, [moves.length, viewIndex]);
 
-  const movePairs: { moveNumber: number; white?: MoveRecord; black?: MoveRecord; wIdx: number; bIdx: number }[] = [];
+  const movePairs: {
+    moveNumber: number;
+    white?: MoveRecord;
+    black?: MoveRecord;
+    wIdx: number;
+    bIdx: number;
+  }[] = [];
   for (let i = 0; i < moves.length; i += 2) {
     movePairs.push({
       moveNumber: Math.floor(i / 2) + 1,
@@ -60,6 +78,22 @@ export const MoveHistoryPanel: React.FC<MoveHistoryPanelProps> = ({
   const canGoBack = moves.length > 0 && activePly >= 0;
   const canGoForward = viewIndex !== null && viewIndex < moves.length - 1;
   const isAtLive = viewIndex === null;
+
+  const renderMoveBadge = (idx: number, isActive: boolean) => {
+    const item = analysis?.moves[idx];
+    if (!item) return null;
+    const badge = BADGE_SYMBOL[item.classification];
+    if (!badge) return null;
+    return (
+      <span
+        className={`ml-1 font-bold ${
+          isActive ? 'text-white/90' : badge.cls
+        }`}
+      >
+        {badge.text}
+      </span>
+    );
+  };
 
   return (
     <div className="flex flex-col rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 overflow-hidden">
@@ -100,7 +134,7 @@ export const MoveHistoryPanel: React.FC<MoveHistoryPanelProps> = ({
 
       <div
         ref={scrollRef}
-        className="h-44 lg:h-52 overflow-y-auto px-2 py-1.5 text-sm font-mono tabular-nums"
+        className="h-44 lg:h-48 overflow-y-auto px-2 py-1.5 text-sm font-mono tabular-nums"
       >
         {movePairs.length === 0 ? (
           <div className="flex h-full items-center justify-center text-xs font-sans text-stone-400 dark:text-stone-500">
@@ -128,7 +162,8 @@ export const MoveHistoryPanel: React.FC<MoveHistoryPanelProps> = ({
                         : 'text-stone-800 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800'
                     }`}
                   >
-                    {pair.white.san}
+                    <span>{pair.white.san}</span>
+                    {renderMoveBadge(pair.wIdx, activePly === pair.wIdx)}
                   </button>
                 )}
                 {pair.black ? (
@@ -143,7 +178,8 @@ export const MoveHistoryPanel: React.FC<MoveHistoryPanelProps> = ({
                         : 'text-stone-800 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800'
                     }`}
                   >
-                    {pair.black.san}
+                    <span>{pair.black.san}</span>
+                    {renderMoveBadge(pair.bIdx, activePly === pair.bIdx)}
                   </button>
                 ) : (
                   <span />

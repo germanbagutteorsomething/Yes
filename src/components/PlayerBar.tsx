@@ -1,4 +1,5 @@
 import React from 'react';
+import { Clock } from 'lucide-react';
 import type { PieceSymbol } from 'chess.js';
 import type { PlayerColor } from '../types/chess';
 import { ChessPieceSvg } from './ChessPieceSvg';
@@ -13,6 +14,21 @@ interface PlayerBarProps {
   isThinking?: boolean;
   isCheck?: boolean;
   isGameOver?: boolean;
+  timeRemainingMs?: number | null;
+}
+
+function formatClock(ms: number): string {
+  const clamped = Math.max(0, ms);
+  if (clamped < 10_000) {
+    const tenths = Math.floor(clamped / 100);
+    const secs = Math.floor(tenths / 10);
+    const dec = tenths % 10;
+    return `0:${String(secs).padStart(2, '0')}.${dec}`;
+  }
+  const totalSecs = Math.ceil(clamped / 1000);
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
+  return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
 export const PlayerBar: React.FC<PlayerBarProps> = ({
@@ -25,6 +41,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   isThinking = false,
   isCheck = false,
   isGameOver = false,
+  timeRemainingMs = null,
 }) => {
   const capturedPieceColor: PlayerColor = color === 'w' ? 'b' : 'w';
 
@@ -40,6 +57,9 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   } else if (isCheck && !isGameOver) {
     statusText = 'In Check';
   }
+
+  const hasTimer = timeRemainingMs !== null && timeRemainingMs !== undefined;
+  const isLowTime = hasTimer && timeRemainingMs <= 15_000 && !isGameOver;
 
   return (
     <div
@@ -96,19 +116,39 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
         </div>
       </div>
 
-      {statusText && (
-        <span
-          className={`text-xs font-medium whitespace-nowrap shrink-0 px-2.5 py-1 rounded-md ${
-            isCheck
-              ? 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800/60'
-              : isThinking
-              ? 'bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-200 border border-stone-200 dark:border-stone-700'
-              : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60'
-          }`}
-        >
-          {statusText}
-        </span>
-      )}
+      <div className="flex items-center gap-2 shrink-0">
+        {statusText && (
+          <span
+            className={`text-xs font-medium whitespace-nowrap shrink-0 px-2.5 py-1 rounded-md ${
+              isCheck
+                ? 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800/60'
+                : isThinking
+                ? 'bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-200 border border-stone-200 dark:border-stone-700'
+                : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60'
+            }`}
+          >
+            {statusText}
+          </span>
+        )}
+
+        {hasTimer && (
+          <div
+            aria-label={`${color === 'w' ? 'White' : 'Black'} clock: ${formatClock(
+              timeRemainingMs
+            )}`}
+            className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-sm font-semibold tabular-nums transition-colors ${
+              isLowTime && isTurn
+                ? 'border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/70 text-red-700 dark:text-red-300'
+                : isTurn && !isGameOver
+                ? 'border-stone-800 dark:border-stone-200 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900'
+                : 'border-stone-200 dark:border-stone-700 bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300'
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5 opacity-75 shrink-0" aria-hidden="true" />
+            <span>{formatClock(timeRemainingMs)}</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

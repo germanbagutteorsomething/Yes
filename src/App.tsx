@@ -15,6 +15,8 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { ChessBoard } from './components/ChessBoard';
+import { EvalBar } from './components/EvalBar';
+import { MatchAnalysisPanel } from './components/MatchAnalysisPanel';
 import { MoveHistoryPanel } from './components/MoveHistoryPanel';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PlayerBar } from './components/PlayerBar';
@@ -22,14 +24,17 @@ import { PWAInstallButton } from './components/PWAInstallButton';
 import { stockfishService } from './engine/stockfishService';
 import {
   STOCKFISH_LEVELS,
+  TIME_CONTROLS,
   type BoardTheme,
   type GameMode,
   type GameResult,
+  type MatchAnalysisResult,
   type MoveRecord,
   type PendingPromotion,
   type PlayerColor,
   type PromotionPiece,
   type SideChoice,
+  type TimeControlId,
 } from './types/chess';
 import { playChessSound } from './utils/sound';
 
@@ -167,6 +172,22 @@ function evaluateGameEnd(chess: Chess): GameResult | null {
   return null;
 }
 
+function hasSufficientMaterialForTimeout(chess: Chess, color: PlayerColor): boolean {
+  let knights = 0;
+  let bishops = 0;
+  for (const row of chess.board()) {
+    for (const cell of row) {
+      if (!cell || cell.color !== color) continue;
+      if (cell.type === 'p' || cell.type === 'r' || cell.type === 'q') {
+        return true;
+      }
+      if (cell.type === 'n') knights += 1;
+      if (cell.type === 'b') bishops += 1;
+    }
+  }
+  return bishops >= 2 || (bishops >= 1 && knights >= 1) || knights >= 3;
+}
+
 function resolveSideChoice(choice: SideChoice): PlayerColor {
   if (choice === 'random') {
     return Math.random() < 0.5 ? 'w' : 'b';
@@ -177,11 +198,13 @@ function resolveSideChoice(choice: SideChoice): PlayerColor {
 export default function App() {
   const chessRef = useRef<Chess>(new Chess());
   const engineAbortRef = useRef<AbortController | null>(null);
+  const analysisAbortRef = useRef<AbortController | null>(null);
 
   const [gameMode, setGameMode] = useState<GameMode>('stockfish');
   const [stockfishLevel, setStockfishLevel] = useState<1 | 2 | 3 | 4 | 5 | 6>(3);
   const [sideChoice, setSideChoice] = useState<SideChoice>('w');
   const [humanColor, setHumanColor] = useState<PlayerColor>('w');
+  const [timeControlId, setTimeControlId] = useState<TimeControlId>('blitz-5');
   const [autoFlipTwoPlayer, setAutoFlipTwoPlayer] = useState<boolean>(false);
   const [flipped, setFlipped] = useState<boolean>(false);
   const [boardTheme, setBoardTheme] = useState<BoardTheme>('tournament');
@@ -198,6 +221,19 @@ export default function App() {
   const [isEngineThinking, setIsEngineThinking] = useState<boolean>(false);
   const [engineError, setEngineError] = useState<string | null>(null);
 
+  const [clocksMs, setClocksMs] = useState<{ w: number; b: number }>({
+    w: 300_000,
+    b: 300_000,
+  });
+
+  const [analysisResult, setAnalysisResult] = useState<MatchAnalysisResult | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [analysisProgress, setAnalysisProgress] = useState<{
+    completed: number;
+    total: number;
+  }>({ completed: 0, total: 0 });
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+
   // Sync dark mode class on <html>
   useEffect(() => {
     const root = document.documentElement;
@@ -212,6 +248,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       engineAbortRef.current?.abort();
+      analysisAbortRef.current?.abort();
       stockfishService.terminate();
     };
   }, []);
@@ -221,22 +258,86 @@ export default function App() {
     [stockfishLevel]
   );
 
+  const currentTimeControl = useMemo(
+    () => TIME_CONTROLS.find((t) => t.id === timeControlId) ?? TIME_CONTROLS[4],
+    [timeControlId]
+  );
+
+  // Active move timer / chess clock tick
+  useEffect(() => {
+    if (currentTimeControl.id === 'none') return;
+    if (gameResult) return;
+    if (moves.length === 0) return;
+
+    let lastTick = performance.now();
+    const interval = window.setInterval(() => {
+      const now = performance.now();
+      const delta = now - lastTick;
+      lastTick = now;
+
+      setClocksMs((prev) => {
+        const nextRemaining = Math.max(0, prev[turn] - delta);
+        if (nextRemaining === 0 && prev[turn] > 0) {
+          // Flag fell! Check FIDE timeout vs insufficient material rule
+          const opponent: PlayerColor = turn === 'w' ? 'b' : 'w';
+          const opponentCanWin = hasSufficientMaterialForTimeout(
+            chessRef.current,
+            opponent
+          );
+
+          engineAbortRef.current?.abort();
+          stockfishService.cancelPending();
+          setIsEngineThinking(false);
+          setPendingPromotion(null);
+
+          if (opponentCanWin) {
+            const winnerName = opponent === 'w' ? 'White' : 'Black';
+            const loserName = turn === 'w' ? 'White' : 'Black';
+            setGameResult({
+              winner: opponent,
+              reason: 'timeout',
+              headline: `${winnerName} wins on Time`,
+              detail: `${loserName}'s move timer expired.`,
+            });
+            playChessSound('gameover', soundEnabled);
+          } else {
+            setGameResult({
+              winner: 'draw',
+              reason: 'timeout',
+              headline: 'Draw by Timeout vs Insufficient Material',
+              detail: 'Timer expired, but the opponent lacks mating material.',
+            });
+            playChessSound('draw', soundEnabled);
+          }
+        }
+        return { ...prev, [turn]: nextRemaining };
+      });
+    }, 100);
+
+    return () => window.clearInterval(interval);
+  }, [currentTimeControl.id, gameResult, moves.length, soundEnabled, turn]);
+
   const startNewGame = useCallback(
     (overrides?: {
       mode?: GameMode;
       side?: SideChoice;
       level?: 1 | 2 | 3 | 4 | 5 | 6;
+      timeControl?: TimeControlId;
     }) => {
       engineAbortRef.current?.abort();
+      analysisAbortRef.current?.abort();
       stockfishService.cancelPending();
 
       const nextMode = overrides?.mode ?? gameMode;
       const nextSide = overrides?.side ?? sideChoice;
+      const nextTcId = overrides?.timeControl ?? timeControlId;
+      const nextTc = TIME_CONTROLS.find((t) => t.id === nextTcId) ?? TIME_CONTROLS[4];
       const resolvedHuman = nextMode === 'stockfish' ? resolveSideChoice(nextSide) : 'w';
 
       if (overrides?.mode !== undefined) setGameMode(overrides.mode);
       if (overrides?.side !== undefined) setSideChoice(overrides.side);
       if (overrides?.level !== undefined) setStockfishLevel(overrides.level);
+      if (overrides?.timeControl !== undefined) setTimeControlId(overrides.timeControl);
 
       chessRef.current = new Chess();
       setHumanColor(resolvedHuman);
@@ -250,8 +351,16 @@ export default function App() {
       setViewIndex(null);
       setIsEngineThinking(false);
       setEngineError(null);
+      setAnalysisResult(null);
+      setIsAnalyzing(false);
+      setAnalysisError(null);
+      setAnalysisProgress({ completed: 0, total: 0 });
+      setClocksMs({
+        w: nextTc.baseSeconds * 1000,
+        b: nextTc.baseSeconds * 1000,
+      });
     },
-    [gameMode, sideChoice]
+    [gameMode, sideChoice, timeControlId]
   );
 
   const syncFromChess = useCallback(
@@ -270,6 +379,28 @@ export default function App() {
 
       if (newMoveRecord) {
         setMoves((prev) => [...prev, newMoveRecord]);
+        setAnalysisResult(null);
+        setAnalysisError(null);
+
+        if (currentTimeControl.id !== 'none' && !result) {
+          setClocksMs((prev) => {
+            if (currentTimeControl.perMove) {
+              return {
+                ...prev,
+                [newMoveRecord.color]: currentTimeControl.baseSeconds * 1000,
+              };
+            }
+            if (currentTimeControl.incrementSeconds > 0) {
+              return {
+                ...prev,
+                [newMoveRecord.color]:
+                  prev[newMoveRecord.color] + currentTimeControl.incrementSeconds * 1000,
+              };
+            }
+            return prev;
+          });
+        }
+
         if (result) {
           playChessSound(result.winner === 'draw' ? 'draw' : 'gameover', soundEnabled);
         } else if (newMoveRecord.isCheck) {
@@ -289,7 +420,7 @@ export default function App() {
         setFlipped(nextTurn === 'b');
       }
     },
-    [autoFlipTwoPlayer, gameMode, soundEnabled]
+    [autoFlipTwoPlayer, currentTimeControl, gameMode, soundEnabled]
   );
 
   const executeMove = useCallback(
@@ -365,6 +496,7 @@ export default function App() {
   useEffect(() => {
     if (gameMode !== 'stockfish') return;
     if (gameResult) return;
+    if (isAnalyzing) return;
     if (turn === humanColor) return;
 
     const controller = new AbortController();
@@ -401,14 +533,63 @@ export default function App() {
       stockfishService.cancelPending();
       setIsEngineThinking(false);
     };
-  }, [gameMode, gameResult, turn, humanColor, moves, currentLevelConfig, executeMove]);
+  }, [gameMode, gameResult, isAnalyzing, turn, humanColor, moves, currentLevelConfig, executeMove]);
+
+  const handleStartAnalysis = useCallback(() => {
+    if (moves.length === 0 || isAnalyzing) return;
+
+    engineAbortRef.current?.abort();
+    analysisAbortRef.current?.abort();
+    stockfishService.cancelPending();
+    setIsEngineThinking(false);
+
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+    setIsAnalyzing(true);
+    setAnalysisError(null);
+    setAnalysisProgress({ completed: 0, total: moves.length + 1 });
+
+    const snapshotMoves = [...moves];
+
+    stockfishService
+      .analyzeMatch(
+        snapshotMoves,
+        (completed, total) => {
+          if (!controller.signal.aborted) {
+            setAnalysisProgress({ completed, total });
+          }
+        },
+        controller.signal
+      )
+      .then((res) => {
+        if (controller.signal.aborted) return;
+        setAnalysisResult(res);
+        setIsAnalyzing(false);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setIsAnalyzing(false);
+        setAnalysisError(
+          err instanceof Error ? err.message : 'Unable to analyze match.'
+        );
+      });
+  }, [isAnalyzing, moves]);
+
+  const handleCancelAnalysis = useCallback(() => {
+    analysisAbortRef.current?.abort();
+    stockfishService.cancelPending();
+    setIsAnalyzing(false);
+  }, []);
 
   const handleUndo = useCallback(() => {
     if (moves.length === 0 || gameResult) return;
 
     engineAbortRef.current?.abort();
+    analysisAbortRef.current?.abort();
     stockfishService.cancelPending();
     setIsEngineThinking(false);
+    setIsAnalyzing(false);
+    setAnalysisResult(null);
     setPendingPromotion(null);
 
     const chess = chessRef.current;
@@ -562,16 +743,36 @@ export default function App() {
   const canInteractWithBoard =
     !isReviewingHistory &&
     !gameResult &&
+    !isAnalyzing &&
     (gameMode === 'two-player' || turn === humanColor);
 
   const canUndo =
     !gameResult &&
+    !isAnalyzing &&
     moves.length > 0 &&
     !(gameMode === 'stockfish' && humanColor === 'b' && moves.length === 1);
 
   const pgnString = useMemo(() => {
     return chessRef.current.pgn();
   }, [fen]);
+
+  const currentDisplayedEval = useMemo(() => {
+    if (!analysisResult) return null;
+    if (viewIndex === -1) return analysisResult.startEval;
+    const idx = viewIndex === null ? moves.length - 1 : viewIndex;
+    if (idx < 0) return analysisResult.startEval;
+    return analysisResult.moves[idx]?.evalAfter ?? analysisResult.startEval;
+  }, [analysisResult, moves.length, viewIndex]);
+
+  const bestMoveArrow = useMemo(() => {
+    if (!currentDisplayedEval?.bestMove || currentDisplayedEval.bestMove.length < 4) {
+      return null;
+    }
+    return {
+      from: currentDisplayedEval.bestMove.slice(0, 2),
+      to: currentDisplayedEval.bestMove.slice(2, 4),
+    };
+  }, [currentDisplayedEval]);
 
   // Top & Bottom PlayerBar assignments based on board orientation
   const topColor: PlayerColor = flipped ? 'w' : 'b';
@@ -691,25 +892,36 @@ export default function App() {
                 }
                 isCheck={isCheck && turn === topColor}
                 isGameOver={Boolean(gameResult)}
+                timeRemainingMs={
+                  currentTimeControl.id !== 'none' ? clocksMs[topColor] : null
+                }
               />
 
-              {/* Chessboard */}
-              <ChessBoard
-                fen={displayFen}
-                flipped={flipped}
-                canInteract={canInteractWithBoard}
-                activeTurn={turn}
-                lastMove={displayLastMove}
-                checkedKingSquare={checkedKingSquare}
-                theme={boardTheme}
-                soundEnabled={soundEnabled}
-                pendingPromotion={pendingPromotion}
-                onAttemptMove={handleAttemptMove}
-                onSelectPromotion={handleSelectPromotion}
-                onCancelPromotion={handleCancelPromotion}
-                isReviewingHistory={isReviewingHistory}
-                onJumpToLive={() => handleSelectHistoryPly(null)}
-              />
+              {/* Chessboard + Optional Stockfish Eval Bar */}
+              <div className="flex items-stretch gap-2">
+                {currentDisplayedEval && (
+                  <EvalBar evaluation={currentDisplayedEval} flipped={flipped} />
+                )}
+                <div className="flex-1 min-w-0">
+                  <ChessBoard
+                    fen={displayFen}
+                    flipped={flipped}
+                    canInteract={canInteractWithBoard}
+                    activeTurn={turn}
+                    lastMove={displayLastMove}
+                    checkedKingSquare={checkedKingSquare}
+                    theme={boardTheme}
+                    soundEnabled={soundEnabled}
+                    pendingPromotion={pendingPromotion}
+                    onAttemptMove={handleAttemptMove}
+                    onSelectPromotion={handleSelectPromotion}
+                    onCancelPromotion={handleCancelPromotion}
+                    isReviewingHistory={isReviewingHistory}
+                    onJumpToLive={() => handleSelectHistoryPly(null)}
+                    bestMoveArrow={bestMoveArrow}
+                  />
+                </div>
+              </div>
 
               {/* Bottom Player Bar */}
               <PlayerBar
@@ -732,6 +944,9 @@ export default function App() {
                 }
                 isCheck={isCheck && turn === bottomColor}
                 isGameOver={Boolean(gameResult)}
+                timeRemainingMs={
+                  currentTimeControl.id !== 'none' ? clocksMs[bottomColor] : null
+                }
               />
 
               {/* Engine Error Banner (if any) */}
@@ -921,6 +1136,34 @@ export default function App() {
                 </div>
               )}
 
+              {/* Move Timer / Clock Preset */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                    Move Timer
+                  </span>
+                  <span className="font-mono text-xs text-stone-500 dark:text-stone-400">
+                    {currentTimeControl.label}
+                  </span>
+                </div>
+                <div className="grid grid-cols-4 gap-1">
+                  {TIME_CONTROLS.map((tc) => (
+                    <button
+                      key={tc.id}
+                      type="button"
+                      onClick={() => startNewGame({ timeControl: tc.id })}
+                      className={`rounded-md border px-1.5 py-1.5 font-mono text-[11px] font-medium transition-colors whitespace-nowrap ${
+                        timeControlId === tc.id
+                          ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/70 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
+                          : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+                      }`}
+                    >
+                      {tc.shortLabel}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* Quick Game Controls */}
               <div className="grid grid-cols-3 gap-2 pt-1">
                 <button
@@ -983,6 +1226,21 @@ export default function App() {
               onSelectPly={handleSelectHistoryPly}
               pgn={pgnString}
               fen={displayFen}
+              analysis={analysisResult}
+            />
+
+            {/* Stockfish Match Analysis */}
+            <MatchAnalysisPanel
+              hasMoves={moves.length > 0}
+              isAnalyzing={isAnalyzing}
+              progress={analysisProgress}
+              analysis={analysisResult}
+              error={analysisError}
+              inspectedPlyIndex={viewIndex}
+              totalMoves={moves.length}
+              onStartAnalysis={handleStartAnalysis}
+              onCancelAnalysis={handleCancelAnalysis}
+              onSelectPly={handleSelectHistoryPly}
             />
 
             {/* Board Appearance */}
@@ -1038,7 +1296,7 @@ export default function App() {
       </main>
 
       <footer className="border-t border-stone-200/80 dark:border-stone-800/80 py-3 px-4 text-center text-xs text-stone-500 dark:text-stone-400">
-        Made by Anas Albel &amp; Messaoud
+        Made by Anas Messaoud
       </footer>
 
       <OfflineIndicator />

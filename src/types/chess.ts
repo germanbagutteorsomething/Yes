@@ -24,6 +24,41 @@ export const STOCKFISH_LEVELS: StockfishLevelConfig[] = [
   { level: 6, name: 'Grandmaster', eloLabel: 'Max', skillLevel: 20, depth: 16, movetime: 1200 },
 ];
 
+export type TimeControlId =
+  | 'none'
+  | 'move-30'
+  | 'bullet-1'
+  | 'blitz-3-2'
+  | 'blitz-5'
+  | 'rapid-10'
+  | 'rapid-15-10';
+
+export interface TimeControlConfig {
+  id: TimeControlId;
+  label: string;
+  shortLabel: string;
+  baseSeconds: number;
+  incrementSeconds: number;
+  perMove?: boolean;
+}
+
+export const TIME_CONTROLS: TimeControlConfig[] = [
+  { id: 'none', label: 'No Timer', shortLabel: 'Off', baseSeconds: 0, incrementSeconds: 0 },
+  {
+    id: 'move-30',
+    label: '30s / Move',
+    shortLabel: '30s/mv',
+    baseSeconds: 30,
+    incrementSeconds: 0,
+    perMove: true,
+  },
+  { id: 'bullet-1', label: '1 min', shortLabel: '1+0', baseSeconds: 60, incrementSeconds: 0 },
+  { id: 'blitz-3-2', label: '3 | 2', shortLabel: '3+2', baseSeconds: 180, incrementSeconds: 2 },
+  { id: 'blitz-5', label: '5 min', shortLabel: '5+0', baseSeconds: 300, incrementSeconds: 0 },
+  { id: 'rapid-10', label: '10 min', shortLabel: '10+0', baseSeconds: 600, incrementSeconds: 0 },
+  { id: 'rapid-15-10', label: '15 | 10', shortLabel: '15+10', baseSeconds: 900, incrementSeconds: 10 },
+];
+
 export type GameEndReason =
   | 'checkmate'
   | 'stalemate'
@@ -31,7 +66,8 @@ export type GameEndReason =
   | 'insufficient'
   | 'fifty-move'
   | 'resignation'
-  | 'agreement';
+  | 'agreement'
+  | 'timeout';
 
 export interface GameResult {
   winner: PlayerColor | 'draw';
@@ -59,4 +95,51 @@ export interface MoveRecord {
   isCapture: boolean;
   isCastle: boolean;
   isPromotion?: boolean;
+}
+
+export type MoveClassification =
+  | 'best'
+  | 'excellent'
+  | 'good'
+  | 'inaccuracy'
+  | 'mistake'
+  | 'blunder';
+
+export interface PositionEval {
+  /** Centipawns from White's perspective (+ favors White, - favors Black). */
+  cp: number;
+  /** Mate in N moves from White's perspective (+ White mates, - Black mates). */
+  mate: number | null;
+  /** Best UCI move in this position (e.g. "e2e4"). */
+  bestMove: string;
+}
+
+export interface MoveAnalysis {
+  ply: number; // 1-indexed ply matching MoveRecord.ply
+  san: string;
+  color: PlayerColor;
+  playedLan: string;
+  bestLan: string;
+  evalBefore: PositionEval;
+  evalAfter: PositionEval;
+  cpLoss: number;
+  classification: MoveClassification;
+}
+
+export interface SideAccuracySummary {
+  accuracy: number;
+  acpl: number;
+  best: number;
+  excellent: number;
+  good: number;
+  inaccuracy: number;
+  mistake: number;
+  blunder: number;
+}
+
+export interface MatchAnalysisResult {
+  moves: MoveAnalysis[];
+  white: SideAccuracySummary;
+  black: SideAccuracySummary;
+  startEval: PositionEval;
 }
