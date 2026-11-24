@@ -263,14 +263,18 @@ function selectSolidCandidate(
   return stockfishService.parseUciMove(best.uci);
 }
 
+const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
 export async function getBotMove(
   fen: string,
   lanHistory: string[],
   bot: BotProfile,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  startFen?: string
 ): Promise<EngineBestMove> {
   const startedAt = performance.now();
   const chess = new Chess(fen);
+  const isStandardStart = !startFen || startFen === INITIAL_FEN;
 
   let chosenMove: EngineBestMove | null = null;
 
@@ -279,9 +283,9 @@ export async function getBotMove(
   } else if (bot.style === 'greedy') {
     chosenMove = pickGreedyMove(chess);
   } else {
-    // Check opening book for personality bots
+    // Check opening book only from standard initial position
     const useBookChance = bot.id === 'sam' ? 0.8 : 0.75;
-    if (Math.random() < useBookChance) {
+    if (isStandardStart && Math.random() < useBookChance) {
       chosenMove = tryBookMove(chess, lanHistory, bot.id);
     }
 
@@ -294,6 +298,7 @@ export async function getBotMove(
             depth: bot.depth,
             movetime: bot.movetime,
             multiPv: 3,
+            startFen,
           },
           signal
         );
@@ -306,12 +311,13 @@ export async function getBotMove(
             depth: bot.depth,
             movetime: bot.movetime,
             multiPv: 3,
+            startFen,
           },
           signal
         );
         chosenMove = selectSolidCandidate(chess, candidates);
       } else {
-        chosenMove = await stockfishService.getBestMove(lanHistory, bot, signal);
+        chosenMove = await stockfishService.getBestMove(lanHistory, bot, signal, startFen);
       }
     }
   }

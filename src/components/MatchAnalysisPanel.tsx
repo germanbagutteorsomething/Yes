@@ -36,6 +36,12 @@ const CLASSIFICATION_STYLES: Record<
     badgeBgClass: string;
   }
 > = {
+  book: {
+    label: 'Book',
+    symbol: 'B',
+    colorClass: 'text-amber-700 dark:text-amber-400',
+    badgeBgClass: 'bg-amber-700 text-white',
+  },
   brilliant: {
     label: 'Brilliant',
     symbol: '!!',
@@ -87,7 +93,7 @@ const CLASSIFICATION_STYLES: Record<
 };
 
 const BREAKDOWN_ROWS: {
-  key: 'brilliant' | 'great' | 'best' | 'inaccuracy' | 'mistake' | 'blunder';
+  key: 'book' | 'brilliant' | 'great' | 'best' | 'inaccuracy' | 'mistake' | 'blunder';
   label: string;
   symbol: string;
   dotColor: string;
@@ -113,6 +119,13 @@ const BREAKDOWN_ROWS: {
     symbol: '★',
     dotColor: 'bg-emerald-600 text-white',
     textColor: 'text-emerald-700 dark:text-emerald-400',
+  },
+  {
+    key: 'book',
+    label: 'Book',
+    symbol: 'B',
+    dotColor: 'bg-amber-700 text-white',
+    textColor: 'text-amber-700 dark:text-amber-400',
   },
   {
     key: 'inaccuracy',

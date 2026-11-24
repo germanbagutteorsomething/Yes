@@ -181,8 +181,13 @@ function classifyMove(
   cpLoss: number,
   evalBefore: PositionEval,
   evalAfter: PositionEval,
-  moverColor: 'w' | 'b'
+  moverColor: 'w' | 'b',
+  isOpeningBookMove = false
 ): MoveClassification {
+  if (isOpeningBookMove && cpLoss <= 32) {
+    return 'book';
+  }
+
   const moverSign = moverColor === 'w' ? 1 : -1;
   const beforeMover = scoreToCpEquivalent(evalBefore) * moverSign;
   const afterMover = scoreToCpEquivalent(evalAfter) * moverSign;
@@ -237,6 +242,7 @@ function classifyMove(
 
 function computeSideSummary(analyses: MoveAnalysis[]): SideAccuracySummary {
   const counts = {
+    book: 0,
     brilliant: 0,
     great: 0,
     best: 0,
@@ -416,7 +422,13 @@ class StockfishEngineService {
 
   private async runSearch(
     lanHistory: string[],
-    options: { skillLevel: number; depth?: number; movetime: number; multiPv?: number },
+    options: {
+      skillLevel: number;
+      depth?: number;
+      movetime: number;
+      multiPv?: number;
+      startFen?: string;
+    },
     signal?: AbortSignal
   ): Promise<{
     bestMove: string;
@@ -441,6 +453,12 @@ class StockfishEngineService {
     worker.postMessage('stop');
     this.lastInfoScore = { cp: 0, mate: null };
     this.multiPvMap.clear();
+
+    const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const basePosition =
+      options.startFen && options.startFen !== INITIAL_FEN
+        ? `position fen ${options.startFen}`
+        : 'position startpos';
 
     return new Promise((resolve, reject) => {
       if (signal?.aborted || requestId !== this.activeRequestId) {
@@ -472,9 +490,9 @@ class StockfishEngineService {
       worker.postMessage(`setoption name MultiPV value ${options.multiPv ?? 1}`);
       worker.postMessage(`setoption name Skill Level value ${options.skillLevel}`);
       if (lanHistory.length > 0) {
-        worker.postMessage(`position startpos moves ${lanHistory.join(' ')}`);
+        worker.postMessage(`${basePosition} moves ${lanHistory.join(' ')}`);
       } else {
-        worker.postMessage('position startpos');
+        worker.postMessage(basePosition);
       }
 
       const goCmd = options.depth
@@ -487,7 +505,8 @@ class StockfishEngineService {
   public async getBestMove(
     lanHistory: string[],
     levelConfig: Pick<StockfishLevelConfig, 'skillLevel' | 'depth' | 'movetime'>,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    startFen?: string
   ): Promise<EngineBestMove> {
     const res = await this.runSearch(
       lanHistory,
@@ -496,6 +515,27 @@ class StockfishEngineService {
         depth: levelConfig.depth,
         movetime: levelConfig.movetime,
         multiPv: 1,
+        startFen,
+      },
+      signal
+    );
+
+    return this.parseUciMove(res.bestMove);
+  }
+
+  public async getHintMove(
+    lanHistory: string[],
+    startFen?: string,
+    signal?: AbortSignal
+  ): Promise<EngineBestMove> {
+    const res = await this.runSearch(
+      lanHistory,
+      {
+        skillLevel: 20,
+        depth: 12,
+        movetime: 320,
+        multiPv: 1,
+        startFen,
       },
       signal
     );
@@ -505,7 +545,13 @@ class StockfishEngineService {
 
   public async getTopCandidates(
     lanHistory: string[],
-    options: { skillLevel: number; depth: number; movetime: number; multiPv?: number },
+    options: {
+      skillLevel: number;
+      depth: number;
+      movetime: number;
+      multiPv?: number;
+      startFen?: string;
+    },
     signal?: AbortSignal
   ): Promise<CandidateMove[]> {
     const res = await this.runSearch(
@@ -515,6 +561,7 @@ class StockfishEngineService {
         depth: options.depth,
         movetime: options.movetime,
         multiPv: options.multiPv ?? 3,
+        startFen: options.startFen,
       },
       signal
     );
@@ -539,11 +586,12 @@ class StockfishEngineService {
     lanHistory: string[],
     sideToMove: 'w' | 'b',
     movetime = 120,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    startFen?: string
   ): Promise<PositionEval> {
     const res = await this.runSearch(
       lanHistory,
-      { skillLevel: 20, depth: 12, movetime, multiPv: 2 },
+      { skillLevel: 20, depth: 12, movetime, multiPv: 2, startFen },
       signal
     );
 
@@ -562,8 +610,14 @@ class StockfishEngineService {
   public async analyzeMatch(
     moves: MoveRecord[],
     onProgress: (completed: number, total: number) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options?: { startFen?: string; bookPlies?: number }
   ): Promise<MatchAnalysisResult> {
+    const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const startFen = options?.startFen || INITIAL_FEN;
+    const bookPlies = options?.bookPlies ?? 0;
+    const initialTurn: 'w' | 'b' = startFen.split(' ')[1] === 'b' ? 'b' : 'w';
+
     const totalPositions = moves.length + 1;
     const evals: PositionEval[] = [];
 
@@ -571,7 +625,8 @@ class StockfishEngineService {
       if (signal?.aborted) throw new Error('Analysis cancelled');
 
       const lanSlice = moves.slice(0, i).map((m) => m.lan);
-      const sideToMove: 'w' | 'b' = i % 2 === 0 ? 'w' : 'b';
+      const sideToMove: 'w' | 'b' =
+        i === 0 ? initialTurn : moves[i - 1].color === 'w' ? 'b' : 'w';
 
       if (i > 0 && moves[i - 1].isCheckmate) {
         const winnerSign = moves[i - 1].color === 'w' ? 1 : -1;
@@ -582,7 +637,7 @@ class StockfishEngineService {
         });
       } else {
         try {
-          const ev = await this.evaluatePosition(lanSlice, sideToMove, 115, signal);
+          const ev = await this.evaluatePosition(lanSlice, sideToMove, 115, signal, startFen);
           evals.push(ev);
         } catch (err) {
           if (signal?.aborted) throw err;
@@ -593,11 +648,10 @@ class StockfishEngineService {
       onProgress(i + 1, totalPositions);
     }
 
-    const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     const moveAnalyses: MoveAnalysis[] = [];
     for (let i = 0; i < moves.length; i++) {
       const m = moves[i];
-      const fenBefore = i === 0 ? INITIAL_FEN : moves[i - 1].fen;
+      const fenBefore = i === 0 ? startFen : moves[i - 1].fen;
       const evalBefore = evals[i];
       const evalAfter = evals[i + 1];
 
@@ -606,6 +660,8 @@ class StockfishEngineService {
       const afterMover = scoreToCpEquivalent(evalAfter) * moverSign;
       const cpLoss = Math.max(0, Math.round(beforeMover - afterMover));
 
+      const isBook = startFen === INITIAL_FEN && i < bookPlies;
+
       const classification = classifyMove(
         fenBefore,
         m.lan,
@@ -613,7 +669,8 @@ class StockfishEngineService {
         cpLoss,
         evalBefore,
         evalAfter,
-        m.color
+        m.color,
+        isBook
       );
 
       moveAnalyses.push({

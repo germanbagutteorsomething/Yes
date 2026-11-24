@@ -1,10 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type Square, type PieceSymbol } from 'chess.js';
 import type {
+  BoardAnnotationColor,
+  BoardArrow,
+  BoardHighlight,
   BoardTheme,
   MoveClassification,
   PendingPromotion,
+  PieceSet,
   PlayerColor,
+  Premove,
   PromotionPiece,
 } from '../types/chess';
 import { playChessSound } from '../utils/sound';
@@ -15,9 +20,11 @@ interface ChessBoardProps {
   flipped: boolean;
   canInteract: boolean;
   activeTurn: PlayerColor;
+  humanColor?: PlayerColor;
   lastMove: { from: string; to: string; isCapture?: boolean } | null;
   checkedKingSquare: Square | null;
   theme: BoardTheme;
+  pieceSet?: PieceSet;
   soundEnabled: boolean;
   pendingPromotion: PendingPromotion | null;
   onAttemptMove: (from: Square, to: Square) => void;
@@ -26,7 +33,18 @@ interface ChessBoardProps {
   isReviewingHistory: boolean;
   onJumpToLive: () => void;
   bestMoveArrow?: { from: string; to: string } | null;
+  hintArrow?: { from: string; to: string } | null;
   moveMarker?: { square: Square; classification: MoveClassification } | null;
+  // Premoves
+  allowPremove?: boolean;
+  premove?: Premove | null;
+  onSetPremove?: (premove: Premove | null) => void;
+  // Right-click annotations
+  arrows?: BoardArrow[];
+  highlights?: BoardHighlight[];
+  onToggleArrow?: (arrow: BoardArrow) => void;
+  onToggleHighlight?: (highlight: BoardHighlight) => void;
+  onClearAnnotations?: () => void;
 }
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const;
@@ -73,6 +91,28 @@ const THEME_PALETTES: Record<
   },
 };
 
+const ANNOTATION_COLORS: Record<
+  BoardAnnotationColor,
+  { arrow: string; highlight: string }
+> = {
+  emerald: {
+    arrow: 'rgba(16, 185, 129, 0.85)',
+    highlight: 'rgba(16, 185, 129, 0.42)',
+  },
+  red: {
+    arrow: 'rgba(239, 68, 68, 0.85)',
+    highlight: 'rgba(239, 68, 68, 0.44)',
+  },
+  amber: {
+    arrow: 'rgba(245, 158, 11, 0.88)',
+    highlight: 'rgba(245, 158, 11, 0.44)',
+  },
+  sky: {
+    arrow: 'rgba(14, 165, 233, 0.86)',
+    highlight: 'rgba(14, 165, 233, 0.42)',
+  },
+};
+
 type PieceMotion = {
   xPct: number;
   yPct: number;
@@ -84,6 +124,11 @@ const MOVE_MARKER_META: Record<
   MoveClassification,
   { symbol: string; title: string; className: string }
 > = {
+  book: {
+    symbol: 'B',
+    title: 'Opening Book Move',
+    className: 'bg-amber-700 text-white ring-white',
+  },
   brilliant: {
     symbol: '!!',
     title: 'Brilliant Move',
@@ -126,14 +171,91 @@ const MOVE_MARKER_META: Record<
   },
 };
 
+function getAnnotationColorFromEvent(e: {
+  shiftKey: boolean;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+}): BoardAnnotationColor {
+  if (e.shiftKey) return 'red';
+  if (e.altKey) return 'amber';
+  if (e.ctrlKey || e.metaKey) return 'sky';
+  return 'emerald';
+}
+
+function getPseudoPremoveSquares(
+  from: Square,
+  type: PieceSymbol,
+  color: PlayerColor
+): Set<Square> {
+  const targets = new Set<Square>();
+  const f0 = FILES.indexOf(from[0] as (typeof FILES)[number]);
+  const r0 = RANKS.indexOf(from[1] as (typeof RANKS)[number]);
+  if (f0 === -1 || r0 === -1) return targets;
+
+  const add = (f: number, r: number) => {
+    if (f >= 0 && f < 8 && r >= 0 && r < 8) {
+      targets.add(`${FILES[f]}${RANKS[r]}` as Square);
+    }
+  };
+
+  switch (type) {
+    case 'p': {
+      const dir = color === 'w' ? -1 : 1; // RANKS[0] is '8', RANKS[7] is '1'
+      add(f0, r0 + dir);
+      add(f0 - 1, r0 + dir);
+      add(f0 + 1, r0 + dir);
+      if ((color === 'w' && r0 === 6) || (color === 'b' && r0 === 1)) {
+        add(f0, r0 + dir * 2);
+      }
+      break;
+    }
+    case 'n': {
+      const jumps = [
+        [1, 2], [2, 1], [-1, 2], [-2, 1],
+        [1, -2], [2, -1], [-1, -2], [-2, -1],
+      ];
+      for (const [df, dr] of jumps) add(f0 + df, r0 + dr);
+      break;
+    }
+    case 'k': {
+      for (let df = -1; df <= 1; df++) {
+        for (let dr = -1; dr <= 1; dr++) {
+          if (df !== 0 || dr !== 0) add(f0 + df, r0 + dr);
+        }
+      }
+      add(f0 + 2, r0);
+      add(f0 - 2, r0);
+      break;
+    }
+    case 'r':
+    case 'b':
+    case 'q': {
+      const dirs: [number, number][] = [];
+      if (type === 'r' || type === 'q') dirs.push([1, 0], [-1, 0], [0, 1], [0, -1]);
+      if (type === 'b' || type === 'q') dirs.push([1, 1], [1, -1], [-1, 1], [-1, -1]);
+      for (const [df, dr] of dirs) {
+        for (let step = 1; step < 8; step++) {
+          add(f0 + df * step, r0 + dr * step);
+        }
+      }
+      break;
+    }
+  }
+  targets.delete(from);
+  return targets;
+}
+
 export const ChessBoard: React.FC<ChessBoardProps> = ({
   fen,
   flipped,
   canInteract,
   activeTurn,
+  humanColor,
   lastMove,
   checkedKingSquare,
   theme,
+  pieceSet = 'classic',
   soundEnabled,
   pendingPromotion,
   onAttemptMove,
@@ -142,25 +264,42 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
   isReviewingHistory,
   onJumpToLive,
   bestMoveArrow = null,
+  hintArrow = null,
   moveMarker = null,
+  allowPremove = false,
+  premove = null,
+  onSetPremove,
+  arrows = [],
+  highlights = [],
+  onToggleArrow,
+  onToggleHighlight,
+  onClearAnnotations,
 }) => {
   const boardRef = useRef<HTMLDivElement>(null);
   const lastDraggedMoveRef = useRef<string | null>(null);
   const prevFenRef = useRef<string>(fen);
 
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
+  const [premoveSelected, setPremoveSelected] = useState<Square | null>(null);
   const [hoverSquare, setHoverSquare] = useState<Square | null>(null);
   const [animCounter, setAnimCounter] = useState<number>(0);
+
   const [dragState, setDragState] = useState<{
     from: Square;
     type: PieceSymbol;
     color: PlayerColor;
+    isPremoveDrag: boolean;
     startX: number;
     startY: number;
     currentX: number;
     currentY: number;
     isDragging: boolean;
     squareSize: number;
+  } | null>(null);
+
+  const [rightDragOrigin, setRightDragOrigin] = useState<{
+    from: Square;
+    color: BoardAnnotationColor;
   } | null>(null);
 
   const palette = THEME_PALETTES[theme];
@@ -175,9 +314,9 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     return instance;
   }, [fen]);
 
-  // Clear selection and trigger fresh animation key whenever board FEN changes
   useEffect(() => {
     setSelectedSquare(null);
+    setPremoveSelected(null);
     setDragState(null);
     setHoverSquare(null);
     if (prevFenRef.current !== fen) {
@@ -187,15 +326,17 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
   }, [fen]);
 
   useEffect(() => {
-    if (!canInteract) {
+    if (!canInteract && !allowPremove) {
       setSelectedSquare(null);
+      setPremoveSelected(null);
       setDragState(null);
       setHoverSquare(null);
     }
-  }, [canInteract]);
+  }, [allowPremove, canInteract]);
 
   const legalTargets = useMemo(() => {
-    const activeSquare = dragState?.from ?? selectedSquare;
+    const activeSquare =
+      dragState && !dragState.isPremoveDrag ? dragState.from : selectedSquare;
     if (!canInteract || !activeSquare) return new Map<Square, boolean>();
     const moves = gameAtFen.moves({ square: activeSquare, verbose: true });
     const map = new Map<Square, boolean>();
@@ -204,12 +345,21 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
       map.set(m.to, targetHasPiece);
     }
     return map;
-  }, [canInteract, dragState?.from, selectedSquare, gameAtFen]);
+  }, [canInteract, dragState, selectedSquare, gameAtFen]);
+
+  const premoveTargets = useMemo(() => {
+    if (!allowPremove || canInteract) return new Set<Square>();
+    const src =
+      dragState?.isPremoveDrag ? dragState.from : premoveSelected;
+    if (!src) return new Set<Square>();
+    const p = gameAtFen.get(src);
+    if (!p) return new Set<Square>();
+    return getPseudoPremoveSquares(src, p.type, p.color);
+  }, [allowPremove, canInteract, dragState, premoveSelected, gameAtFen]);
 
   const displayFiles = useMemo(() => (flipped ? [...FILES].reverse() : [...FILES]), [flipped]);
   const displayRanks = useMemo(() => (flipped ? [...RANKS].reverse() : [...RANKS]), [flipped]);
 
-  // Compute compositor-only slide offsets for the most recent move (including castling rook!)
   const pieceMotions = useMemo(() => {
     const map = new Map<Square, PieceMotion>();
     if (!lastMove || animCounter === 0) return map;
@@ -242,14 +392,12 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
       key: `${animCounter}-${toSq}`,
     });
 
-    // Detect castling so the rook slides smoothly alongside the king
     const landedPiece = gameAtFen.get(toSq);
     if (landedPiece?.type === 'k') {
       const fileDelta = FILES.indexOf(toFile) - FILES.indexOf(fromFile);
       if (Math.abs(fileDelta) === 2) {
         const rookFromFile: (typeof FILES)[number] = fileDelta > 0 ? 'h' : 'a';
         const rookToFile: (typeof FILES)[number] = fileDelta > 0 ? 'f' : 'd';
-        const rookFromSq = `${rookFromFile}${toRank}` as Square;
         const rookToSq = `${rookToFile}${toRank}` as Square;
         const rFromCol = displayFiles.indexOf(rookFromFile);
         const rToCol = displayFiles.indexOf(rookToFile);
@@ -288,7 +436,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     [displayFiles, displayRanks]
   );
 
-  // Global pointer listeners during drag
+  // Global pointer listeners during left drag
   useEffect(() => {
     if (!dragState) return;
 
@@ -316,7 +464,41 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     const handlePointerUp = (e: PointerEvent) => {
       const target = getSquareFromPoint(e.clientX, e.clientY);
 
-      if (dragState.isDragging) {
+      if (dragState.isPremoveDrag) {
+        if (dragState.isDragging) {
+          if (target && target !== dragState.from && premoveTargets.has(target)) {
+            const promo =
+              dragState.type === 'p' && (target[1] === '8' || target[1] === '1')
+                ? 'q'
+                : undefined;
+            onSetPremove?.({ from: dragState.from, to: target, promotion: promo });
+            setPremoveSelected(null);
+          } else if (target === dragState.from) {
+            setPremoveSelected(dragState.from);
+          } else {
+            setPremoveSelected(null);
+          }
+        } else {
+          if (
+            premoveSelected &&
+            premoveSelected !== dragState.from &&
+            premoveTargets.has(dragState.from)
+          ) {
+            const srcPiece = gameAtFen.get(premoveSelected);
+            const promo =
+              srcPiece?.type === 'p' && (dragState.from[1] === '8' || dragState.from[1] === '1')
+                ? 'q'
+                : undefined;
+            onSetPremove?.({ from: premoveSelected, to: dragState.from, promotion: promo });
+            setPremoveSelected(null);
+          } else if (premoveSelected === dragState.from) {
+            setPremoveSelected(null);
+          } else {
+            playChessSound('select', soundEnabled);
+            setPremoveSelected(dragState.from);
+          }
+        }
+      } else if (dragState.isDragging) {
         if (target && target !== dragState.from && legalTargets.has(target)) {
           lastDraggedMoveRef.current = `${dragState.from}-${target}`;
           onAttemptMove(dragState.from, target);
@@ -330,7 +512,6 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
           setSelectedSquare(null);
         }
       } else {
-        // Treat as a click/tap
         if (selectedSquare && selectedSquare !== dragState.from && legalTargets.has(dragState.from)) {
           onAttemptMove(selectedSquare, dragState.from);
           setSelectedSquare(null);
@@ -355,9 +536,47 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerUp);
     };
-  }, [dragState, getSquareFromPoint, legalTargets, onAttemptMove, selectedSquare, soundEnabled]);
+  }, [
+    dragState,
+    gameAtFen,
+    getSquareFromPoint,
+    legalTargets,
+    onAttemptMove,
+    onSetPremove,
+    premoveSelected,
+    premoveTargets,
+    selectedSquare,
+    soundEnabled,
+  ]);
 
-  // Keyboard shortcut support for promotion modal
+  // Global pointerup for right-click annotations (arrows & square highlights)
+  useEffect(() => {
+    if (!rightDragOrigin) return;
+
+    const handleRightUp = (e: PointerEvent) => {
+      const target = getSquareFromPoint(e.clientX, e.clientY);
+      if (target) {
+        if (target === rightDragOrigin.from) {
+          onToggleHighlight?.({ square: target, color: rightDragOrigin.color });
+        } else {
+          onToggleArrow?.({
+            from: rightDragOrigin.from,
+            to: target,
+            color: rightDragOrigin.color,
+          });
+        }
+      }
+      setRightDragOrigin(null);
+    };
+
+    window.addEventListener('pointerup', handleRightUp);
+    window.addEventListener('pointercancel', handleRightUp);
+    return () => {
+      window.removeEventListener('pointerup', handleRightUp);
+      window.removeEventListener('pointercancel', handleRightUp);
+    };
+  }, [getSquareFromPoint, onToggleArrow, onToggleHighlight, rightDragOrigin]);
+
   useEffect(() => {
     if (!pendingPromotion) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -376,12 +595,69 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     e: React.PointerEvent<HTMLButtonElement>,
     sq: Square
   ) => {
-    if (!canInteract || pendingPromotion) return;
+    // Right click: cancel premove or start annotation arrow/highlight
+    if (e.button === 2) {
+      e.preventDefault();
+      if (premove) {
+        onSetPremove?.(null);
+        setPremoveSelected(null);
+        return;
+      }
+      setRightDragOrigin({
+        from: sq,
+        color: getAnnotationColorFromEvent(e),
+      });
+      return;
+    }
+
     if (e.button !== 0 && e.pointerType === 'mouse') return;
+    onClearAnnotations?.();
+
+    if (pendingPromotion) return;
 
     const piece = gameAtFen.get(sq);
 
-    // If a piece is already selected and user clicks a legal destination (including capture!)
+    // Premove flow when waiting on AI's turn
+    if (!canInteract && allowPremove) {
+      const targetColor = humanColor ?? (activeTurn === 'w' ? 'b' : 'w');
+
+      if (premoveSelected && premoveTargets.has(sq)) {
+        e.preventDefault();
+        const srcPiece = gameAtFen.get(premoveSelected);
+        const promo =
+          srcPiece?.type === 'p' && (sq[1] === '8' || sq[1] === '1')
+            ? 'q'
+            : undefined;
+        onSetPremove?.({ from: premoveSelected, to: sq, promotion: promo });
+        setPremoveSelected(null);
+        return;
+      }
+
+      if (piece && piece.color === targetColor) {
+        e.preventDefault();
+        const boardWidth = boardRef.current?.getBoundingClientRect().width ?? 480;
+        setDragState({
+          from: sq,
+          type: piece.type,
+          color: piece.color,
+          isPremoveDrag: true,
+          startX: e.clientX,
+          startY: e.clientY,
+          currentX: e.clientX,
+          currentY: e.clientY,
+          isDragging: false,
+          squareSize: boardWidth / 8,
+        });
+        return;
+      }
+
+      setPremoveSelected(null);
+      if (premove) onSetPremove?.(null);
+      return;
+    }
+
+    if (!canInteract) return;
+
     if (selectedSquare && legalTargets.has(sq)) {
       e.preventDefault();
       onAttemptMove(selectedSquare, sq);
@@ -389,7 +665,6 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
       return;
     }
 
-    // If clicking a friendly piece of the active turn, begin potential drag or selection
     if (piece && piece.color === activeTurn) {
       e.preventDefault();
       const boardWidth = boardRef.current?.getBoundingClientRect().width ?? 480;
@@ -397,6 +672,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
         from: sq,
         type: piece.type,
         color: piece.color,
+        isPremoveDrag: false,
         startX: e.clientX,
         startY: e.clientY,
         currentX: e.clientX,
@@ -407,12 +683,67 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
       return;
     }
 
-    // Clicking an illegal destination while a piece is selected gives gentle feedback
     if (selectedSquare && selectedSquare !== sq) {
       playChessSound('illegal', soundEnabled);
     }
     setSelectedSquare(null);
   };
+
+  const renderSvgArrow = (
+    from: string,
+    to: string,
+    strokeColor: string,
+    headColor: string,
+    key: string
+  ) => {
+    const fromFile = from[0] as (typeof FILES)[number];
+    const fromRank = from[1] as (typeof RANKS)[number];
+    const toFile = to[0] as (typeof FILES)[number];
+    const toRank = to[1] as (typeof RANKS)[number];
+
+    const fromCol = displayFiles.indexOf(fromFile);
+    const fromRow = displayRanks.indexOf(fromRank);
+    const toCol = displayFiles.indexOf(toFile);
+    const toRow = displayRanks.indexOf(toRank);
+
+    if (fromCol === -1 || fromRow === -1 || toCol === -1 || toRow === -1) {
+      return null;
+    }
+
+    const x1 = fromCol * 100 + 50;
+    const y1 = fromRow * 100 + 50;
+    const x2 = toCol * 100 + 50;
+    const y2 = toRow * 100 + 50;
+
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const headLen = 26;
+    const endX = x2 - Math.cos(angle) * 14;
+    const endY = y2 - Math.sin(angle) * 14;
+    const leftX = x2 - Math.cos(angle - Math.PI / 6) * headLen;
+    const leftY = y2 - Math.sin(angle - Math.PI / 6) * headLen;
+    const rightX = x2 - Math.cos(angle + Math.PI / 6) * headLen;
+    const rightY = y2 - Math.sin(angle + Math.PI / 6) * headLen;
+
+    return (
+      <g key={key}>
+        <line
+          x1={x1}
+          y1={y1}
+          x2={endX}
+          y2={endY}
+          stroke={strokeColor}
+          strokeWidth="15"
+          strokeLinecap="round"
+        />
+        <polygon
+          points={`${x2},${y2} ${leftX},${leftY} ${rightX},${rightY}`}
+          fill={headColor}
+        />
+      </g>
+    );
+  };
+
+  const hasSvgArrows = Boolean(bestMoveArrow || hintArrow || arrows.length > 0);
 
   return (
     <div className="relative w-full select-none">
@@ -420,6 +751,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
         ref={boardRef}
         role="grid"
         aria-label="Chessboard"
+        onContextMenu={(e) => e.preventDefault()}
         className="relative aspect-square w-full overflow-hidden rounded-xl border border-stone-300 dark:border-stone-700 shadow-sm touch-none"
       >
         <div className="grid h-full w-full grid-cols-8 grid-rows-8">
@@ -431,18 +763,24 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
               const isLight = (fileIdx + rankNum) % 2 === 1;
               const piece = gameAtFen.get(sq);
 
-              const isSelected = selectedSquare === sq;
+              const isSelected = selectedSquare === sq || premoveSelected === sq;
               const isLastMove =
                 lastMove !== null && (lastMove.from === sq || lastMove.to === sq);
+              const isPremoveSq =
+                premove !== null && (premove.from === sq || premove.to === sq);
               const isCaptureLanding =
                 animCounter > 0 && lastMove?.to === sq && Boolean(lastMove.isCapture);
               const isKingInCheck = checkedKingSquare === sq;
               const isLegalTarget = legalTargets.has(sq);
+              const isPremoveTarget = premoveTargets.has(sq);
               const isCaptureTarget = legalTargets.get(sq) === true;
               const isDragOrigin = dragState?.isDragging && dragState.from === sq;
               const isDragHover =
-                dragState?.isDragging && hoverSquare === sq && isLegalTarget;
+                dragState?.isDragging &&
+                hoverSquare === sq &&
+                (dragState.isPremoveDrag ? isPremoveTarget : isLegalTarget);
               const motion = pieceMotions.get(sq);
+              const squareHighlight = highlights.find((h) => h.square === sq);
 
               let bgColor = isLight ? palette.light : palette.dark;
               if (isLastMove) {
@@ -463,13 +801,31 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                   onPointerDown={(e) => handleSquarePointerDown(e, sq)}
                   style={{ backgroundColor: bgColor }}
                   className={`relative flex items-center justify-center p-0 border-0 transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-600 ${
-                    canInteract && piece && piece.color === activeTurn
+                    (canInteract && piece && piece.color === activeTurn) ||
+                    (allowPremove && !canInteract && piece && piece.color !== activeTurn)
                       ? 'cursor-grab active:cursor-grabbing'
-                      : canInteract && isLegalTarget
+                      : (canInteract && isLegalTarget) || (allowPremove && !canInteract && isPremoveTarget)
                       ? 'cursor-pointer'
                       : 'cursor-default'
                   }`}
                 >
+                  {/* Premove queued square tint */}
+                  {isPremoveSq && (
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-0 bg-sky-500/35 ring-2 ring-inset ring-sky-400/70"
+                    />
+                  )}
+
+                  {/* User right-click square highlight */}
+                  {squareHighlight && (
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-0"
+                      style={{ backgroundColor: ANNOTATION_COLORS[squareHighlight.color].highlight }}
+                    />
+                  )}
+
                   {/* Check highlight */}
                   {isKingInCheck && (
                     <span
@@ -522,7 +878,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                     </span>
                   )}
 
-                  {/* Piece SVG with smooth slide or drag-settle animation */}
+                  {/* Piece SVG */}
                   {piece && (
                     <div
                       key={motion ? motion.key : `static-${sq}`}
@@ -551,20 +907,22 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                             : 'opacity-100 scale-100'
                         }`}
                       >
-                        <ChessPieceSvg type={piece.type} color={piece.color} />
+                        <ChessPieceSvg type={piece.type} color={piece.color} pieceSet={pieceSet} />
                       </div>
                     </div>
                   )}
 
-                  {/* Legal move indicator */}
-                  {isLegalTarget && !isCaptureTarget && (
+                  {/* Legal move / premove dot */}
+                  {((isLegalTarget && !isCaptureTarget) || isPremoveTarget) && (
                     <span
                       aria-hidden="true"
-                      className="pointer-events-none absolute z-20 h-[28%] w-[28%] rounded-full bg-stone-900/22 animate-chess-dot"
+                      className={`pointer-events-none absolute z-20 h-[28%] w-[28%] rounded-full animate-chess-dot ${
+                        isPremoveTarget ? 'bg-sky-500/40' : 'bg-stone-900/22'
+                      }`}
                     />
                   )}
 
-                  {/* Legal capture indicator */}
+                  {/* Legal capture ring */}
                   {isLegalTarget && isCaptureTarget && (
                     <span
                       aria-hidden="true"
@@ -572,7 +930,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                     />
                   )}
 
-                  {/* Analysis move classification marker (!! Brilliant, ! Great, etc.) */}
+                  {/* Analysis move classification marker */}
                   {moveMarker && moveMarker.square === sq && (() => {
                     const meta = MOVE_MARKER_META[moveMarker.classification];
                     return (
@@ -591,58 +949,40 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
           )}
         </div>
 
-        {/* Stockfish Best-Move Analysis Arrow */}
-        {bestMoveArrow && (() => {
-          const fromFile = bestMoveArrow.from[0] as (typeof FILES)[number];
-          const fromRank = bestMoveArrow.from[1] as (typeof RANKS)[number];
-          const toFile = bestMoveArrow.to[0] as (typeof FILES)[number];
-          const toRank = bestMoveArrow.to[1] as (typeof RANKS)[number];
-
-          const fromCol = displayFiles.indexOf(fromFile);
-          const fromRow = displayRanks.indexOf(fromRank);
-          const toCol = displayFiles.indexOf(toFile);
-          const toRow = displayRanks.indexOf(toRank);
-
-          if (fromCol === -1 || fromRow === -1 || toCol === -1 || toRow === -1) {
-            return null;
-          }
-
-          const x1 = fromCol * 100 + 50;
-          const y1 = fromRow * 100 + 50;
-          const x2 = toCol * 100 + 50;
-          const y2 = toRow * 100 + 50;
-
-          const angle = Math.atan2(y2 - y1, x2 - x1);
-          const headLen = 26;
-          const endX = x2 - Math.cos(angle) * 14;
-          const endY = y2 - Math.sin(angle) * 14;
-          const leftX = x2 - Math.cos(angle - Math.PI / 6) * headLen;
-          const leftY = y2 - Math.sin(angle - Math.PI / 6) * headLen;
-          const rightX = x2 - Math.cos(angle + Math.PI / 6) * headLen;
-          const rightY = y2 - Math.sin(angle + Math.PI / 6) * headLen;
-
-          return (
-            <svg
-              viewBox="0 0 800 800"
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0 z-25 h-full w-full"
-            >
-              <line
-                x1={x1}
-                y1={y1}
-                x2={endX}
-                y2={endY}
-                stroke="rgba(16, 185, 129, 0.85)"
-                strokeWidth="15"
-                strokeLinecap="round"
-              />
-              <polygon
-                points={`${x2},${y2} ${leftX},${leftY} ${rightX},${rightY}`}
-                fill="rgba(16, 185, 129, 0.92)"
-              />
-            </svg>
-          );
-        })()}
+        {/* SVG Arrows Overlay (User Annotations + Hint + Stockfish Best Move) */}
+        {hasSvgArrows && (
+          <svg
+            viewBox="0 0 800 800"
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-25 h-full w-full"
+          >
+            {arrows.map((arrow) =>
+              renderSvgArrow(
+                arrow.from,
+                arrow.to,
+                ANNOTATION_COLORS[arrow.color].arrow,
+                ANNOTATION_COLORS[arrow.color].arrow,
+                `user-${arrow.from}-${arrow.to}-${arrow.color}`
+              )
+            )}
+            {hintArrow &&
+              renderSvgArrow(
+                hintArrow.from,
+                hintArrow.to,
+                'rgba(245, 158, 11, 0.88)',
+                'rgba(245, 158, 11, 0.96)',
+                `hint-${hintArrow.from}-${hintArrow.to}`
+              )}
+            {bestMoveArrow &&
+              renderSvgArrow(
+                bestMoveArrow.from,
+                bestMoveArrow.to,
+                'rgba(16, 185, 129, 0.85)',
+                'rgba(16, 185, 129, 0.92)',
+                `best-${bestMoveArrow.from}-${bestMoveArrow.to}`
+              )}
+          </svg>
+        )}
 
         {/* History Review Notice */}
         {isReviewingHistory && (
@@ -691,6 +1031,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                       <ChessPieceSvg
                         type={promoPiece}
                         color={pendingPromotion.color}
+                        pieceSet={pieceSet}
                         className="w-10 h-10"
                       />
                       <span className="text-[11px] font-medium text-stone-700 dark:text-stone-300">
@@ -725,7 +1066,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
             }px, 0) scale(1.12)`,
           }}
         >
-          <ChessPieceSvg type={dragState.type} color={dragState.color} />
+          <ChessPieceSvg type={dragState.type} color={dragState.color} pieceSet={pieceSet} />
         </div>
       )}
     </div>

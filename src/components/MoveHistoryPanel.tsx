@@ -20,9 +20,12 @@ interface MoveHistoryPanelProps {
   pgn: string;
   fen: string;
   analysis?: MatchAnalysisResult | null;
+  canEnterSan?: boolean;
+  onSubmitSanMove?: (san: string) => boolean;
 }
 
 const BADGE_SYMBOL: Partial<Record<MoveClassification, { text: string; cls: string }>> = {
+  book: { text: 'B', cls: 'text-amber-700 dark:text-amber-400' },
   brilliant: { text: '!!', cls: 'text-cyan-600 dark:text-cyan-400' },
   great: { text: '!', cls: 'text-sky-600 dark:text-sky-400' },
   inaccuracy: { text: '?!', cls: 'text-amber-600 dark:text-amber-400' },
@@ -37,9 +40,13 @@ export const MoveHistoryPanel: React.FC<MoveHistoryPanelProps> = ({
   pgn,
   fen,
   analysis,
+  canEnterSan = false,
+  onSubmitSanMove,
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copiedField, setCopiedField] = useState<'pgn' | 'fen' | null>(null);
+  const [sanInput, setSanInput] = useState<string>('');
+  const [sanError, setSanError] = useState<boolean>(false);
 
   const activePly = viewIndex === null ? moves.length - 1 : viewIndex;
 
@@ -136,7 +143,7 @@ export const MoveHistoryPanel: React.FC<MoveHistoryPanelProps> = ({
 
       <div
         ref={scrollRef}
-        className="h-44 lg:h-48 overflow-y-auto px-2 py-1.5 text-sm font-mono tabular-nums"
+        className="h-56 lg:h-64 overflow-y-auto px-2 py-1.5 text-sm font-mono tabular-nums"
       >
         {movePairs.length === 0 ? (
           <div className="flex h-full items-center justify-center text-xs font-sans text-stone-400 dark:text-stone-500">
@@ -243,6 +250,48 @@ export const MoveHistoryPanel: React.FC<MoveHistoryPanelProps> = ({
           <ChevronLast className="w-4 h-4" />
         </button>
       </div>
+
+      {onSubmitSanMove && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const trimmed = sanInput.trim();
+            if (!trimmed || !canEnterSan) return;
+            const ok = onSubmitSanMove(trimmed);
+            if (ok) {
+              setSanInput('');
+              setSanError(false);
+            } else {
+              setSanError(true);
+            }
+          }}
+          className="flex items-center gap-1.5 border-t border-stone-200 dark:border-stone-800 px-2.5 py-2 bg-white dark:bg-stone-900"
+        >
+          <input
+            type="text"
+            value={sanInput}
+            onChange={(e) => {
+              setSanInput(e.target.value);
+              if (sanError) setSanError(false);
+            }}
+            disabled={!canEnterSan}
+            placeholder={canEnterSan ? 'Type move (e.g. Nf3, e4, O-O)…' : 'Waiting for turn…'}
+            aria-label="Enter move in algebraic notation"
+            className={`flex-1 min-w-0 rounded-md border px-2.5 py-1 font-mono text-xs bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 placeholder:text-stone-400 focus:outline-none focus:ring-1 ${
+              sanError
+                ? 'border-red-400 focus:ring-red-500'
+                : 'border-stone-200 dark:border-stone-700 focus:ring-emerald-600'
+            } disabled:opacity-50`}
+          />
+          <button
+            type="submit"
+            disabled={!canEnterSan || !sanInput.trim()}
+            className="rounded-md bg-stone-800 dark:bg-stone-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-stone-700 dark:hover:bg-stone-600 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
+          >
+            Play
+          </button>
+        </form>
+      )}
     </div>
   );
 };

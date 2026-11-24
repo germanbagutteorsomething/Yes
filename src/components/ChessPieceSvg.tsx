@@ -1,18 +1,276 @@
 import React from 'react';
 import type { PieceSymbol } from 'chess.js';
-import type { PlayerColor } from '../types/chess';
+import type { PieceSet, PlayerColor } from '../types/chess';
 
 interface ChessPieceSvgProps {
   type: PieceSymbol;
   color: PlayerColor;
+  pieceSet?: PieceSet;
   className?: string;
 }
+
+const NeoPieceSvg: React.FC<{
+  type: PieceSymbol;
+  color: PlayerColor;
+  className: string;
+}> = ({ type, color, className }) => {
+  const isWhite = color === 'w';
+  const fill = isWhite ? '#FCFBF8' : '#1E1C1A';
+  const stroke = isWhite ? '#292524' : '#0C0A09';
+  const accent = isWhite ? '#D6D3D1' : '#57534E';
+
+  switch (type) {
+    case 'p':
+      return (
+        <svg viewBox="0 0 45 45" className={className} aria-hidden="true">
+          <circle cx="22.5" cy="14" r="6" fill={fill} stroke={stroke} strokeWidth="2" />
+          <path
+            d="M14 37h17l-2.5-9.5c-1-3.5-3.2-5-6-5s-5 1.5-6 5L14 37z"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <rect x="12" y="36" width="21" height="4" rx="2" fill={fill} stroke={stroke} strokeWidth="1.8" />
+        </svg>
+      );
+    case 'r':
+      return (
+        <svg viewBox="0 0 45 45" className={className} aria-hidden="true">
+          <path
+            d="M12 10h5v4h3v-4h5v4h3v-4h5v8l-3 3v12l3 3v4H12v-4l3-3V21l-3-3v-8z"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <path d="M16 21h13M15 33h15" stroke={accent} strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      );
+    case 'n':
+      return (
+        <svg viewBox="0 0 45 45" className={className} aria-hidden="true">
+          <path
+            d="M14 39h19c0-11-3-19-9-25l-2-5-4 3c-5 2-9 7-10 12l5 2 4-3c-1 5-3 8-3 16z"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <circle cx="17.5" cy="16.5" r="1.4" fill={isWhite ? '#1C1917' : '#F5F5F4'} />
+          <rect x="12" y="36" width="22" height="4" rx="2" fill={fill} stroke={stroke} strokeWidth="1.8" />
+        </svg>
+      );
+    case 'b':
+      return (
+        <svg viewBox="0 0 45 45" className={className} aria-hidden="true">
+          <circle cx="22.5" cy="8.5" r="2.8" fill={fill} stroke={stroke} strokeWidth="1.8" />
+          <path
+            d="M22.5 11.5c-6.5 4.5-8 11.5-5 18l-3.5 6.5h17L27.5 29.5c3-6.5 1.5-13.5-5-18z"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <path d="M19 21l7 5" stroke={isWhite ? '#292524' : '#E7E5E4'} strokeWidth="2" strokeLinecap="round" />
+          <rect x="12" y="36" width="21" height="4" rx="2" fill={fill} stroke={stroke} strokeWidth="1.8" />
+        </svg>
+      );
+    case 'q':
+      return (
+        <svg viewBox="0 0 45 45" className={className} aria-hidden="true">
+          <circle cx="9" cy="14" r="2.2" fill={fill} stroke={stroke} strokeWidth="1.6" />
+          <circle cx="16" cy="10" r="2.2" fill={fill} stroke={stroke} strokeWidth="1.6" />
+          <circle cx="22.5" cy="8.5" r="2.4" fill={fill} stroke={stroke} strokeWidth="1.6" />
+          <circle cx="29" cy="10" r="2.2" fill={fill} stroke={stroke} strokeWidth="1.6" />
+          <circle cx="36" cy="14" r="2.2" fill={fill} stroke={stroke} strokeWidth="1.6" />
+          <path
+            d="M10 16l4 18h17l4-18-7 9-5.5-13-5.5 13-7-9z"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <rect x="12" y="35" width="21" height="4.5" rx="2" fill={fill} stroke={stroke} strokeWidth="1.8" />
+        </svg>
+      );
+    case 'k':
+      return (
+        <svg viewBox="0 0 45 45" className={className} aria-hidden="true">
+          <path d="M22.5 6v7M19 9.5h7" stroke={stroke} strokeWidth="2.4" strokeLinecap="round" />
+          <path
+            d="M14 35h17l3-12c1-4-2-7-6-7-2.8 0-4.6 1.5-5.5 3.5-.9-2-2.7-3.5-5.5-3.5-4 0-7 3-6 7l3 12z"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+          <rect x="12" y="35" width="21" height="4.5" rx="2" fill={fill} stroke={stroke} strokeWidth="1.8" />
+        </svg>
+      );
+  }
+};
+
+const PIXEL_GRIDS: Record<PieceSymbol, string[]> = {
+  p: [
+    '................',
+    '................',
+    '......XXXX......',
+    '.....XOOOOX.....',
+    '.....XOOOOX.....',
+    '......XXXX......',
+    '.....XOOOOX.....',
+    '......XOOX......',
+    '.....XOOOOX.....',
+    '....XOOOOOOX....',
+    '....XOOOOOOX....',
+    '...XOOOOOOOOX...',
+    '...XXXXXXXXXX...',
+    '..XOOOOOOOOOOX..',
+    '..XXXXXXXXXXXX..',
+    '................',
+  ],
+  r: [
+    '................',
+    '..XXX..XX..XXX..',
+    '..XOX..OX..XOX..',
+    '..XOOOOOOOOOOX..',
+    '...XOOOOOOOOX...',
+    '....XOOOOOOX....',
+    '....XOOOOOOX....',
+    '....XOOOOOOX....',
+    '....XOOOOOOX....',
+    '....XOOOOOOX....',
+    '...XOOOOOOOOX...',
+    '..XOOOOOOOOOOX..',
+    '..XXXXXXXXXXXX..',
+    '..XOOOOOOOOOOX..',
+    '..XXXXXXXXXXXX..',
+    '................',
+  ],
+  n: [
+    '................',
+    '.....XXXX.......',
+    '....XOOOOXX.....',
+    '...XOXOOOOOX....',
+    '..XOOOOOOOOOX...',
+    '..XOOOXOOOOOX...',
+    '...XXX.XOOOOX...',
+    '......XOOOOOX...',
+    '.....XOOOOOOX...',
+    '....XOOOOOOOX...',
+    '...XOOOOOOOOX...',
+    '...XOOOOOOOOX...',
+    '..XOOOOOOOOOOX..',
+    '..XOOOOOOOOOOX..',
+    '..XXXXXXXXXXXX..',
+    '................',
+  ],
+  b: [
+    '................',
+    '.......XX.......',
+    '......XOOX......',
+    '.....XOOOOX.....',
+    '....XOOXOOOX....',
+    '....XOXOOOOX....',
+    '....XOOOOOOX....',
+    '.....XOOOOX.....',
+    '......XOOX......',
+    '.....XOOOOX.....',
+    '....XOOOOOOX....',
+    '...XOOOOOOOOX...',
+    '...XXXXXXXXXX...',
+    '..XOOOOOOOOOOX..',
+    '..XXXXXXXXXXXX..',
+    '................',
+  ],
+  q: [
+    '................',
+    '..X...X..X...X..',
+    '..OX..OX.XO..XO.',
+    '..XOX.XOOX.XOX..',
+    '...XOXOOOOXOX...',
+    '...XOOOOOOOOX...',
+    '....XOOOOOOX....',
+    '....XOOOOOOX....',
+    '.....XOOOOX.....',
+    '....XOOOOOOX....',
+    '...XOOOOOOOOX...',
+    '...XOOOOOOOOX...',
+    '...XXXXXXXXXX...',
+    '..XOOOOOOOOOOX..',
+    '..XXXXXXXXXXXX..',
+    '................',
+  ],
+  k: [
+    '.......XX.......',
+    '.....XXXXXX.....',
+    '.......XX.......',
+    '....XXXOOXXX....',
+    '...XOOOOOOOOX...',
+    '..XOOOOXXOOOOX..',
+    '..XOOOXXXXOOOX..',
+    '..XOOOOXXOOOOX..',
+    '...XOOOOOOOOX...',
+    '....XOOOOOOX....',
+    '....XOOOOOOX....',
+    '...XOOOOOOOOX...',
+    '...XXXXXXXXXX...',
+    '..XOOOOOOOOOOX..',
+    '..XXXXXXXXXXXX..',
+    '................',
+  ],
+};
+
+const PixelPieceSvg: React.FC<{
+  type: PieceSymbol;
+  color: PlayerColor;
+  className: string;
+}> = ({ type, color, className }) => {
+  const isWhite = color === 'w';
+  const fill = isWhite ? '#FAF9F6' : '#262422';
+  const stroke = isWhite ? '#1C1917' : '#0F0E0D';
+  const grid = PIXEL_GRIDS[type];
+
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      shapeRendering="crispEdges"
+      className={className}
+      aria-hidden="true"
+    >
+      {grid.map((row, y) =>
+        row.split('').map((ch, x) => {
+          if (ch === '.') return null;
+          return (
+            <rect
+              key={`${x}-${y}`}
+              x={x}
+              y={y}
+              width="1"
+              height="1"
+              fill={ch === 'X' ? stroke : fill}
+            />
+          );
+        })
+      )}
+    </svg>
+  );
+};
 
 export const ChessPieceSvg: React.FC<ChessPieceSvgProps> = ({
   type,
   color,
+  pieceSet = 'classic',
   className = 'w-full h-full',
 }) => {
+  if (pieceSet === 'neo') {
+    return <NeoPieceSvg type={type} color={color} className={className} />;
+  }
+  if (pieceSet === 'pixel') {
+    return <PixelPieceSvg type={type} color={color} className={className} />;
+  }
+
   const isWhite = color === 'w';
   const fill = isWhite ? '#FAF9F6' : '#262422';
   const stroke = isWhite ? '#1C1917' : '#141210';

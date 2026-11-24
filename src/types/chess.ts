@@ -1,14 +1,70 @@
 import type { Square } from 'chess.js';
 
+export type AppView = 'play' | 'puzzles' | 'endgames' | 'archive';
 export type GameMode = 'stockfish' | 'two-player';
 export type OpponentKind = 'stockfish' | 'bot';
 export type PlayerColor = 'w' | 'b';
 export type SideChoice = 'w' | 'b' | 'random';
 export type BoardTheme = 'tournament' | 'walnut' | 'slate';
+export type PieceSet = 'classic' | 'neo' | 'pixel';
 export type PromotionPiece = 'q' | 'r' | 'b' | 'n';
 export type StockfishLevelNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 export type BotId = 'randy' | 'gary' | 'tara' | 'sam' | 'bella' | 'mikhail';
 export type BotPlayStyle = 'random' | 'greedy' | 'aggressive' | 'solid' | 'blitz';
+
+export type GameVariant =
+  | 'standard'
+  | 'shuffle960'
+  | 'odds-pawn'
+  | 'odds-knight'
+  | 'odds-rook'
+  | 'odds-queen';
+
+export interface VariantConfig {
+  id: GameVariant;
+  label: string;
+  shortLabel: string;
+  description: string;
+}
+
+export const GAME_VARIANTS: VariantConfig[] = [
+  {
+    id: 'standard',
+    label: 'Standard Chess',
+    shortLabel: 'Standard',
+    description: 'Classic FIDE starting position',
+  },
+  {
+    id: 'shuffle960',
+    label: '960 Backrank',
+    shortLabel: '960 Setup',
+    description: 'Randomized Fischer back-rank (960 valid layouts)',
+  },
+  {
+    id: 'odds-pawn',
+    label: 'Pawn Odds',
+    shortLabel: '+Pawn',
+    description: 'Opponent starts without the f-pawn',
+  },
+  {
+    id: 'odds-knight',
+    label: 'Knight Odds',
+    shortLabel: '+Knight',
+    description: 'Opponent starts without a queenside knight',
+  },
+  {
+    id: 'odds-rook',
+    label: 'Rook Odds',
+    shortLabel: '+Rook',
+    description: 'Opponent starts without the a-rook',
+  },
+  {
+    id: 'odds-queen',
+    label: 'Queen Odds',
+    shortLabel: '+Queen',
+    description: 'Opponent starts without a queen',
+  },
+];
 
 export interface StockfishLevelConfig {
   level: StockfishLevelNumber;
@@ -187,6 +243,7 @@ export interface MoveRecord {
 }
 
 export type MoveClassification =
+  | 'book'
   | 'brilliant'
   | 'great'
   | 'best'
@@ -226,6 +283,7 @@ export interface MoveAnalysis {
 export interface SideAccuracySummary {
   accuracy: number;
   acpl: number;
+  book: number;
   brilliant: number;
   great: number;
   best: number;
@@ -241,4 +299,85 @@ export interface MatchAnalysisResult {
   white: SideAccuracySummary;
   black: SideAccuracySummary;
   startEval: PositionEval;
+}
+
+export type BoardAnnotationColor = 'emerald' | 'red' | 'amber' | 'sky';
+
+export interface BoardArrow {
+  from: Square;
+  to: Square;
+  color: BoardAnnotationColor;
+}
+
+export interface BoardHighlight {
+  square: Square;
+  color: BoardAnnotationColor;
+}
+
+export interface Premove {
+  from: Square;
+  to: Square;
+  promotion?: PromotionPiece;
+}
+
+export interface OpeningInfo {
+  eco: string;
+  name: string;
+  matchedPlies: number;
+}
+
+export interface SavedMatch {
+  id: string;
+  playedAt: string;
+  mode: GameMode;
+  opponentKind?: OpponentKind;
+  opponentLabel: string;
+  stockfishLevel?: StockfishLevelNumber;
+  botId?: BotId;
+  variant: GameVariant;
+  openingEco?: string;
+  openingName?: string;
+  winner: PlayerColor | 'draw';
+  reason: GameEndReason;
+  headline: string;
+  humanColor: PlayerColor;
+  movesCount: number;
+  startFen: string;
+  moves: MoveRecord[];
+  pgn: string;
+  whiteAccuracy?: number;
+  blackAccuracy?: number;
+  brilliantCount?: number;
+}
+
+export type PuzzleTheme =
+  | 'Mate in 1'
+  | 'Mate in 2'
+  | 'Fork & Tactics'
+  | 'Pin & Skewer'
+  | 'Sacrifice';
+
+export type PuzzleDifficulty = 'Easy' | 'Medium' | 'Hard';
+
+export interface PuzzleDefinition {
+  id: string;
+  title: string;
+  theme: PuzzleTheme;
+  difficulty: PuzzleDifficulty;
+  rating: number;
+  fen: string;
+  /** Alternating player/opponent UCI moves starting with side to move in `fen`. */
+  solution: string[];
+  hintText: string;
+}
+
+export interface EndgameDrillDefinition {
+  id: string;
+  title: string;
+  category: 'Checkmate Pattern' | 'Rook Endgame' | 'Pawn Endgame';
+  difficulty: 'Beginner' | 'Intermediate' | 'Master';
+  objective: 'win' | 'draw';
+  goalDescription: string;
+  fen: string;
+  humanColor: PlayerColor;
 }

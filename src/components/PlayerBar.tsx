@@ -1,7 +1,7 @@
 import React from 'react';
 import { Clock } from 'lucide-react';
 import type { PieceSymbol } from 'chess.js';
-import type { PlayerColor } from '../types/chess';
+import type { PieceSet, PlayerColor } from '../types/chess';
 import { ChessPieceSvg } from './ChessPieceSvg';
 
 interface PlayerBarProps {
@@ -15,6 +15,7 @@ interface PlayerBarProps {
   isCheck?: boolean;
   isGameOver?: boolean;
   timeRemainingMs?: number | null;
+  pieceSet?: PieceSet;
 }
 
 function formatClock(ms: number): string {
@@ -42,6 +43,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   isCheck = false,
   isGameOver = false,
   timeRemainingMs = null,
+  pieceSet = 'classic',
 }) => {
   const capturedPieceColor: PlayerColor = color === 'w' ? 'b' : 'w';
 
@@ -77,7 +79,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
               : 'border-stone-700 bg-stone-800'
           }`}
         >
-          <ChessPieceSvg type="k" color={color} className="w-6 h-6" />
+          <ChessPieceSvg type="k" color={color} pieceSet={pieceSet} className="w-6 h-6" />
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -98,6 +100,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
                     key={`${piece}-${idx}`}
                     type={piece}
                     color={capturedPieceColor}
+                    pieceSet={pieceSet}
                     className="w-4 h-4 shrink-0"
                   />
                 ))}

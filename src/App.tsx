@@ -1,53 +1,88 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type PieceSymbol, type Square } from 'chess.js';
 import {
+  Archive,
   ArrowUpDown,
   BarChart3,
+  BookOpen,
   Bot,
-  ChevronRight,
   Cpu,
+  Crown,
   FileDown,
   Flag,
   Handshake,
+  Lightbulb,
   Loader2,
   Moon,
+  Puzzle,
   RotateCcw,
   Sun,
+  Swords,
   Undo2,
   Users,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react';
+import { ArchiveWorkspace } from './components/ArchiveWorkspace';
 import { ChessBoard } from './components/ChessBoard';
+import { EndgamesWorkspace } from './components/EndgamesWorkspace';
 import { EvalBar } from './components/EvalBar';
 import { MatchAnalysisPanel } from './components/MatchAnalysisPanel';
 import { MoveHistoryPanel } from './components/MoveHistoryPanel';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PlayerBar } from './components/PlayerBar';
+import { PuzzlesWorkspace } from './components/PuzzlesWorkspace';
 import { PWAInstallButton } from './components/PWAInstallButton';
+import { detectOpening } from './data/openings';
 import { getBotMove } from './engine/botService';
 import { stockfishService } from './engine/stockfishService';
 import {
   BOT_PROFILES,
+  GAME_VARIANTS,
   STOCKFISH_LEVELS,
   TIME_CONTROLS,
+  type AppView,
+  type BoardArrow,
+  type BoardHighlight,
   type BoardTheme,
   type BotId,
   type GameMode,
   type GameResult,
+  type GameVariant,
   type MatchAnalysisResult,
   type MoveRecord,
   type OpponentKind,
   type PendingPromotion,
+  type PieceSet,
   type PlayerColor,
+  type Premove,
   type PromotionPiece,
+  type SavedMatch,
   type SideChoice,
   type StockfishLevelNumber,
   type TimeControlId,
 } from './types/chess';
 import { playChessSound } from './utils/sound';
+import {
+  clearSavedMatches,
+  deleteSavedMatch,
+  loadDefeatedBots,
+  loadDefeatedLevels,
+  loadPreferences,
+  loadSavedMatches,
+  markBotDefeated,
+  markLevelDefeated,
+  saveMatchToHistory,
+  savePreferences,
+  updateMatchAnalysisInHistory,
+} from './utils/storage';
+import { generateVariantStartFen } from './utils/variants';
 
 const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const MAX_ENGINE_HINTS = 3;
+
+type SidebarTab = 'moves' | 'setup' | 'analysis';
 
 const PIECE_VALUES: Record<PieceSymbol, number> = {
   p: 1,
@@ -58,25 +93,17 @@ const PIECE_VALUES: Record<PieceSymbol, number> = {
   k: 0,
 };
 
-const STARTING_COUNTS: Record<Exclude<PieceSymbol, 'k'>, number> = {
-  q: 1,
-  r: 2,
-  b: 2,
-  n: 2,
-  p: 8,
-};
-
 const CAPTURE_ORDER: Exclude<PieceSymbol, 'k'>[] = ['q', 'r', 'b', 'n', 'p'];
 
-function computeMaterialAndCaptures(fen: string) {
+function countPiecesOnBoard(fen: string): Record<PlayerColor, Record<PieceSymbol, number>> {
   const temp = new Chess();
   try {
     temp.load(fen);
   } catch {
-    // fallback
+    // fallback to default board if FEN invalid
   }
 
-  const onBoard: Record<PlayerColor, Record<PieceSymbol, number>> = {
+  const counts: Record<PlayerColor, Record<PieceSymbol, number>> = {
     w: { p: 0, n: 0, b: 0, r: 0, q: 0, k: 0 },
     b: { p: 0, n: 0, b: 0, r: 0, q: 0, k: 0 },
   };
@@ -84,27 +111,33 @@ function computeMaterialAndCaptures(fen: string) {
   for (const row of temp.board()) {
     for (const cell of row) {
       if (cell) {
-        onBoard[cell.color][cell.type] += 1;
+        counts[cell.color][cell.type] += 1;
       }
     }
   }
+  return counts;
+}
+
+function computeMaterialAndCaptures(fen: string, startFen: string) {
+  const startCounts = countPiecesOnBoard(startFen);
+  const currentCounts = countPiecesOnBoard(fen);
 
   const capturedByWhite: PieceSymbol[] = [];
   const capturedByBlack: PieceSymbol[] = [];
 
   for (const pieceType of CAPTURE_ORDER) {
-    const missingBlack = Math.max(0, STARTING_COUNTS[pieceType] - onBoard.b[pieceType]);
+    const missingBlack = Math.max(0, startCounts.b[pieceType] - currentCounts.b[pieceType]);
     for (let i = 0; i < missingBlack; i++) capturedByWhite.push(pieceType);
 
-    const missingWhite = Math.max(0, STARTING_COUNTS[pieceType] - onBoard.w[pieceType]);
+    const missingWhite = Math.max(0, startCounts.w[pieceType] - currentCounts.w[pieceType]);
     for (let i = 0; i < missingWhite; i++) capturedByBlack.push(pieceType);
   }
 
   let whiteMaterial = 0;
   let blackMaterial = 0;
   for (const pieceType of ['p', 'n', 'b', 'r', 'q'] as PieceSymbol[]) {
-    whiteMaterial += onBoard.w[pieceType] * PIECE_VALUES[pieceType];
-    blackMaterial += onBoard.b[pieceType] * PIECE_VALUES[pieceType];
+    whiteMaterial += currentCounts.w[pieceType] * PIECE_VALUES[pieceType];
+    blackMaterial += currentCounts.b[pieceType] * PIECE_VALUES[pieceType];
   }
 
   return {
@@ -124,8 +157,7 @@ function findCheckedKingSquare(fen: string): Square | null {
   }
   if (!temp.isCheck()) return null;
   const turn = temp.turn();
-  const board = temp.board();
-  for (const row of board) {
+  for (const row of temp.board()) {
     for (const cell of row) {
       if (cell && cell.type === 'k' && cell.color === turn) {
         return cell.square;
@@ -204,24 +236,48 @@ function resolveSideChoice(choice: SideChoice): PlayerColor {
   return choice;
 }
 
+function createMatchId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export default function App() {
+  const initialPrefs = useMemo(() => loadPreferences(), []);
+
   const chessRef = useRef<Chess>(new Chess());
   const engineAbortRef = useRef<AbortController | null>(null);
   const analysisAbortRef = useRef<AbortController | null>(null);
+  const hintAbortRef = useRef<AbortController | null>(null);
+  const currentMatchIdRef = useRef<string | null>(null);
+  const isLoadedArchiveRef = useRef<boolean>(false);
 
+  // Navigation & Studio Layout
+  const [activeView, setActiveView] = useState<AppView>('play');
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('moves');
+
+  // Preferences (persisted)
+  const [darkMode, setDarkMode] = useState<boolean>(initialPrefs.darkMode);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(initialPrefs.soundEnabled);
+  const [boardTheme, setBoardTheme] = useState<BoardTheme>(initialPrefs.boardTheme);
+  const [pieceSet, setPieceSet] = useState<PieceSet>(initialPrefs.pieceSet);
+
+  // Game configuration
   const [gameMode, setGameMode] = useState<GameMode>('stockfish');
   const [opponentKind, setOpponentKind] = useState<OpponentKind>('stockfish');
   const [stockfishLevel, setStockfishLevel] = useState<StockfishLevelNumber>(4);
   const [selectedBotId, setSelectedBotId] = useState<BotId>('tara');
   const [sideChoice, setSideChoice] = useState<SideChoice>('w');
   const [humanColor, setHumanColor] = useState<PlayerColor>('w');
+  const [variant, setVariant] = useState<GameVariant>('standard');
+  const [startFen, setStartFen] = useState<string>(INITIAL_FEN);
+  const [variantNote, setVariantNote] = useState<string | null>(null);
   const [timeControlId, setTimeControlId] = useState<TimeControlId>('blitz-5');
   const [autoFlipTwoPlayer, setAutoFlipTwoPlayer] = useState<boolean>(false);
   const [flipped, setFlipped] = useState<boolean>(false);
-  const [boardTheme, setBoardTheme] = useState<BoardTheme>('tournament');
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
-  const [darkMode, setDarkMode] = useState<boolean>(false);
 
+  // Live board & move state
   const [fen, setFen] = useState<string>(INITIAL_FEN);
   const [moves, setMoves] = useState<MoveRecord[]>([]);
   const [turn, setTurn] = useState<PlayerColor>('w');
@@ -232,11 +288,21 @@ export default function App() {
   const [isEngineThinking, setIsEngineThinking] = useState<boolean>(false);
   const [engineError, setEngineError] = useState<string | null>(null);
 
+  // Premoves, hints, annotations
+  const [premove, setPremove] = useState<Premove | null>(null);
+  const [arrows, setArrows] = useState<BoardArrow[]>([]);
+  const [highlights, setHighlights] = useState<BoardHighlight[]>([]);
+  const [hintArrow, setHintArrow] = useState<{ from: string; to: string } | null>(null);
+  const [isFetchingHint, setIsFetchingHint] = useState<boolean>(false);
+  const [hintsUsed, setHintsUsed] = useState<number>(0);
+
+  // Clocks
   const [clocksMs, setClocksMs] = useState<{ w: number; b: number }>({
     w: 300_000,
     b: 300_000,
   });
 
+  // Match Analysis
   const [analysisResult, setAnalysisResult] = useState<MatchAnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [analysisProgress, setAnalysisProgress] = useState<{
@@ -245,21 +311,34 @@ export default function App() {
   }>({ completed: 0, total: 0 });
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  // Sync dark mode class on <html>
+  // Archive & progress persistence
+  const [savedMatches, setSavedMatches] = useState<SavedMatch[]>(() => loadSavedMatches());
+  const [defeatedBots, setDefeatedBots] = useState<BotId[]>(() => loadDefeatedBots());
+  const [defeatedLevels, setDefeatedLevels] = useState<StockfishLevelNumber[]>(() =>
+    loadDefeatedLevels()
+  );
+
+  const refreshArchiveData = useCallback(() => {
+    setSavedMatches(loadSavedMatches());
+    setDefeatedBots(loadDefeatedBots());
+    setDefeatedLevels(loadDefeatedLevels());
+  }, []);
+
+  // Persist UI preferences & sync <html>.dark
   useEffect(() => {
     const root = document.documentElement;
-    if (darkMode) {
-      root.classList.add('dark');
-    } else {
-      root.classList.remove('dark');
-    }
-  }, [darkMode]);
+    if (darkMode) root.classList.add('dark');
+    else root.classList.remove('dark');
+
+    savePreferences({ darkMode, soundEnabled, boardTheme, pieceSet });
+  }, [boardTheme, darkMode, pieceSet, soundEnabled]);
 
   // Terminate worker on unmount
   useEffect(() => {
     return () => {
       engineAbortRef.current?.abort();
       analysisAbortRef.current?.abort();
+      hintAbortRef.current?.abort();
       stockfishService.terminate();
     };
   }, []);
@@ -279,8 +358,80 @@ export default function App() {
     [timeControlId]
   );
 
+  const openingInfo = useMemo(() => {
+    if (startFen !== INITIAL_FEN) return null;
+    return detectOpening(moves);
+  }, [moves, startFen]);
+
+  // Save finished game & update defeated checklist once per finished match
+  useEffect(() => {
+    if (!gameResult) return;
+    if (isLoadedArchiveRef.current) return;
+    if (currentMatchIdRef.current) return;
+    if (moves.length === 0) return;
+
+    const matchId = createMatchId();
+    currentMatchIdRef.current = matchId;
+
+    const opponentLabel =
+      gameMode === 'two-player'
+        ? '2-Player Local'
+        : opponentKind === 'bot'
+          ? `${currentBot.name} (${currentBot.eloLabel})`
+          : `Stockfish Lv ${currentLevelConfig.level} · ${currentLevelConfig.name}`;
+
+    const record: SavedMatch = {
+      id: matchId,
+      playedAt: new Date().toISOString(),
+      mode: gameMode,
+      opponentKind: gameMode === 'stockfish' ? opponentKind : undefined,
+      opponentLabel,
+      stockfishLevel:
+        gameMode === 'stockfish' && opponentKind === 'stockfish'
+          ? currentLevelConfig.level
+          : undefined,
+      botId: gameMode === 'stockfish' && opponentKind === 'bot' ? currentBot.id : undefined,
+      variant,
+      openingEco: openingInfo?.eco,
+      openingName: openingInfo?.name,
+      winner: gameResult.winner,
+      reason: gameResult.reason,
+      headline: gameResult.headline,
+      humanColor,
+      movesCount: moves.length,
+      startFen,
+      moves,
+      pgn: chessRef.current.pgn(),
+    };
+
+    setSavedMatches(saveMatchToHistory(record));
+
+    if (gameMode === 'stockfish' && gameResult.winner === humanColor) {
+      if (opponentKind === 'bot') {
+        setDefeatedBots(markBotDefeated(currentBot.id));
+      } else {
+        setDefeatedLevels(markLevelDefeated(currentLevelConfig.level));
+      }
+    }
+  }, [
+    currentBot.eloLabel,
+    currentBot.id,
+    currentBot.name,
+    currentLevelConfig.level,
+    currentLevelConfig.name,
+    gameMode,
+    gameResult,
+    humanColor,
+    moves,
+    openingInfo,
+    opponentKind,
+    startFen,
+    variant,
+  ]);
+
   // Active move timer / chess clock tick
   useEffect(() => {
+    if (activeView !== 'play') return;
     if (currentTimeControl.id === 'none') return;
     if (gameResult) return;
     if (moves.length === 0) return;
@@ -294,17 +445,16 @@ export default function App() {
       setClocksMs((prev) => {
         const nextRemaining = Math.max(0, prev[turn] - delta);
         if (nextRemaining === 0 && prev[turn] > 0) {
-          // Flag fell! Check FIDE timeout vs insufficient material rule
           const opponent: PlayerColor = turn === 'w' ? 'b' : 'w';
-          const opponentCanWin = hasSufficientMaterialForTimeout(
-            chessRef.current,
-            opponent
-          );
+          const opponentCanWin = hasSufficientMaterialForTimeout(chessRef.current, opponent);
 
           engineAbortRef.current?.abort();
+          hintAbortRef.current?.abort();
           stockfishService.cancelPending();
           setIsEngineThinking(false);
+          setIsFetchingHint(false);
           setPendingPromotion(null);
+          setPremove(null);
 
           if (opponentCanWin) {
             const winnerName = opponent === 'w' ? 'White' : 'Black';
@@ -331,7 +481,7 @@ export default function App() {
     }, 100);
 
     return () => window.clearInterval(interval);
-  }, [currentTimeControl.id, gameResult, moves.length, soundEnabled, turn]);
+  }, [activeView, currentTimeControl.id, gameResult, moves.length, soundEnabled, turn]);
 
   const startNewGame = useCallback(
     (overrides?: {
@@ -341,16 +491,21 @@ export default function App() {
       level?: StockfishLevelNumber;
       botId?: BotId;
       timeControl?: TimeControlId;
+      variant?: GameVariant;
     }) => {
       engineAbortRef.current?.abort();
       analysisAbortRef.current?.abort();
+      hintAbortRef.current?.abort();
       stockfishService.cancelPending();
 
       const nextMode = overrides?.mode ?? gameMode;
       const nextSide = overrides?.side ?? sideChoice;
       const nextTcId = overrides?.timeControl ?? timeControlId;
+      const nextVariant = overrides?.variant ?? variant;
       const nextTc = TIME_CONTROLS.find((t) => t.id === nextTcId) ?? TIME_CONTROLS[4];
       const resolvedHuman = nextMode === 'stockfish' ? resolveSideChoice(nextSide) : 'w';
+
+      const { fen: generatedFen, note } = generateVariantStartFen(nextVariant, resolvedHuman);
 
       if (overrides?.mode !== undefined) setGameMode(overrides.mode);
       if (overrides?.opponentKind !== undefined) setOpponentKind(overrides.opponentKind);
@@ -358,19 +513,31 @@ export default function App() {
       if (overrides?.level !== undefined) setStockfishLevel(overrides.level);
       if (overrides?.botId !== undefined) setSelectedBotId(overrides.botId);
       if (overrides?.timeControl !== undefined) setTimeControlId(overrides.timeControl);
+      if (overrides?.variant !== undefined) setVariant(overrides.variant);
 
-      chessRef.current = new Chess();
+      currentMatchIdRef.current = null;
+      isLoadedArchiveRef.current = false;
+
+      chessRef.current = new Chess(generatedFen);
+      setStartFen(generatedFen);
+      setVariantNote(note ?? null);
       setHumanColor(resolvedHuman);
       setFlipped(nextMode === 'stockfish' ? resolvedHuman === 'b' : false);
-      setFen(INITIAL_FEN);
+      setFen(generatedFen);
       setMoves([]);
-      setTurn('w');
+      setTurn(chessRef.current.turn());
       setIsCheck(false);
       setGameResult(null);
       setPendingPromotion(null);
       setViewIndex(null);
       setIsEngineThinking(false);
       setEngineError(null);
+      setPremove(null);
+      setArrows([]);
+      setHighlights([]);
+      setHintArrow(null);
+      setIsFetchingHint(false);
+      setHintsUsed(0);
       setAnalysisResult(null);
       setIsAnalyzing(false);
       setAnalysisError(null);
@@ -379,8 +546,9 @@ export default function App() {
         w: nextTc.baseSeconds * 1000,
         b: nextTc.baseSeconds * 1000,
       });
+      setActiveView('play');
     },
-    [gameMode, sideChoice, timeControlId]
+    [gameMode, sideChoice, timeControlId, variant]
   );
 
   const syncFromChess = useCallback(
@@ -396,6 +564,9 @@ export default function App() {
       setIsCheck(nextCheck);
       setGameResult(result);
       setViewIndex(null);
+      setHintArrow(null);
+      setArrows([]);
+      setHighlights([]);
 
       if (newMoveRecord) {
         setMoves((prev) => [...prev, newMoveRecord]);
@@ -444,10 +615,52 @@ export default function App() {
   );
 
   const executeMove = useCallback(
-    (from: Square, to: Square, promotion?: PromotionPiece): boolean => {
+    (
+      from: Square,
+      to: Square,
+      promotion?: PromotionPiece,
+      silentOnIllegal = false
+    ): boolean => {
       const chess = chessRef.current;
       try {
         const move = chess.move({ from, to, promotion });
+        const record: MoveRecord = {
+          ply: chess.history().length,
+          san: move.san,
+          lan: move.lan,
+          from: move.from,
+          to: move.to,
+          fen: chess.fen(),
+          color: move.color,
+          isCheck: chess.isCheck(),
+          isCheckmate: chess.isCheckmate(),
+          isCapture: move.isCapture(),
+          isCastle: move.isKingsideCastle() || move.isQueensideCastle(),
+          isPromotion: move.isPromotion(),
+        };
+        syncFromChess(record);
+        return true;
+      } catch {
+        if (!silentOnIllegal) {
+          playChessSound('illegal', soundEnabled);
+        }
+        return false;
+      }
+    },
+    [soundEnabled, syncFromChess]
+  );
+
+  const handleSubmitSanMove = useCallback(
+    (sanText: string): boolean => {
+      if (gameResult || viewIndex !== null || isAnalyzing) return false;
+      if (gameMode === 'stockfish' && turn !== humanColor) return false;
+
+      const trimmed = sanText.trim();
+      if (!trimmed) return false;
+
+      const chess = chessRef.current;
+      try {
+        const move = chess.move(trimmed);
         const record: MoveRecord = {
           ply: chess.history().length,
           san: move.san,
@@ -469,12 +682,12 @@ export default function App() {
         return false;
       }
     },
-    [soundEnabled, syncFromChess]
+    [gameMode, gameResult, humanColor, isAnalyzing, soundEnabled, syncFromChess, turn, viewIndex]
   );
 
   const handleAttemptMove = useCallback(
     (from: Square, to: Square) => {
-      if (gameResult || viewIndex !== null) return;
+      if (gameResult || viewIndex !== null || isAnalyzing) return;
       if (gameMode === 'stockfish' && turn !== humanColor) return;
 
       const chess = chessRef.current;
@@ -486,7 +699,6 @@ export default function App() {
         return;
       }
 
-      // Check if this move requires pawn promotion choice
       const needsPromotion = matchingMoves.some((m) => Boolean(m.promotion));
       if (needsPromotion) {
         setPendingPromotion({ from, to, color: turn });
@@ -495,7 +707,7 @@ export default function App() {
 
       executeMove(from, to);
     },
-    [executeMove, gameMode, gameResult, humanColor, soundEnabled, turn, viewIndex]
+    [executeMove, gameMode, gameResult, humanColor, isAnalyzing, soundEnabled, turn, viewIndex]
   );
 
   const handleSelectPromotion = useCallback(
@@ -514,6 +726,7 @@ export default function App() {
 
   // Trigger Stockfish engine or selected Bot automatically when it is the AI's turn
   useEffect(() => {
+    if (activeView !== 'play') return;
     if (gameMode !== 'stockfish') return;
     if (gameResult) return;
     if (isAnalyzing) return;
@@ -529,9 +742,9 @@ export default function App() {
 
     const movePromise =
       opponentKind === 'bot'
-        ? getBotMove(fen, lanHistory, currentBot, controller.signal)
+        ? getBotMove(fen, lanHistory, currentBot, controller.signal, startFen)
         : stockfishService
-            .getBestMove(lanHistory, currentLevelConfig, controller.signal)
+            .getBestMove(lanHistory, currentLevelConfig, controller.signal, startFen)
             .then(async (best) => {
               const elapsed = performance.now() - startTime;
               if (elapsed < 320) {
@@ -560,6 +773,7 @@ export default function App() {
       setIsEngineThinking(false);
     };
   }, [
+    activeView,
     gameMode,
     opponentKind,
     gameResult,
@@ -568,50 +782,104 @@ export default function App() {
     humanColor,
     moves,
     fen,
+    startFen,
     currentBot,
     currentLevelConfig,
     executeMove,
   ]);
 
+  const canInteractWithBoard =
+    activeView === 'play' &&
+    viewIndex === null &&
+    !gameResult &&
+    !isAnalyzing &&
+    (gameMode === 'two-player' || turn === humanColor);
+
+  // Execute queued premove as soon as human's turn returns
+  useEffect(() => {
+    if (!canInteractWithBoard || !premove) return;
+    const queued = premove;
+    setPremove(null);
+
+    const chess = chessRef.current;
+    const legalMoves = chess.moves({ square: queued.from, verbose: true });
+    const matching = legalMoves.filter((m) => m.to === queued.to);
+    if (matching.length === 0) return;
+
+    const needsPromo = matching.some((m) => Boolean(m.promotion));
+    const promo = queued.promotion ?? (needsPromo ? 'q' : undefined);
+    executeMove(queued.from, queued.to, promo, true);
+  }, [canInteractWithBoard, executeMove, premove]);
+
+  const runMatchAnalysis = useCallback(
+    (
+      targetMoves: MoveRecord[],
+      targetStartFen: string,
+      targetBookPlies: number,
+      targetMatchId: string | null
+    ) => {
+      if (targetMoves.length === 0) return;
+
+      engineAbortRef.current?.abort();
+      analysisAbortRef.current?.abort();
+      hintAbortRef.current?.abort();
+      stockfishService.cancelPending();
+      setIsEngineThinking(false);
+      setIsFetchingHint(false);
+
+      const controller = new AbortController();
+      analysisAbortRef.current = controller;
+      setIsAnalyzing(true);
+      setAnalysisError(null);
+      setAnalysisProgress({ completed: 0, total: targetMoves.length + 1 });
+      setSidebarTab('analysis');
+
+      stockfishService
+        .analyzeMatch(
+          [...targetMoves],
+          (completed, total) => {
+            if (!controller.signal.aborted) {
+              setAnalysisProgress({ completed, total });
+            }
+          },
+          controller.signal,
+          {
+            startFen: targetStartFen,
+            bookPlies: targetBookPlies,
+          }
+        )
+        .then((res) => {
+          if (controller.signal.aborted) return;
+          setAnalysisResult(res);
+          setIsAnalyzing(false);
+
+          if (targetMatchId) {
+            const brilliantCount = res.white.brilliant + res.black.brilliant;
+            const updated = updateMatchAnalysisInHistory(
+              targetMatchId,
+              res.white.accuracy,
+              res.black.accuracy,
+              brilliantCount
+            );
+            setSavedMatches(updated);
+          }
+        })
+        .catch((err) => {
+          if (controller.signal.aborted) return;
+          setIsAnalyzing(false);
+          setAnalysisError(
+            err instanceof Error ? err.message : 'Unable to analyze match.'
+          );
+        });
+    },
+    []
+  );
+
   const handleStartAnalysis = useCallback(() => {
     if (moves.length === 0 || isAnalyzing) return;
-
-    engineAbortRef.current?.abort();
-    analysisAbortRef.current?.abort();
-    stockfishService.cancelPending();
-    setIsEngineThinking(false);
-
-    const controller = new AbortController();
-    analysisAbortRef.current = controller;
-    setIsAnalyzing(true);
-    setAnalysisError(null);
-    setAnalysisProgress({ completed: 0, total: moves.length + 1 });
-
-    const snapshotMoves = [...moves];
-
-    stockfishService
-      .analyzeMatch(
-        snapshotMoves,
-        (completed, total) => {
-          if (!controller.signal.aborted) {
-            setAnalysisProgress({ completed, total });
-          }
-        },
-        controller.signal
-      )
-      .then((res) => {
-        if (controller.signal.aborted) return;
-        setAnalysisResult(res);
-        setIsAnalyzing(false);
-      })
-      .catch((err) => {
-        if (controller.signal.aborted) return;
-        setIsAnalyzing(false);
-        setAnalysisError(
-          err instanceof Error ? err.message : 'Unable to analyze match.'
-        );
-      });
-  }, [isAnalyzing, moves]);
+    const bookPlies = startFen === INITIAL_FEN ? (openingInfo?.matchedPlies ?? 0) : 0;
+    runMatchAnalysis(moves, startFen, bookPlies, currentMatchIdRef.current);
+  }, [isAnalyzing, moves, openingInfo?.matchedPlies, runMatchAnalysis, startFen]);
 
   const handleCancelAnalysis = useCallback(() => {
     analysisAbortRef.current?.abort();
@@ -619,16 +887,54 @@ export default function App() {
     setIsAnalyzing(false);
   }, []);
 
+  const handleRequestHint = useCallback(() => {
+    if (!canInteractWithBoard || isFetchingHint) return;
+    if (gameMode === 'stockfish' && hintsUsed >= MAX_ENGINE_HINTS) return;
+
+    hintAbortRef.current?.abort();
+    const controller = new AbortController();
+    hintAbortRef.current = controller;
+    setIsFetchingHint(true);
+
+    const lanHistory = moves.map((m) => m.lan);
+    stockfishService
+      .getHintMove(lanHistory, startFen, controller.signal)
+      .then((best) => {
+        if (controller.signal.aborted) return;
+        setHintArrow({ from: best.from, to: best.to });
+        setHintsUsed((c) => c + 1);
+        setIsFetchingHint(false);
+        playChessSound('select', soundEnabled);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setIsFetchingHint(false);
+        }
+      });
+  }, [
+    canInteractWithBoard,
+    gameMode,
+    hintsUsed,
+    isFetchingHint,
+    moves,
+    soundEnabled,
+    startFen,
+  ]);
+
   const handleUndo = useCallback(() => {
     if (moves.length === 0 || gameResult) return;
 
     engineAbortRef.current?.abort();
     analysisAbortRef.current?.abort();
+    hintAbortRef.current?.abort();
     stockfishService.cancelPending();
     setIsEngineThinking(false);
+    setIsFetchingHint(false);
     setIsAnalyzing(false);
     setAnalysisResult(null);
     setPendingPromotion(null);
+    setPremove(null);
+    setHintArrow(null);
 
     const chess = chessRef.current;
 
@@ -641,18 +947,14 @@ export default function App() {
       return;
     }
 
-    // In Stockfish mode, undo back to human's turn
     let popCount = 0;
     if (turn !== humanColor) {
-      // Bot was thinking; undo the human's last move
       if (chess.undo()) popCount += 1;
     } else {
-      // It is human's turn; undo bot's reply AND human's previous move
       if (moves.length >= 2) {
         if (chess.undo()) popCount += 1;
         if (chess.undo()) popCount += 1;
       } else if (humanColor === 'b' && moves.length === 1) {
-        // Special case: human plays Black and hasn't moved yet
         return;
       }
     }
@@ -667,9 +969,12 @@ export default function App() {
   const handleResign = useCallback(() => {
     if (gameResult) return;
     engineAbortRef.current?.abort();
+    hintAbortRef.current?.abort();
     stockfishService.cancelPending();
     setIsEngineThinking(false);
+    setIsFetchingHint(false);
     setPendingPromotion(null);
+    setPremove(null);
 
     const losingSide: PlayerColor = gameMode === 'stockfish' ? humanColor : turn;
     const winner: PlayerColor = losingSide === 'w' ? 'b' : 'w';
@@ -688,6 +993,7 @@ export default function App() {
   const handleMutualDraw = useCallback(() => {
     if (gameResult || gameMode !== 'two-player') return;
     setPendingPromotion(null);
+    setPremove(null);
     setGameResult({
       winner: 'draw',
       reason: 'agreement',
@@ -700,6 +1006,7 @@ export default function App() {
   const handleSelectHistoryPly = useCallback(
     (plyIndex: number | null) => {
       setViewIndex(plyIndex);
+      setHintArrow(null);
       const targetIdx = plyIndex === null ? moves.length - 1 : plyIndex;
       const move = targetIdx >= 0 ? moves[targetIdx] : undefined;
       if (move) {
@@ -714,12 +1021,256 @@ export default function App() {
     [moves, soundEnabled]
   );
 
-  // Keyboard shortcuts for history review and board flip
+  // Annotation toggles
+  const handleToggleArrow = useCallback((arrow: BoardArrow) => {
+    setArrows((prev) => {
+      const idx = prev.findIndex(
+        (a) => a.from === arrow.from && a.to === arrow.to && a.color === arrow.color
+      );
+      if (idx >= 0) return prev.filter((_, i) => i !== idx);
+      return [...prev.filter((a) => !(a.from === arrow.from && a.to === arrow.to)), arrow];
+    });
+  }, []);
+
+  const handleToggleHighlight = useCallback((hl: BoardHighlight) => {
+    setHighlights((prev) => {
+      const idx = prev.findIndex(
+        (h) => h.square === hl.square && h.color === hl.color
+      );
+      if (idx >= 0) return prev.filter((_, i) => i !== idx);
+      return [...prev.filter((h) => h.square !== hl.square), hl];
+    });
+  }, []);
+
+  const handleClearAnnotations = useCallback(() => {
+    setArrows([]);
+    setHighlights([]);
+  }, []);
+
+  // Load match from Archive
+  const handleLoadSavedMatch = useCallback(
+    (match: SavedMatch, autoAnalyze = false) => {
+      engineAbortRef.current?.abort();
+      analysisAbortRef.current?.abort();
+      hintAbortRef.current?.abort();
+      stockfishService.cancelPending();
+
+      const replay = new Chess(match.startFen || INITIAL_FEN);
+      for (const m of match.moves) {
+        try {
+          replay.move(m.lan);
+        } catch {
+          try {
+            replay.move(m.san);
+          } catch {
+            break;
+          }
+        }
+      }
+
+      currentMatchIdRef.current = match.id;
+      isLoadedArchiveRef.current = true;
+
+      chessRef.current = replay;
+      setGameMode(match.mode);
+      if (match.opponentKind) setOpponentKind(match.opponentKind);
+      if (match.stockfishLevel) setStockfishLevel(match.stockfishLevel);
+      if (match.botId) setSelectedBotId(match.botId);
+      setVariant(match.variant ?? 'standard');
+      setStartFen(match.startFen || INITIAL_FEN);
+      setVariantNote(match.variant === 'shuffle960' ? 'Saved 960 Match' : null);
+      setHumanColor(match.humanColor);
+      setFlipped(match.humanColor === 'b');
+      setFen(replay.fen());
+      setMoves(match.moves);
+      setTurn(replay.turn());
+      setIsCheck(replay.isCheck());
+      setGameResult({
+        winner: match.winner,
+        reason: match.reason,
+        headline: match.headline,
+        detail: `Loaded from Archive · ${match.opponentLabel}`,
+      });
+      setPendingPromotion(null);
+      setViewIndex(match.moves.length > 0 ? 0 : null);
+      setIsEngineThinking(false);
+      setEngineError(null);
+      setPremove(null);
+      setArrows([]);
+      setHighlights([]);
+      setHintArrow(null);
+      setIsFetchingHint(false);
+      setAnalysisResult(null);
+      setIsAnalyzing(false);
+      setAnalysisError(null);
+      setAnalysisProgress({ completed: 0, total: 0 });
+      setActiveView('play');
+      setSidebarTab(autoAnalyze ? 'analysis' : 'moves');
+
+      if (autoAnalyze && match.moves.length > 0) {
+        const opening = match.startFen === INITIAL_FEN ? detectOpening(match.moves) : null;
+        runMatchAnalysis(
+          match.moves,
+          match.startFen || INITIAL_FEN,
+          opening?.matchedPlies ?? 0,
+          match.id
+        );
+      }
+    },
+    [runMatchAnalysis]
+  );
+
+  // Import custom FEN or PGN from ArchiveWorkspace
+  const handleImportPositionOrGame = useCallback(
+    (rawInput: string, mode: 'play' | 'analyze'): string | null => {
+      const input = rawInput.trim();
+      if (!input) return 'Paste a valid FEN string or PGN notation first.';
+
+      engineAbortRef.current?.abort();
+      analysisAbortRef.current?.abort();
+      hintAbortRef.current?.abort();
+      stockfishService.cancelPending();
+
+      // 1. Try FEN first
+      try {
+        const fenChess = new Chess(input);
+        const loadedFen = fenChess.fen();
+
+        currentMatchIdRef.current = null;
+        isLoadedArchiveRef.current = false;
+        chessRef.current = fenChess;
+        setStartFen(loadedFen);
+        setVariant('standard');
+        setVariantNote('Custom FEN');
+        setFen(loadedFen);
+        setMoves([]);
+        setTurn(fenChess.turn());
+        setIsCheck(fenChess.isCheck());
+        setHumanColor(fenChess.turn());
+        setFlipped(fenChess.turn() === 'b');
+        setGameResult(evaluateGameEnd(fenChess));
+        setPendingPromotion(null);
+        setViewIndex(null);
+        setIsEngineThinking(false);
+        setEngineError(null);
+        setPremove(null);
+        setArrows([]);
+        setHighlights([]);
+        setHintArrow(null);
+        setHintsUsed(0);
+        setAnalysisResult(null);
+        setIsAnalyzing(false);
+        setAnalysisError(null);
+        setActiveView('play');
+        setSidebarTab('moves');
+        return null;
+      } catch {
+        // Not a standalone FEN — try PGN below
+      }
+
+      // 2. Try PGN
+      try {
+        const pgnChess = new Chess();
+        pgnChess.loadPgn(input);
+        const headers = pgnChess.getHeaders();
+        const customStart =
+          headers.SetUp === '1' && headers.FEN ? headers.FEN : INITIAL_FEN;
+
+        const replay = new Chess(customStart);
+        const verboseHistory = pgnChess.history({ verbose: true });
+        const importedMoves: MoveRecord[] = [];
+
+        for (const m of verboseHistory) {
+          const executed = replay.move(m.lan);
+          importedMoves.push({
+            ply: importedMoves.length + 1,
+            san: executed.san,
+            lan: executed.lan,
+            from: executed.from,
+            to: executed.to,
+            fen: replay.fen(),
+            color: executed.color,
+            isCheck: replay.isCheck(),
+            isCheckmate: replay.isCheckmate(),
+            isCapture: executed.isCapture(),
+            isCastle: executed.isKingsideCastle() || executed.isQueensideCastle(),
+            isPromotion: executed.isPromotion(),
+          });
+        }
+
+        const ended = evaluateGameEnd(replay);
+        const hasMoves = importedMoves.length > 0;
+
+        currentMatchIdRef.current = null;
+        isLoadedArchiveRef.current = mode === 'analyze';
+        chessRef.current = replay;
+        setStartFen(customStart);
+        setVariant('standard');
+        setVariantNote(customStart === INITIAL_FEN ? 'Imported PGN' : 'Imported Custom PGN');
+        setGameMode(mode === 'analyze' && hasMoves ? 'two-player' : gameMode);
+        setFen(replay.fen());
+        setMoves(importedMoves);
+        setTurn(replay.turn());
+        setIsCheck(replay.isCheck());
+        setHumanColor(replay.turn());
+        setFlipped(false);
+        setGameResult(
+          ended ??
+            (mode === 'analyze' && hasMoves
+              ? {
+                  winner: 'draw',
+                  reason: 'agreement',
+                  headline: 'Imported PGN Ready for Review',
+                  detail: `${importedMoves.length} half-moves loaded.`,
+                }
+              : null)
+        );
+        setPendingPromotion(null);
+        setViewIndex(hasMoves ? 0 : null);
+        setIsEngineThinking(false);
+        setEngineError(null);
+        setPremove(null);
+        setArrows([]);
+        setHighlights([]);
+        setHintArrow(null);
+        setHintsUsed(0);
+        setAnalysisResult(null);
+        setIsAnalyzing(false);
+        setAnalysisError(null);
+        setActiveView('play');
+        setSidebarTab(mode === 'analyze' && hasMoves ? 'analysis' : 'moves');
+
+        if (mode === 'analyze' && hasMoves) {
+          const opening =
+            customStart === INITIAL_FEN ? detectOpening(importedMoves) : null;
+          runMatchAnalysis(
+            importedMoves,
+            customStart,
+            opening?.matchedPlies ?? 0,
+            null
+          );
+        }
+
+        return null;
+      } catch {
+        return 'Could not parse FEN or PGN. Check notation and try again.';
+      }
+    },
+    [gameMode, runMatchAnalysis]
+  );
+
+  // Keyboard shortcuts for history review and board flip in Play view
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (activeView !== 'play') return;
       if (pendingPromotion) return;
       const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT')
+      ) {
         return;
       }
 
@@ -744,15 +1295,15 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleSelectHistoryPly, moves.length, pendingPromotion, viewIndex]);
+  }, [activeView, handleSelectHistoryPly, moves.length, pendingPromotion, viewIndex]);
 
-  // Compute displayed board FEN & metadata (live or historical)
+  // Displayed board state (live or historical)
   const isReviewingHistory = viewIndex !== null;
   const displayFen = useMemo(() => {
     if (viewIndex === null) return fen;
-    if (viewIndex < 0) return INITIAL_FEN;
+    if (viewIndex < 0) return startFen;
     return moves[viewIndex]?.fen ?? fen;
-  }, [fen, moves, viewIndex]);
+  }, [fen, moves, startFen, viewIndex]);
 
   const displayLastMove = useMemo(() => {
     if (viewIndex === null) {
@@ -763,9 +1314,7 @@ export default function App() {
     }
     if (viewIndex < 0) return null;
     const item = moves[viewIndex];
-    return item
-      ? { from: item.from, to: item.to, isCapture: item.isCapture }
-      : null;
+    return item ? { from: item.from, to: item.to, isCapture: item.isCapture } : null;
   }, [moves, viewIndex]);
 
   const checkedKingSquare = useMemo(
@@ -774,15 +1323,9 @@ export default function App() {
   );
 
   const materialStats = useMemo(
-    () => computeMaterialAndCaptures(displayFen),
-    [displayFen]
+    () => computeMaterialAndCaptures(displayFen, startFen),
+    [displayFen, startFen]
   );
-
-  const canInteractWithBoard =
-    !isReviewingHistory &&
-    !gameResult &&
-    !isAnalyzing &&
-    (gameMode === 'two-player' || turn === humanColor);
 
   const canUndo =
     !gameResult &&
@@ -825,18 +1368,29 @@ export default function App() {
     };
   }, [analysisResult, moves.length, viewIndex]);
 
+  const allowPremove =
+    activeView === 'play' &&
+    gameMode === 'stockfish' &&
+    !gameResult &&
+    !isReviewingHistory &&
+    !isAnalyzing &&
+    turn !== humanColor;
+
+  const hintsRemaining =
+    gameMode === 'stockfish' ? Math.max(0, MAX_ENGINE_HINTS - hintsUsed) : null;
+  const canRequestHint =
+    canInteractWithBoard &&
+    !isFetchingHint &&
+    (hintsRemaining === null || hintsRemaining > 0);
+
   // Top & Bottom PlayerBar assignments based on board orientation
   const topColor: PlayerColor = flipped ? 'w' : 'b';
   const bottomColor: PlayerColor = flipped ? 'b' : 'w';
 
   const getPlayerLabel = (color: PlayerColor) => {
     if (gameMode === 'stockfish') {
-      if (color === humanColor) {
-        return 'You';
-      }
-      if (opponentKind === 'bot') {
-        return currentBot.name;
-      }
+      if (color === humanColor) return 'You';
+      if (opponentKind === 'bot') return currentBot.name;
       return `Stockfish · ${currentLevelConfig.name}`;
     }
     return color === 'w' ? 'Player 1' : 'Player 2';
@@ -844,23 +1398,31 @@ export default function App() {
 
   const getPlayerSubtitle = (color: PlayerColor) => {
     if (gameMode === 'stockfish') {
-      if (color === humanColor) {
-        return color === 'w' ? 'White' : 'Black';
-      }
-      if (opponentKind === 'bot') {
-        return `${currentBot.tagline} · ${currentBot.eloLabel}`;
-      }
+      if (color === humanColor) return color === 'w' ? 'White' : 'Black';
+      if (opponentKind === 'bot') return `${currentBot.tagline} · ${currentBot.eloLabel}`;
       return `Lv ${currentLevelConfig.level} · ${currentLevelConfig.eloLabel} Elo`;
     }
     return color === 'w' ? 'White' : 'Black';
   };
 
+  const navItems: { id: AppView; label: string; icon: React.ReactNode }[] = [
+    { id: 'play', label: 'Play', icon: <Swords className="w-3.5 h-3.5" aria-hidden="true" /> },
+    { id: 'puzzles', label: 'Puzzles', icon: <Puzzle className="w-3.5 h-3.5" aria-hidden="true" /> },
+    { id: 'endgames', label: 'Endgames', icon: <Crown className="w-3.5 h-3.5" aria-hidden="true" /> },
+    { id: 'archive', label: 'Archive', icon: <Archive className="w-3.5 h-3.5" aria-hidden="true" /> },
+  ];
+
   return (
     <div className="min-h-screen flex flex-col bg-stone-100 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
-      {/* Top Bar */}
+      {/* 3-Zone Top Navigation Bar */}
       <header className="border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
-        <div className="mx-auto flex h-14 max-w-[1200px] items-center justify-between gap-6 px-4 sm:px-6">
-          <div className="flex items-center gap-2.5 shrink-0">
+        <div className="mx-auto flex h-14 max-w-[1200px] items-center justify-between gap-4 px-4 sm:px-6">
+          {/* Zone 1: Brand Identity */}
+          <button
+            type="button"
+            onClick={() => setActiveView('play')}
+            className="flex items-center gap-2.5 shrink-0 text-left focus:outline-none"
+          >
             <svg
               viewBox="0 0 512 512"
               fill="none"
@@ -883,8 +1445,36 @@ export default function App() {
             <span className="font-display text-lg font-bold tracking-tight text-stone-900 dark:text-stone-100 whitespace-nowrap shrink-0">
               SquareEight
             </span>
-          </div>
+          </button>
 
+          {/* Zone 2: Desktop Primary Studio Navigation */}
+          <nav aria-label="Studio sections" className="hidden md:flex items-center gap-1 h-full">
+            {navItems.map((item) => {
+              const active = activeView === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveView(item.id)}
+                  className={`inline-flex h-full items-center gap-1.5 px-3 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+                    active
+                      ? 'border-emerald-700 dark:border-emerald-400 text-emerald-800 dark:text-emerald-300'
+                      : 'border-transparent text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                  }`}
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                  {item.id === 'archive' && savedMatches.length > 0 && (
+                    <span className="font-mono text-[10px] opacity-70 tabular-nums">
+                      ({savedMatches.length})
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Zone 3: Utility Controls & Primary CTA */}
           <div className="flex items-center gap-2 shrink-0">
             <PWAInstallButton />
 
@@ -922,621 +1512,851 @@ export default function App() {
             </button>
           </div>
         </div>
+
+        {/* Mobile Compact Section Tabs */}
+        <nav
+          aria-label="Mobile studio sections"
+          className="md:hidden border-t border-stone-200/80 dark:border-stone-800/80 grid grid-cols-4 bg-stone-50/70 dark:bg-stone-900"
+        >
+          {navItems.map((item) => {
+            const active = activeView === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveView(item.id)}
+                className={`inline-flex items-center justify-center gap-1.5 py-2 text-[11px] font-semibold border-b-2 transition-colors whitespace-nowrap ${
+                  active
+                    ? 'border-emerald-700 dark:border-emerald-400 text-emerald-800 dark:text-emerald-300 bg-white dark:bg-stone-900'
+                    : 'border-transparent text-stone-600 dark:text-stone-400'
+                }`}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
       </header>
 
-      {/* Main Chess Workspace */}
+      {/* Active Studio Workspace */}
       <main className="mx-auto w-full max-w-[1200px] flex-1 px-4 py-4 sm:px-6 sm:py-6">
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start">
-          {/* Board Column */}
-          <div className="flex flex-col items-center">
-            <div className="w-full max-w-[580px] lg:max-w-[min(600px,calc(100vh-220px))] space-y-2.5">
-              {/* Top Player Bar */}
-              <PlayerBar
-                color={topColor}
-                label={getPlayerLabel(topColor)}
-                subtitle={getPlayerSubtitle(topColor)}
-                capturedPieces={
-                  topColor === 'w'
-                    ? materialStats.capturedByWhite
-                    : materialStats.capturedByBlack
-                }
-                materialLead={
-                  topColor === 'w' ? materialStats.whiteLead : materialStats.blackLead
-                }
-                isTurn={turn === topColor}
-                isThinking={
-                  gameMode === 'stockfish' && topColor !== humanColor && isEngineThinking
-                }
-                isCheck={isCheck && turn === topColor}
-                isGameOver={Boolean(gameResult)}
-                timeRemainingMs={
-                  currentTimeControl.id !== 'none' ? clocksMs[topColor] : null
-                }
-              />
+        {activeView === 'play' && (
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_400px] lg:items-start">
+            {/* Left Column: Board & Player Bars */}
+            <div className="flex flex-col items-center">
+              <div className="w-full max-w-[580px] lg:max-w-[min(600px,calc(100vh-220px))] space-y-2.5">
+                {/* Top Player Bar */}
+                <PlayerBar
+                  color={topColor}
+                  label={getPlayerLabel(topColor)}
+                  subtitle={getPlayerSubtitle(topColor)}
+                  capturedPieces={
+                    topColor === 'w'
+                      ? materialStats.capturedByWhite
+                      : materialStats.capturedByBlack
+                  }
+                  materialLead={
+                    topColor === 'w' ? materialStats.whiteLead : materialStats.blackLead
+                  }
+                  isTurn={turn === topColor}
+                  isThinking={
+                    gameMode === 'stockfish' && topColor !== humanColor && isEngineThinking
+                  }
+                  isCheck={isCheck && turn === topColor}
+                  isGameOver={Boolean(gameResult)}
+                  timeRemainingMs={
+                    currentTimeControl.id !== 'none' ? clocksMs[topColor] : null
+                  }
+                  pieceSet={pieceSet}
+                />
 
-              {/* Chessboard + Optional Stockfish Eval Bar */}
-              <div className="flex items-stretch gap-2">
-                {currentDisplayedEval && (
-                  <EvalBar evaluation={currentDisplayedEval} flipped={flipped} />
-                )}
-                <div className="flex-1 min-w-0">
-                  <ChessBoard
-                    fen={displayFen}
-                    flipped={flipped}
-                    canInteract={canInteractWithBoard}
-                    activeTurn={turn}
-                    lastMove={displayLastMove}
-                    checkedKingSquare={checkedKingSquare}
-                    theme={boardTheme}
-                    soundEnabled={soundEnabled}
-                    pendingPromotion={pendingPromotion}
-                    onAttemptMove={handleAttemptMove}
-                    onSelectPromotion={handleSelectPromotion}
-                    onCancelPromotion={handleCancelPromotion}
-                    isReviewingHistory={isReviewingHistory}
-                    onJumpToLive={() => handleSelectHistoryPly(null)}
-                    bestMoveArrow={bestMoveArrow}
-                    moveMarker={currentMoveMarker}
-                  />
+                {/* Board + Optional Analysis Eval Bar */}
+                <div className="flex items-stretch gap-2">
+                  {currentDisplayedEval && (
+                    <EvalBar evaluation={currentDisplayedEval} flipped={flipped} />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <ChessBoard
+                      fen={displayFen}
+                      flipped={flipped}
+                      canInteract={canInteractWithBoard}
+                      activeTurn={turn}
+                      humanColor={humanColor}
+                      lastMove={displayLastMove}
+                      checkedKingSquare={checkedKingSquare}
+                      theme={boardTheme}
+                      pieceSet={pieceSet}
+                      soundEnabled={soundEnabled}
+                      pendingPromotion={pendingPromotion}
+                      onAttemptMove={handleAttemptMove}
+                      onSelectPromotion={handleSelectPromotion}
+                      onCancelPromotion={handleCancelPromotion}
+                      isReviewingHistory={isReviewingHistory}
+                      onJumpToLive={() => handleSelectHistoryPly(null)}
+                      bestMoveArrow={bestMoveArrow}
+                      hintArrow={hintArrow}
+                      moveMarker={currentMoveMarker}
+                      allowPremove={allowPremove}
+                      premove={premove}
+                      onSetPremove={setPremove}
+                      arrows={arrows}
+                      highlights={highlights}
+                      onToggleArrow={handleToggleArrow}
+                      onToggleHighlight={handleToggleHighlight}
+                      onClearAnnotations={handleClearAnnotations}
+                    />
+                  </div>
                 </div>
-              </div>
 
-              {/* Bottom Player Bar */}
-              <PlayerBar
-                color={bottomColor}
-                label={getPlayerLabel(bottomColor)}
-                subtitle={getPlayerSubtitle(bottomColor)}
-                capturedPieces={
-                  bottomColor === 'w'
-                    ? materialStats.capturedByWhite
-                    : materialStats.capturedByBlack
-                }
-                materialLead={
-                  bottomColor === 'w' ? materialStats.whiteLead : materialStats.blackLead
-                }
-                isTurn={turn === bottomColor}
-                isThinking={
-                  gameMode === 'stockfish' &&
-                  bottomColor !== humanColor &&
-                  isEngineThinking
-                }
-                isCheck={isCheck && turn === bottomColor}
-                isGameOver={Boolean(gameResult)}
-                timeRemainingMs={
-                  currentTimeControl.id !== 'none' ? clocksMs[bottomColor] : null
-                }
-              />
+                {/* Bottom Player Bar */}
+                <PlayerBar
+                  color={bottomColor}
+                  label={getPlayerLabel(bottomColor)}
+                  subtitle={getPlayerSubtitle(bottomColor)}
+                  capturedPieces={
+                    bottomColor === 'w'
+                      ? materialStats.capturedByWhite
+                      : materialStats.capturedByBlack
+                  }
+                  materialLead={
+                    bottomColor === 'w' ? materialStats.whiteLead : materialStats.blackLead
+                  }
+                  isTurn={turn === bottomColor}
+                  isThinking={
+                    gameMode === 'stockfish' && bottomColor !== humanColor && isEngineThinking
+                  }
+                  isCheck={isCheck && turn === bottomColor}
+                  isGameOver={Boolean(gameResult)}
+                  timeRemainingMs={
+                    currentTimeControl.id !== 'none' ? clocksMs[bottomColor] : null
+                  }
+                  pieceSet={pieceSet}
+                />
 
-              {/* Engine Error Banner (if any) */}
-              {engineError && (
-                <div
-                  role="alert"
-                  className="flex items-center justify-between gap-3 rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/60 px-3.5 py-2.5 text-xs text-red-800 dark:text-red-200"
-                >
-                  <span>Engine notice: {engineError}</span>
-                  <button
-                    type="button"
-                    onClick={() => startNewGame()}
-                    className="font-semibold underline whitespace-nowrap"
+                {/* Live Opening & Annotation Status Bar */}
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-stone-200 dark:border-stone-800 bg-white/90 dark:bg-stone-900/90 px-3 py-2 text-[11px]">
+                  <div className="flex items-center gap-1.5 min-w-0 text-stone-700 dark:text-stone-300">
+                    <BookOpen
+                      className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400 shrink-0"
+                      aria-hidden="true"
+                    />
+                    {openingInfo ? (
+                      <span className="truncate">
+                        <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
+                          {openingInfo.eco}
+                        </span>
+                        <span className="mx-1.5 text-stone-400">·</span>
+                        <span>{openingInfo.name}</span>
+                      </span>
+                    ) : variantNote || variant !== 'standard' ? (
+                      <span className="truncate">
+                        <span className="font-semibold text-stone-900 dark:text-stone-100">
+                          {GAME_VARIANTS.find((v) => v.id === variant)?.label ?? 'Custom'}
+                        </span>
+                        {variantNote && (
+                          <span className="ml-1.5 font-mono text-stone-500 dark:text-stone-400">
+                            · {variantNote}
+                          </span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-stone-500 dark:text-stone-400 truncate">
+                        Standard Opening · Play a move to detect ECO line
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {premove && (
+                      <button
+                        type="button"
+                        onClick={() => setPremove(null)}
+                        className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-sky-700 dark:text-sky-400 hover:underline"
+                      >
+                        <span>
+                          Premove {premove.from}→{premove.to}
+                        </span>
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+
+                    {(arrows.length > 0 || highlights.length > 0) && (
+                      <button
+                        type="button"
+                        onClick={handleClearAnnotations}
+                        className="text-[11px] font-medium text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 underline"
+                      >
+                        Clear marks
+                      </button>
+                    )}
+
+                    {!premove && arrows.length === 0 && highlights.length === 0 && (
+                      <span className="hidden sm:inline text-[10px] text-stone-400 dark:text-stone-500">
+                        Right-click: arrows
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Engine Error Banner (if any) */}
+                {engineError && (
+                  <div
+                    role="alert"
+                    className="flex items-center justify-between gap-3 rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/60 px-3.5 py-2.5 text-xs text-red-800 dark:text-red-200"
                   >
-                    Restart
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Control & Notation Sidebar */}
-          <aside className="space-y-4">
-            {/* Game Over Summary & Post-Match Analysis Card */}
-            {gameResult && (
-              <section
-                aria-live="polite"
-                className="rounded-xl border border-emerald-700/35 dark:border-emerald-500/40 bg-white dark:bg-stone-900 p-4 shadow-sm animate-chess-modal space-y-3"
-              >
-                <div>
-                  <div className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
-                    Game Complete
-                  </div>
-                  <h2 className="mt-1 font-display text-lg font-bold text-stone-900 dark:text-stone-100">
-                    {gameResult.headline}
-                  </h2>
-                  <p className="mt-1 text-xs text-stone-600 dark:text-stone-400">
-                    {gameResult.detail}
-                  </p>
-                </div>
-
-                {isAnalyzing && (
-                  <div className="space-y-1.5 rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 p-2.5">
-                    <div className="flex items-center justify-between text-[11px] text-stone-600 dark:text-stone-300">
-                      <span className="inline-flex items-center gap-1.5 font-medium">
-                        <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-700 dark:text-emerald-400" />
-                        <span>Analyzing all moves…</span>
-                      </span>
-                      <span className="font-mono tabular-nums">
-                        {analysisProgress.completed}/{analysisProgress.total}
-                      </span>
-                    </div>
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-stone-200 dark:bg-stone-700">
-                      <div
-                        className="h-full bg-emerald-700 dark:bg-emerald-500 transition-[width] duration-150"
-                        style={{
-                          width: `${
-                            analysisProgress.total > 0
-                              ? Math.round(
-                                  (analysisProgress.completed / analysisProgress.total) * 100
-                                )
-                              : 0
-                          }%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {analysisResult && !isAnalyzing && (
-                  <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/80 dark:bg-stone-800/50 p-2.5 space-y-2">
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div>
-                        <div className="text-[10px] text-stone-500 dark:text-stone-400">
-                          White Accuracy
-                        </div>
-                        <div className="font-mono text-sm font-bold text-stone-900 dark:text-stone-100 tabular-nums">
-                          {analysisResult.white.accuracy.toFixed(1)}%
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] text-stone-500 dark:text-stone-400">
-                          Black Accuracy
-                        </div>
-                        <div className="font-mono text-sm font-bold text-stone-900 dark:text-stone-100 tabular-nums">
-                          {analysisResult.black.accuracy.toFixed(1)}%
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono tabular-nums">
-                      {(analysisResult.white.brilliant + analysisResult.black.brilliant) > 0 && (
-                        <span className="font-semibold text-cyan-600 dark:text-cyan-400">
-                          !! {analysisResult.white.brilliant + analysisResult.black.brilliant} Brilliant
-                        </span>
-                      )}
-                      {(analysisResult.white.great + analysisResult.black.great) > 0 && (
-                        <span className="font-semibold text-sky-600 dark:text-sky-400">
-                          ! {analysisResult.white.great + analysisResult.black.great} Great
-                        </span>
-                      )}
-                      <span className="text-emerald-700 dark:text-emerald-400">
-                        ★ {analysisResult.white.best + analysisResult.black.best} Best
-                      </span>
-                      {(analysisResult.white.blunder + analysisResult.black.blunder) > 0 && (
-                        <span className="font-semibold text-red-600 dark:text-red-400">
-                          ?? {analysisResult.white.blunder + analysisResult.black.blunder} Blunder
-                        </span>
-                      )}
-                    </div>
-
+                    <span>Engine notice: {engineError}</span>
                     <button
                       type="button"
-                      onClick={() => {
-                        handleSelectHistoryPly(moves.length > 0 ? 0 : null);
-                        document
-                          .getElementById('match-analysis-panel')
-                          ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                      }}
-                      className="w-full inline-flex items-center justify-center gap-1 rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 py-1.5 text-[11px] font-semibold text-stone-800 dark:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors"
+                      onClick={() => startNewGame()}
+                      className="font-semibold underline whitespace-nowrap"
                     >
-                      <span>Step Through All Moves</span>
-                      <ChevronRight className="w-3.5 h-3.5" />
+                      Restart
                     </button>
                   </div>
                 )}
+              </div>
+            </div>
 
-                <div className={`grid gap-2 ${moves.length > 0 && !analysisResult && !isAnalyzing ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            {/* Right Column: Unified Tabbed Play Studio */}
+            <aside className="space-y-3">
+              {/* Post-Game Summary Card */}
+              {gameResult && (
+                <section
+                  aria-live="polite"
+                  className="rounded-xl border border-emerald-700/35 dark:border-emerald-500/40 bg-white dark:bg-stone-900 p-4 shadow-sm animate-chess-modal space-y-3"
+                >
+                  <div>
+                    <div className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                      Game Complete
+                    </div>
+                    <h2 className="mt-0.5 font-display text-lg font-bold text-stone-900 dark:text-stone-100">
+                      {gameResult.headline}
+                    </h2>
+                    <p className="mt-0.5 text-xs text-stone-600 dark:text-stone-400">
+                      {gameResult.detail}
+                    </p>
+                  </div>
+
+                  {analysisResult && !isAnalyzing && (
+                    <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/80 dark:bg-stone-800/50 p-2.5 flex items-center justify-between text-xs">
+                      <div className="font-mono tabular-nums">
+                        <span className="text-stone-500 dark:text-stone-400 mr-1.5">W:</span>
+                        <span className="font-bold text-stone-900 dark:text-stone-100">
+                          {analysisResult.white.accuracy.toFixed(1)}%
+                        </span>
+                        <span className="mx-2 text-stone-300 dark:text-stone-700">|</span>
+                        <span className="text-stone-500 dark:text-stone-400 mr-1.5">B:</span>
+                        <span className="font-bold text-stone-900 dark:text-stone-100">
+                          {analysisResult.black.accuracy.toFixed(1)}%
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSidebarTab('analysis');
+                          handleSelectHistoryPly(moves.length > 0 ? 0 : null);
+                        }}
+                        className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 hover:underline whitespace-nowrap"
+                      >
+                        Review Report
+                      </button>
+                    </div>
+                  )}
+
+                  <div
+                    className={`grid gap-2 ${
+                      moves.length > 0 && !analysisResult && !isAnalyzing
+                        ? 'grid-cols-2'
+                        : 'grid-cols-1'
+                    }`}
+                  >
+                    {moves.length > 0 && !analysisResult && !isAnalyzing && (
+                      <button
+                        type="button"
+                        onClick={handleStartAnalysis}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-700/40 dark:border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-950/40 py-2 px-3 text-xs font-semibold text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100/70 dark:hover:bg-emerald-950/70 transition-colors whitespace-nowrap"
+                      >
+                        <BarChart3 className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Analyze Match</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => startNewGame()}
+                      className="w-full rounded-lg bg-emerald-700 py-2 px-3 text-xs font-semibold text-white hover:bg-emerald-800 transition-colors whitespace-nowrap"
+                    >
+                      Play Again
+                    </button>
+                  </div>
+                </section>
+              )}
+
+              {/* Quick Actions Bar */}
+              <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-2 space-y-1.5">
+                <div className="grid grid-cols-4 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleRequestHint}
+                    disabled={!canRequestHint}
+                    title={
+                      hintsRemaining !== null
+                        ? `${hintsRemaining} engine hints left this game`
+                        : 'Suggest best move'
+                    }
+                    className="inline-flex items-center justify-center gap-1 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50/70 dark:bg-stone-800/80 px-2 py-2 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-50/70 dark:hover:bg-amber-950/30 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
+                  >
+                    {isFetchingHint ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Lightbulb className="w-3.5 h-3.5" aria-hidden="true" />
+                    )}
+                    <span>
+                      {hintsRemaining !== null ? `Hint (${hintsRemaining})` : 'Hint'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleUndo}
+                    disabled={!canUndo}
+                    className="inline-flex items-center justify-center gap-1 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50/70 dark:bg-stone-800/80 px-2 py-2 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
+                  >
+                    <Undo2 className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Undo</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setFlipped((f) => !f)}
+                    title="Flip board (F)"
+                    className="inline-flex items-center justify-center gap-1 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50/70 dark:bg-stone-800/80 px-2 py-2 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors whitespace-nowrap"
+                  >
+                    <ArrowUpDown className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Flip</span>
+                  </button>
+
+                  {gameMode === 'two-player' ? (
+                    <button
+                      type="button"
+                      onClick={handleMutualDraw}
+                      disabled={Boolean(gameResult)}
+                      className="inline-flex items-center justify-center gap-1 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50/70 dark:bg-stone-800/80 px-2 py-2 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
+                    >
+                      <Handshake className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Draw</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleResign}
+                      disabled={Boolean(gameResult) || moves.length === 0}
+                      className="inline-flex items-center justify-center gap-1 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50/70 dark:bg-stone-800/80 px-2 py-2 text-xs font-medium text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
+                    >
+                      <Flag className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Resign</span>
+                    </button>
+                  )}
+                </div>
+
+                {gameMode === 'two-player' && (
+                  <button
+                    type="button"
+                    onClick={handleResign}
+                    disabled={Boolean(gameResult) || moves.length === 0}
+                    className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50/70 dark:bg-stone-800/80 px-3 py-1.5 text-[11px] font-medium text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+                  >
+                    <Flag className="w-3 h-3" aria-hidden="true" />
+                    <span>Resign ({turn === 'w' ? 'White' : 'Black'})</span>
+                  </button>
+                )}
+              </div>
+
+              {/* 3-Tab Studio Switcher */}
+              <div className="grid grid-cols-3 gap-1 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-1">
+                {(
+                  [
+                    {
+                      id: 'moves',
+                      label: moves.length > 0 ? `Moves (${moves.length})` : 'Moves',
+                    },
+                    { id: 'setup', label: 'Setup' },
+                    {
+                      id: 'analysis',
+                      label: isAnalyzing
+                        ? `Analyzing ${analysisProgress.completed}/${analysisProgress.total}`
+                        : analysisResult
+                          ? 'Analysis ✓'
+                          : 'Analysis',
+                    },
+                  ] as { id: SidebarTab; label: string }[]
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setSidebarTab(tab.id)}
+                    className={`rounded-lg py-2 px-2 text-xs font-semibold transition-colors whitespace-nowrap truncate ${
+                      sidebarTab === tab.id
+                        ? 'bg-emerald-700 text-white shadow-xs'
+                        : 'text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 hover:text-stone-900 dark:hover:text-stone-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Tab 1: Moves & SAN Entry */}
+              {sidebarTab === 'moves' && (
+                <div className="space-y-3">
+                  <MoveHistoryPanel
+                    moves={moves}
+                    viewIndex={viewIndex}
+                    onSelectPly={handleSelectHistoryPly}
+                    pgn={pgnString}
+                    fen={displayFen}
+                    analysis={analysisResult}
+                    canEnterSan={canInteractWithBoard}
+                    onSubmitSanMove={handleSubmitSanMove}
+                  />
+
                   {moves.length > 0 && !analysisResult && !isAnalyzing && (
                     <button
                       type="button"
                       onClick={handleStartAnalysis}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-700/40 dark:border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-950/40 py-2 px-3 text-xs font-semibold text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100/70 dark:hover:bg-emerald-950/70 transition-colors whitespace-nowrap"
+                      className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 py-2.5 px-3 text-xs font-semibold text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50/70 dark:hover:bg-emerald-950/40 transition-colors"
                     >
                       <BarChart3 className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Analyze Match</span>
+                      <span>Run Stockfish Match Analysis</span>
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => startNewGame()}
-                    className="w-full rounded-lg bg-emerald-700 py-2 px-3 text-xs font-semibold text-white hover:bg-emerald-800 transition-colors whitespace-nowrap"
-                  >
-                    Play Again
-                  </button>
                 </div>
-              </section>
-            )}
+              )}
 
-            {/* Mode & Engine Settings Card */}
-            <section className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4 space-y-4">
-              {/* Mode Switch */}
-              <div>
-                <label className="block text-xs font-semibold text-stone-700 dark:text-stone-300 mb-2">
-                  Game Mode
-                </label>
-                <div className="grid grid-cols-2 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (gameMode !== 'stockfish') {
-                        startNewGame({ mode: 'stockfish' });
-                      }
-                    }}
-                    className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
-                      gameMode === 'stockfish'
-                        ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
-                        : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
-                    }`}
-                  >
-                    <Cpu className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>vs Engine</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (gameMode !== 'two-player') {
-                        startNewGame({ mode: 'two-player' });
-                      }
-                    }}
-                    className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
-                      gameMode === 'two-player'
-                        ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
-                        : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
-                    }`}
-                  >
-                    <Users className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>2 Players</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Engine / Bot & Side Selection */}
-              {gameMode === 'stockfish' ? (
-                <>
-                  {/* Stockfish (10 Levels) vs Chess Bots (6 Personalities) */}
+              {/* Tab 2: Game Setup, Variants & Appearance */}
+              {sidebarTab === 'setup' && (
+                <section className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4 space-y-4">
+                  {/* Game Mode */}
                   <div>
-                    <div className="grid grid-cols-2 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-1 mb-3">
+                    <label className="block text-xs font-semibold text-stone-700 dark:text-stone-300 mb-2">
+                      Game Mode
+                    </label>
+                    <div className="grid grid-cols-2 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-1">
                       <button
                         type="button"
                         onClick={() => {
-                          if (opponentKind !== 'stockfish') {
-                            startNewGame({ opponentKind: 'stockfish' });
+                          if (gameMode !== 'stockfish') {
+                            startNewGame({ mode: 'stockfish' });
                           }
                         }}
-                        className={`flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
-                          opponentKind === 'stockfish'
+                        className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                          gameMode === 'stockfish'
                             ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
                             : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
                         }`}
                       >
                         <Cpu className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>Stockfish (10)</span>
+                        <span>vs Engine</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => {
-                          if (opponentKind !== 'bot') {
-                            startNewGame({ opponentKind: 'bot' });
+                          if (gameMode !== 'two-player') {
+                            startNewGame({ mode: 'two-player' });
                           }
                         }}
-                        className={`flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
-                          opponentKind === 'bot'
+                        className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                          gameMode === 'two-player'
                             ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
                             : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
                         }`}
                       >
-                        <Bot className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>Chess Bots (6)</span>
+                        <Users className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>2 Players</span>
                       </button>
                     </div>
+                  </div>
 
-                    {opponentKind === 'stockfish' ? (
-                      <>
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
-                            Stockfish Level
-                          </span>
-                          <span className="font-mono text-xs text-stone-500 dark:text-stone-400 tabular-nums">
-                            {currentLevelConfig.name} ({currentLevelConfig.eloLabel})
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-5 gap-1">
-                          {STOCKFISH_LEVELS.map((lvl) => {
-                            const active = stockfishLevel === lvl.level;
-                            return (
-                              <button
-                                key={lvl.level}
-                                type="button"
-                                title={`${lvl.level}. ${lvl.name} (${lvl.eloLabel})`}
-                                onClick={() => setStockfishLevel(lvl.level)}
-                                className={`flex flex-col items-center justify-center rounded-lg border px-1 py-1.5 text-center transition-colors ${
-                                  active
-                                    ? 'border-emerald-700 bg-emerald-50/70 dark:border-emerald-500 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
-                                    : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
-                                }`}
-                              >
-                                <span className="text-xs font-semibold leading-tight tabular-nums">
-                                  {lvl.level}
-                                </span>
-                                <span className="font-mono text-[10px] opacity-75 mt-0.5 tabular-nums">
-                                  {lvl.eloLabel}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
-                            Select Opponent
-                          </span>
-                          <span className="font-mono text-xs text-stone-500 dark:text-stone-400 tabular-nums">
-                            {currentBot.name} ({currentBot.eloLabel})
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-1.5">
-                          {BOT_PROFILES.map((bot) => {
-                            const active = selectedBotId === bot.id;
-                            return (
-                              <button
-                                key={bot.id}
-                                type="button"
-                                onClick={() => {
-                                  if (selectedBotId !== bot.id) {
-                                    startNewGame({ opponentKind: 'bot', botId: bot.id });
-                                  }
-                                }}
-                                className={`flex flex-col items-start rounded-lg border px-2.5 py-2 text-left transition-colors ${
-                                  active
-                                    ? 'border-emerald-700 bg-emerald-50/70 dark:border-emerald-500 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
-                                    : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
-                                }`}
-                              >
-                                <div className="flex items-center justify-between gap-1 w-full">
-                                  <span className="text-[11px] font-semibold leading-tight truncate">
-                                    {bot.name}
-                                  </span>
-                                  <span className="font-mono text-[10px] opacity-80 shrink-0 tabular-nums">
-                                    {bot.eloLabel}
-                                  </span>
-                                </div>
-                                <span className="text-[10px] opacity-70 mt-0.5 truncate w-full">
-                                  {bot.tagline}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </>
+                  {/* Variant Selection */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                        Chess Variant
+                      </span>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400 truncate max-w-[175px]">
+                        {GAME_VARIANTS.find((v) => v.id === variant)?.label}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1">
+                      {GAME_VARIANTS.map((v) => {
+                        const active = variant === v.id;
+                        return (
+                          <button
+                            key={v.id}
+                            type="button"
+                            title={v.description}
+                            onClick={() => startNewGame({ variant: v.id })}
+                            className={`rounded-md border px-2 py-1.5 text-[11px] font-medium transition-colors whitespace-nowrap ${
+                              active
+                                ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/70 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
+                                : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+                            }`}
+                          >
+                            {v.shortLabel}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {variant === 'shuffle960' && (
+                      <p className="mt-1.5 text-[11px] text-stone-500 dark:text-stone-400">
+                        960 Setup · castling enabled when King starts on e-file.
+                      </p>
                     )}
                   </div>
 
+                  {/* Engine / Bots / Side */}
+                  {gameMode === 'stockfish' ? (
+                    <>
+                      <div>
+                        <div className="grid grid-cols-2 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-1 mb-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (opponentKind !== 'stockfish') {
+                                startNewGame({ opponentKind: 'stockfish' });
+                              }
+                            }}
+                            className={`flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                              opponentKind === 'stockfish'
+                                ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                                : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                            }`}
+                          >
+                            <Cpu className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Stockfish (10)</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (opponentKind !== 'bot') {
+                                startNewGame({ opponentKind: 'bot' });
+                              }
+                            }}
+                            className={`flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                              opponentKind === 'bot'
+                                ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                                : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                            }`}
+                          >
+                            <Bot className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Chess Bots (6)</span>
+                          </button>
+                        </div>
+
+                        {opponentKind === 'stockfish' ? (
+                          <>
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                                Stockfish Level
+                              </span>
+                              <span className="font-mono text-xs text-stone-500 dark:text-stone-400 tabular-nums">
+                                {currentLevelConfig.name} ({currentLevelConfig.eloLabel})
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-5 gap-1">
+                              {STOCKFISH_LEVELS.map((lvl) => {
+                                const active = stockfishLevel === lvl.level;
+                                return (
+                                  <button
+                                    key={lvl.level}
+                                    type="button"
+                                    title={`${lvl.level}. ${lvl.name} (${lvl.eloLabel})`}
+                                    onClick={() => setStockfishLevel(lvl.level)}
+                                    className={`flex flex-col items-center justify-center rounded-lg border px-1 py-1.5 text-center transition-colors ${
+                                      active
+                                        ? 'border-emerald-700 bg-emerald-50/70 dark:border-emerald-500 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
+                                        : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+                                    }`}
+                                  >
+                                    <span className="text-xs font-semibold leading-tight tabular-nums">
+                                      {lvl.level}
+                                    </span>
+                                    <span className="font-mono text-[10px] opacity-75 mt-0.5 tabular-nums">
+                                      {lvl.eloLabel}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                                Select Opponent
+                              </span>
+                              <span className="font-mono text-xs text-stone-500 dark:text-stone-400 tabular-nums">
+                                {currentBot.name} ({currentBot.eloLabel})
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {BOT_PROFILES.map((bot) => {
+                                const active = selectedBotId === bot.id;
+                                return (
+                                  <button
+                                    key={bot.id}
+                                    type="button"
+                                    onClick={() => {
+                                      if (selectedBotId !== bot.id) {
+                                        startNewGame({ opponentKind: 'bot', botId: bot.id });
+                                      }
+                                    }}
+                                    className={`flex flex-col items-start rounded-lg border px-2.5 py-2 text-left transition-colors ${
+                                      active
+                                        ? 'border-emerald-700 bg-emerald-50/70 dark:border-emerald-500 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
+                                        : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-1 w-full">
+                                      <span className="text-[11px] font-semibold leading-tight truncate">
+                                        {bot.name}
+                                      </span>
+                                      <span className="font-mono text-[10px] opacity-80 shrink-0 tabular-nums">
+                                        {bot.eloLabel}
+                                      </span>
+                                    </div>
+                                    <span className="text-[10px] opacity-70 mt-0.5 truncate w-full">
+                                      {bot.tagline}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </>
+                        )}
+                      </div>
+
+                      <div>
+                        <span className="block text-xs font-semibold text-stone-700 dark:text-stone-300 mb-2">
+                          Play As
+                        </span>
+                        <div className="grid grid-cols-3 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-1">
+                          {(
+                            [
+                              { id: 'w', label: 'White' },
+                              { id: 'random', label: 'Random' },
+                              { id: 'b', label: 'Black' },
+                            ] as { id: SideChoice; label: string }[]
+                          ).map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => startNewGame({ side: opt.id })}
+                              className={`rounded-md py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                                sideChoice === opt.id
+                                  ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                                  : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex items-center justify-between rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 px-3 py-2.5">
+                      <div>
+                        <div className="text-xs font-semibold text-stone-800 dark:text-stone-200">
+                          Auto-Flip Board
+                        </div>
+                        <div className="text-[11px] text-stone-500 dark:text-stone-400">
+                          Rotate perspective after each move
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={autoFlipTwoPlayer}
+                        onClick={() => {
+                          const next = !autoFlipTwoPlayer;
+                          setAutoFlipTwoPlayer(next);
+                          if (next) setFlipped(turn === 'b');
+                        }}
+                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                          autoFlipTwoPlayer
+                            ? 'bg-emerald-700'
+                            : 'bg-stone-300 dark:bg-stone-600'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                            autoFlipTwoPlayer ? 'translate-x-4' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Move Timer */}
                   <div>
-                    <span className="block text-xs font-semibold text-stone-700 dark:text-stone-300 mb-2">
-                      Play As
-                    </span>
-                    <div className="grid grid-cols-3 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-1">
-                      {(
-                        [
-                          { id: 'w', label: 'White' },
-                          { id: 'random', label: 'Random' },
-                          { id: 'b', label: 'Black' },
-                        ] as { id: SideChoice; label: string }[]
-                      ).map((opt) => (
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                        Move Timer
+                      </span>
+                      <span className="font-mono text-xs text-stone-500 dark:text-stone-400">
+                        {currentTimeControl.label}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1">
+                      {TIME_CONTROLS.map((tc) => (
                         <button
-                          key={opt.id}
+                          key={tc.id}
                           type="button"
-                          onClick={() => startNewGame({ side: opt.id })}
-                          className={`rounded-md py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
-                            sideChoice === opt.id
-                              ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
-                              : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                          onClick={() => startNewGame({ timeControl: tc.id })}
+                          className={`rounded-md border px-1.5 py-1.5 font-mono text-[11px] font-medium transition-colors whitespace-nowrap ${
+                            timeControlId === tc.id
+                              ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/70 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
+                              : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
                           }`}
                         >
-                          {opt.label}
+                          {tc.shortLabel}
                         </button>
                       ))}
                     </div>
                   </div>
-                </>
-              ) : (
-                <div className="flex items-center justify-between rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 px-3 py-2.5">
-                  <div>
-                    <div className="text-xs font-semibold text-stone-800 dark:text-stone-200">
-                      Auto-Flip Board
+
+                  {/* Board Theme & Piece Set */}
+                  <div className="space-y-2.5 pt-1 border-t border-stone-200/80 dark:border-stone-800/80">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                        Board Style
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {(
+                          [
+                            { id: 'tournament', label: 'Green', light: '#EEEED2', dark: '#769656' },
+                            { id: 'walnut', label: 'Walnut', light: '#F0D9B5', dark: '#B58863' },
+                            { id: 'slate', label: 'Slate', light: '#E6E9EE', dark: '#6B7D92' },
+                          ] as const
+                        ).map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => setBoardTheme(item.id)}
+                            aria-label={`${item.label} board theme`}
+                            className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors ${
+                              boardTheme === item.id
+                                ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/40 text-stone-900 dark:text-stone-100'
+                                : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800'
+                            }`}
+                          >
+                            <span
+                              aria-hidden="true"
+                              className="inline-block h-3 w-3 rounded-xs border border-stone-400/50"
+                              style={{
+                                background: `linear-gradient(135deg, ${item.light} 50%, ${item.dark} 50%)`,
+                              }}
+                            />
+                            <span>{item.label}</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div className="text-[11px] text-stone-500 dark:text-stone-400">
-                      Rotate perspective after each move
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                        Piece Set
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {(
+                          [
+                            { id: 'classic', label: 'Classic' },
+                            { id: 'neo', label: 'Neo' },
+                            { id: 'pixel', label: 'Pixel' },
+                          ] as { id: PieceSet; label: string }[]
+                        ).map((setOpt) => (
+                          <button
+                            key={setOpt.id}
+                            type="button"
+                            onClick={() => setPieceSet(setOpt.id)}
+                            className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                              pieceSet === setOpt.id
+                                ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/40 text-stone-900 dark:text-stone-100'
+                                : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800'
+                            }`}
+                          >
+                            {setOpt.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={autoFlipTwoPlayer}
-                    onClick={() => {
-                      const next = !autoFlipTwoPlayer;
-                      setAutoFlipTwoPlayer(next);
-                      if (next) setFlipped(turn === 'b');
-                    }}
-                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                      autoFlipTwoPlayer ? 'bg-emerald-700' : 'bg-stone-300 dark:bg-stone-600'
-                    }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
-                        autoFlipTwoPlayer ? 'translate-x-4' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
-              )}
 
-              {/* Move Timer / Clock Preset */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
-                    Move Timer
-                  </span>
-                  <span className="font-mono text-xs text-stone-500 dark:text-stone-400">
-                    {currentTimeControl.label}
-                  </span>
-                </div>
-                <div className="grid grid-cols-4 gap-1">
-                  {TIME_CONTROLS.map((tc) => (
-                    <button
-                      key={tc.id}
-                      type="button"
-                      onClick={() => startNewGame({ timeControl: tc.id })}
-                      className={`rounded-md border px-1.5 py-1.5 font-mono text-[11px] font-medium transition-colors whitespace-nowrap ${
-                        timeControlId === tc.id
-                          ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/70 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
-                          : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
-                      }`}
+                  {typeof window !== 'undefined' && !window.__EMBEDDED_STOCKFISH_ASM__ && (
+                    <a
+                      href="./squareeight-chess.html"
+                      download="squareeight-chess.html"
+                      className="flex items-center justify-between rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/50 px-3 py-2 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
                     >
-                      {tc.shortLabel}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Quick Game Controls */}
-              <div className="grid grid-cols-3 gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={handleUndo}
-                  disabled={!canUndo}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-2.5 py-2 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
-                >
-                  <Undo2 className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Undo</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFlipped((f) => !f)}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-2.5 py-2 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 transition-colors whitespace-nowrap"
-                >
-                  <ArrowUpDown className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Flip</span>
-                </button>
-                {gameMode === 'two-player' ? (
-                  <button
-                    type="button"
-                    onClick={handleMutualDraw}
-                    disabled={Boolean(gameResult)}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-2.5 py-2 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
-                  >
-                    <Handshake className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Draw</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleResign}
-                    disabled={Boolean(gameResult) || moves.length === 0}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-2.5 py-2 text-xs font-medium text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
-                  >
-                    <Flag className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Resign</span>
-                  </button>
-                )}
-              </div>
-
-              {gameMode === 'two-player' && (
-                <button
-                  type="button"
-                  onClick={handleResign}
-                  disabled={Boolean(gameResult) || moves.length === 0}
-                  className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-3 py-1.5 text-xs font-medium text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-40 disabled:pointer-events-none transition-colors"
-                >
-                  <Flag className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Resign ({turn === 'w' ? 'White' : 'Black'})</span>
-                </button>
+                      <span>Download Standalone HTML</span>
+                      <FileDown
+                        className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0"
+                        aria-hidden="true"
+                      />
+                    </a>
+                  )}
+                </section>
               )}
-            </section>
 
-            {/* Move History Panel */}
-            <MoveHistoryPanel
-              moves={moves}
-              viewIndex={viewIndex}
-              onSelectPly={handleSelectHistoryPly}
-              pgn={pgnString}
-              fen={displayFen}
-              analysis={analysisResult}
-            />
+              {/* Tab 3: Stockfish Match Analysis */}
+              {sidebarTab === 'analysis' && (
+                <MatchAnalysisPanel
+                  hasMoves={moves.length > 0}
+                  isAnalyzing={isAnalyzing}
+                  progress={analysisProgress}
+                  analysis={analysisResult}
+                  error={analysisError}
+                  inspectedPlyIndex={viewIndex}
+                  totalMoves={moves.length}
+                  onStartAnalysis={handleStartAnalysis}
+                  onCancelAnalysis={handleCancelAnalysis}
+                  onSelectPly={handleSelectHistoryPly}
+                />
+              )}
+            </aside>
+          </div>
+        )}
 
-            {/* Stockfish Match Analysis */}
-            <MatchAnalysisPanel
-              hasMoves={moves.length > 0}
-              isAnalyzing={isAnalyzing}
-              progress={analysisProgress}
-              analysis={analysisResult}
-              error={analysisError}
-              inspectedPlyIndex={viewIndex}
-              totalMoves={moves.length}
-              onStartAnalysis={handleStartAnalysis}
-              onCancelAnalysis={handleCancelAnalysis}
-              onSelectPly={handleSelectHistoryPly}
-            />
+        {activeView === 'puzzles' && (
+          <PuzzlesWorkspace
+            boardTheme={boardTheme}
+            pieceSet={pieceSet}
+            soundEnabled={soundEnabled}
+            onStatsChange={refreshArchiveData}
+          />
+        )}
 
-            {/* Board Appearance */}
-            <div className="flex items-center justify-between rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-3.5 py-2.5">
-              <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
-                Board Style
-              </span>
-              <div className="flex items-center gap-1.5">
-                {(
-                  [
-                    { id: 'tournament', label: 'Green', light: '#EEEED2', dark: '#769656' },
-                    { id: 'walnut', label: 'Walnut', light: '#F0D9B5', dark: '#B58863' },
-                    { id: 'slate', label: 'Slate', light: '#E6E9EE', dark: '#6B7D92' },
-                  ] as const
-                ).map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setBoardTheme(item.id)}
-                    aria-label={`${item.label} board theme`}
-                    title={item.label}
-                    className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors ${
-                      boardTheme === item.id
-                        ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/40 text-stone-900 dark:text-stone-100'
-                        : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800'
-                    }`}
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="inline-block h-3 w-3 rounded-xs border border-stone-400/50"
-                      style={{
-                        background: `linear-gradient(135deg, ${item.light} 50%, ${item.dark} 50%)`,
-                      }}
-                    />
-                    <span>{item.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
+        {activeView === 'endgames' && (
+          <EndgamesWorkspace
+            boardTheme={boardTheme}
+            pieceSet={pieceSet}
+            soundEnabled={soundEnabled}
+            onStatsChange={refreshArchiveData}
+          />
+        )}
 
-            {typeof window !== 'undefined' && !window.__EMBEDDED_STOCKFISH_ASM__ && (
-              <a
-                href="./squareeight-chess.html"
-                download="squareeight-chess.html"
-                className="flex items-center justify-between rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-3.5 py-2.5 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors"
-              >
-                <span>Download Standalone HTML</span>
-                <FileDown className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" aria-hidden="true" />
-              </a>
-            )}
-          </aside>
-        </div>
+        {activeView === 'archive' && (
+          <ArchiveWorkspace
+            matches={savedMatches}
+            defeatedBots={defeatedBots}
+            defeatedLevels={defeatedLevels}
+            onLoadSavedMatch={handleLoadSavedMatch}
+            onDeleteMatch={(id) => setSavedMatches(deleteSavedMatch(id))}
+            onClearMatches={() => setSavedMatches(clearSavedMatches())}
+            onImportPositionOrGame={handleImportPositionOrGame}
+          />
+        )}
       </main>
 
       <footer className="border-t border-stone-200/80 dark:border-stone-800/80 py-3 px-4 text-center text-xs text-stone-500 dark:text-stone-400">
