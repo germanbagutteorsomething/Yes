@@ -1037,6 +1037,10 @@ export default function App() {
         </div>
       </main>
 
+      <footer className="border-t border-stone-200/80 dark:border-stone-800/80 py-3 px-4 text-center text-xs text-stone-500 dark:text-stone-400">
+        Made by Anas Albel &amp; Messaoud
+      </footer>
+
       <OfflineIndicator />
     </div>
   );
