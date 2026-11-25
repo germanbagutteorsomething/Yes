@@ -23,6 +23,7 @@ import { playSkiSound } from '../utils/skiAudio';
 import {
   buildMountainEnvironment,
   createSkierRig,
+  createSkyDome,
   updateSkierPose,
 } from './skierModel';
 
@@ -349,10 +350,13 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
     renderer.domElement.addEventListener('webglcontextrestored', handleContextRestored);
 
-    // Scene + Atmosphere + RoomEnvironment
+    // Scene + Atmosphere + Procedural Sky Dome + RoomEnvironment
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(map.skyColor);
     scene.fog = new THREE.FogExp2(map.horizonColor, map.fogDensity);
+
+    const skyDome = createSkyDome(map);
+    scene.add(skyDome.mesh);
 
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     const envTex = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -360,30 +364,30 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     pmremGenerator.dispose();
 
     // Camera
-    const camera = new THREE.PerspectiveCamera(64, width / height, 0.2, 420);
+    const camera = new THREE.PerspectiveCamera(64, width / height, 0.2, 460);
 
     // 3-Point Warm/Cool Alpine Lighting Rig
-    const hemiLight = new THREE.HemisphereLight(map.ambientSky, map.ambientGround, map.isNight ? 0.85 : 0.95);
+    const hemiLight = new THREE.HemisphereLight(map.ambientSky, map.ambientGround, map.isNight ? 0.9 : 1.0);
     scene.add(hemiLight);
 
     const sunLight = new THREE.DirectionalLight(map.sunColor, map.sunIntensity);
     sunLight.castShadow = !isSoftwareGl;
-    sunLight.shadow.mapSize.width = 1024;
-    sunLight.shadow.mapSize.height = 1024;
+    sunLight.shadow.mapSize.width = 2048;
+    sunLight.shadow.mapSize.height = 2048;
     sunLight.shadow.camera.near = 2;
-    sunLight.shadow.camera.far = 90;
-    const shadowBound = 26;
+    sunLight.shadow.camera.far = 96;
+    const shadowBound = 28;
     sunLight.shadow.camera.left = -shadowBound;
     sunLight.shadow.camera.right = shadowBound;
     sunLight.shadow.camera.top = shadowBound;
     sunLight.shadow.camera.bottom = -shadowBound;
-    sunLight.shadow.bias = -0.0005;
+    sunLight.shadow.bias = -0.0004;
     sunLight.shadow.normalBias = 0.02;
     scene.add(sunLight);
     scene.add(sunLight.target);
 
-    const rimLight = new THREE.DirectionalLight(map.isNight ? '#38BDF8' : '#E0F2FE', 0.45);
-    rimLight.position.set(-20, 18, 25);
+    const rimLight = new THREE.DirectionalLight(map.isNight ? '#38BDF8' : '#E0F2FE', 0.52);
+    rimLight.position.set(-22, 20, 26);
     scene.add(rimLight);
 
     // Build Mountain World + Skier Rig
@@ -395,9 +399,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     scene.add(skier.root);
     scene.add(skier.shadowMesh);
 
-    // Particle Pool for snow spray + rail grind sparks (InstancedMesh)
-    const PARTICLE_COUNT = 96;
-    const partGeo = new THREE.BoxGeometry(0.14, 0.14, 0.14);
+    // Sculpted Powder Puff + Rail Spark Particle Pool (InstancedMesh)
+    const PARTICLE_COUNT = 128;
+    const partGeo = new THREE.IcosahedronGeometry(0.11, 0);
     const partMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF' });
     const particleMesh = new THREE.InstancedMesh(partGeo, partMat, PARTICLE_COUNT);
     particleMesh.frustumCulled = false;
@@ -405,6 +409,51 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       new Float32Array(PARTICLE_COUNT * 3),
       3
     );
+
+    // Dynamic Carved Twin-Ski Tracks on Snow (InstancedMesh)
+    const TRACK_COUNT = 220;
+    const trackGeo = new THREE.PlaneGeometry(0.15, 0.95);
+    trackGeo.rotateX(-Math.PI / 2);
+    const trackMat = new THREE.MeshBasicMaterial({
+      color: map.snowRidgeColor,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    const trackMesh = new THREE.InstancedMesh(trackGeo, trackMat, TRACK_COUNT);
+    trackMesh.frustumCulled = false;
+    for (let i = 0; i < TRACK_COUNT; i++) {
+      _dummy.position.set(0, -999, 0);
+      _dummy.scale.setScalar(0);
+      _dummy.updateMatrix();
+      trackMesh.setMatrixAt(i, _dummy.matrix);
+    }
+    trackMesh.instanceMatrix.needsUpdate = true;
+    scene.add(trackMesh);
+    let trackCursor = 0;
+    let lastTrackZ = -10;
+
+    // Ambient Falling Alpine Snow Flurries (InstancedMesh)
+    const FLURRY_COUNT = 90;
+    const flurryGeo = new THREE.OctahedronGeometry(0.055, 0);
+    const flurryMat = new THREE.MeshBasicMaterial({
+      color: '#FFFFFF',
+      transparent: true,
+      opacity: map.isNight ? 0.55 : 0.7,
+    });
+    const flurryMesh = new THREE.InstancedMesh(flurryGeo, flurryMat, FLURRY_COUNT);
+    flurryMesh.frustumCulled = false;
+    const flurries = Array.from({ length: FLURRY_COUNT }, (_, i) => ({
+      dx: ((i * 37) % 44) - 22,
+      dy: ((i * 19) % 16) + 1,
+      dz: ((i * 53) % 46) - 6,
+      fallSpeed: 1.8 + (i % 5) * 0.45,
+      driftPhase: i * 0.7,
+    }));
+    scene.add(flurryMesh);
     const particles: SnowParticle[] = Array.from({ length: PARTICLE_COUNT }, () => ({
       active: false,
       x: 0,
@@ -657,6 +706,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       state.airtime = 0;
       state.vz = Math.max(9, state.vz * 0.42);
       state.vx *= 0.35;
+      cameraShake = 0.55;
       triggerCallout('WIPEOUT!', reasonText, 'bail');
       playSkiSound('bail', soundRef.current);
 
@@ -690,6 +740,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     let disposed = false;
     let lastTime = performance.now();
     let hudEmitTimer = 0;
+    let cameraShake = 0;
+    let elapsedSec = 0;
 
     function afterDraw(cb: () => void) {
       if (disposed) return;
@@ -716,6 +768,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       const rawDt = (now - lastTime) / 1000;
       lastTime = now;
       const dt = Math.min(0.05, Math.max(0.001, rawDt));
+      elapsedSec += dt;
 
       const inp = inputRef.current;
       const isPlaying = phaseRef.current === 'playing' && !state.finished;
@@ -1019,6 +1072,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           // Check Touchdown on Snow
           const landTerrain = getTerrainAndRampHeight(map, layout, state.x, state.z);
           if (!state.grindingRail && state.y <= landTerrain.height) {
+            if (state.airtime > 0.4) {
+              cameraShake = Math.min(0.45, state.airtime * 0.28);
+            }
             state.y = landTerrain.height;
             state.onGround = true;
             state.wasOnKicker = landTerrain.isOnKicker;
@@ -1225,6 +1281,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         );
       }
 
+      const speed = Math.hypot(state.vx, state.vz);
+      const speedRatio = THREE.MathUtils.clamp((speed - 12) / 25, 0, 1);
+
       const tuckHeld =
         (inp.up && state.onGround && !inp.down) ||
         (inp.analogY > 0.25 && state.onGround);
@@ -1233,8 +1292,30 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         grab: inp.grab,
         isAirborne: !state.onGround && !state.grindingRail,
         isGrinding: Boolean(state.grindingRail),
+        speedRatio,
+        elapsedSec,
         dt,
       });
+
+      // Stamp Carved Twin-Ski Tracks on Snow
+      if (state.onGround && !state.grindingRail && state.bailTimer <= 0 && state.z - lastTrackZ >= 0.72) {
+        lastTrackZ = state.z;
+        const slopePitchAngle = Math.atan2(-slopeNorm.nz, slopeNorm.ny);
+        const cosH = Math.cos(state.heading);
+        const sinH = Math.sin(state.heading);
+        [-0.2, 0.2].forEach((offset) => {
+          const tx = state.x + offset * cosH;
+          const tz = state.z - offset * sinH;
+          const ty = getTerrainAndRampHeight(map, layout, tx, tz).height + 0.028;
+          _dummy.position.set(tx, ty, tz);
+          _dummy.rotation.set(-slopePitchAngle, state.heading, 0);
+          _dummy.scale.set(1, 1, 1);
+          _dummy.updateMatrix();
+          trackMesh.setMatrixAt(trackCursor, _dummy.matrix);
+          trackCursor = (trackCursor + 1) % TRACK_COUNT;
+        });
+        trackMesh.instanceMatrix.needsUpdate = true;
+      }
 
       // Contact Shadow positioned flush on terrain directly below skier
       const shadowTerrainY = getTerrainAndRampHeight(map, layout, state.x, state.z).height;
@@ -1278,23 +1359,41 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         if (particleMesh.instanceColor) particleMesh.instanceColor.needsUpdate = true;
       }
 
+      // Update Ambient Falling Snow Flurries relative to skier
+      for (let i = 0; i < FLURRY_COUNT; i++) {
+        const f = flurries[i];
+        f.dy -= f.fallSpeed * dt;
+        if (f.dy < -1) f.dy += 17;
+        const fx = state.x + f.dx + Math.sin(elapsedSec * 1.4 + f.driftPhase) * 1.1;
+        const fy = state.y + f.dy;
+        const fz = state.z + f.dz;
+        _dummy.position.set(fx, fy, fz);
+        _dummy.rotation.set(elapsedSec + i, elapsedSec * 0.6, 0);
+        _dummy.scale.setScalar(1);
+        _dummy.updateMatrix();
+        flurryMesh.setMatrixAt(i, _dummy.matrix);
+      }
+      flurryMesh.instanceMatrix.needsUpdate = true;
+
       // Move directional shadow frustum cleanly with skier
-      sunLight.position.set(state.x + 18, state.y + 34, state.z + 10);
+      sunLight.position.set(state.x + 20, state.y + 36, state.z + 10);
       sunLight.target.position.set(state.x, state.y, state.z + 14);
       sunLight.target.updateMatrixWorld();
 
-      // Smooth Exponential Chase Camera + Dynamic FOV widening
-      const speed = Math.hypot(state.vx, state.vz);
+      // Smooth Exponential Chase Camera + Impact Shake + Dynamic FOV widening
       const speedKmh = speed * 3.6;
       if (speedKmh > state.topSpeedKmh) state.topSpeedKmh = speedKmh;
+      cameraShake = THREE.MathUtils.damp(cameraShake, 0, 9, dt);
+      const shakeX = (Math.random() - 0.5) * cameraShake;
+      const shakeY = (Math.random() - 0.5) * cameraShake;
 
       const camMode = cameraModeRef.current;
       const distBack = camMode === 'low' ? 6.2 : camMode === 'wide' ? 12.2 : 8.8;
       const heightUp = camMode === 'low' ? 2.5 : camMode === 'wide' ? 5.6 : 4.1;
 
       _camTarget.set(
-        state.x - state.vx * 0.08,
-        Math.max(shadowTerrainY + 1.8, state.y + heightUp),
+        state.x - state.vx * 0.08 + shakeX,
+        Math.max(shadowTerrainY + 1.8, state.y + heightUp) + shakeY,
         state.z - distBack
       );
       _lookTarget.set(state.x + state.vx * 0.07, state.y + 1.0, state.z + 14);
@@ -1302,6 +1401,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       camera.position.x = THREE.MathUtils.damp(camera.position.x, _camTarget.x, 8.5, dt);
       camera.position.y = THREE.MathUtils.damp(camera.position.y, _camTarget.y, 7.5, dt);
       camera.position.z = THREE.MathUtils.damp(camera.position.z, _camTarget.z, 12, dt);
+
+      // Keep sky dome centered around camera so horizon never clips
+      skyDome.mesh.position.copy(camera.position);
 
       _vecA.lerpVectors(_vecB.copy(_lookTarget), _lookTarget, 1);
       camera.lookAt(_vecA);
@@ -1360,10 +1462,15 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       window.removeEventListener('resize', handleResize);
       renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
       renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored);
+      skyDome.dispose();
       skier.dispose();
       parkScene.dispose();
       partGeo.dispose();
       partMat.dispose();
+      trackGeo.dispose();
+      trackMat.dispose();
+      flurryGeo.dispose();
+      flurryMat.dispose();
       envTex.dispose();
       renderer.dispose();
     };
