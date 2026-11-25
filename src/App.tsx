@@ -1654,7 +1654,13 @@ export default function App() {
       )}
 
       {/* Active Game / Hub Workspace */}
-      <main className="mx-auto w-full max-w-[1200px] flex-1 px-4 py-4 sm:px-6 sm:py-6">
+      <main
+        className={`mx-auto w-full max-w-[1200px] flex-1 ${
+          activeGame === 'ski'
+            ? 'px-2 py-2 sm:px-6 sm:py-6'
+            : 'px-4 py-4 sm:px-6 sm:py-6'
+        }`}
+      >
         {activeGame === 'hub' && (
           <GamesHub
             onSelectChess={handleSelectChess}

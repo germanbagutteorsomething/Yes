@@ -43,12 +43,16 @@ export const GamesHub: React.FC<GamesHubProps> = ({
     const ski = loadSkiProgress();
 
     let bestSkiScore = 0;
+    let totalSkiScore = 0;
     let totalSkiRuns = 0;
+    let skiMedalsEarned = 0;
     for (const m of SKI_MAPS) {
       const rec = ski.records[m.id];
       if (rec) {
         if (rec.bestScore > bestSkiScore) bestSkiScore = rec.bestScore;
+        totalSkiScore += rec.bestScore;
         totalSkiRuns += rec.runsCompleted;
+        if (rec.bestMedal && rec.bestMedal !== 'none') skiMedalsEarned += 1;
       }
     }
 
@@ -58,7 +62,9 @@ export const GamesHub: React.FC<GamesHubProps> = ({
       endgamesDone: endgames.length,
       opponentsBeat: bots.length + levels.length,
       bestSkiScore,
+      totalSkiScore,
       totalSkiRuns,
+      skiMedalsEarned,
       skiRecords: ski.records,
     };
   }, []);
@@ -269,12 +275,12 @@ export const GamesHub: React.FC<GamesHubProps> = ({
         </div>
 
         <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4">
-          <div className="text-xs text-stone-500 dark:text-stone-400">Alpine Parks</div>
+          <div className="text-xs text-stone-500 dark:text-stone-400">All-Mountain Score</div>
           <div className="mt-1 font-mono text-2xl font-bold text-stone-900 dark:text-stone-100 tabular-nums">
-            {SKI_MAPS.length}
+            {summary.totalSkiScore > 0 ? summary.totalSkiScore.toLocaleString() : '—'}
           </div>
-          <div className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400">
-            Yard · Forest · Pipe · Apex
+          <div className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400 font-mono tabular-nums">
+            {summary.skiMedalsEarned}/{SKI_MAPS.length} park medals
           </div>
         </div>
       </section>

@@ -96,10 +96,13 @@ export interface SkiParkLayout {
   gates: SkiGateFeature[];
 }
 
+export type SkiMedalTier = 'none' | 'bronze' | 'silver' | 'gold';
+
 export interface SkiHudSnapshot {
   score: number;
   comboScore: number;
   comboMultiplier: number;
+  comboTimeRatio: number;
   speedKmh: number;
   distanceMeters: number;
   lengthMeters: number;
@@ -112,6 +115,7 @@ export interface SkiHudSnapshot {
   flipDeg: number;
   grab: SkiGrabType;
   liveTrickText: string;
+  liveTrickPoints: number;
   calloutText: string;
   calloutSubtext: string;
   calloutTone: 'clean' | 'sketchy' | 'bail' | 'grind' | 'gate';
@@ -123,6 +127,14 @@ export interface SkiHudSnapshot {
   railsHit: number;
   cleanLandings: number;
   bails: number;
+  trickScoreTotal: number;
+  railScoreTotal: number;
+  flowScoreTotal: number;
+  gatesCleared: number;
+  totalGates: number;
+  medalEarned: SkiMedalTier;
+  nextMedalLabel: string;
+  nextMedalTarget: number;
   cameraMode: SkiCameraMode;
 }
 
@@ -131,6 +143,8 @@ export interface SkiInputState {
   right: boolean;
   up: boolean;
   down: boolean;
+  analogX: number; // -1 (left) to +1 (right)
+  analogY: number; // -1 (down/brake/backflip) to +1 (up/tuck/frontflip)
   jumpPressed: boolean;
   jumpHeld: boolean;
   grab: SkiGrabType;
@@ -141,6 +155,7 @@ export interface SkiMapRecord {
   bestTrickName: string;
   bestTrickPoints: number;
   runsCompleted: number;
+  bestMedal?: SkiMedalTier;
 }
 
 export interface StoredSkiProgress {

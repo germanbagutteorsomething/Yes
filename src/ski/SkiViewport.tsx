@@ -15,6 +15,7 @@ import type {
   SkiHudSnapshot,
   SkiInputState,
   SkiMapId,
+  SkiMedalTier,
   SkiPhase,
   SkiRailFeature,
 } from '../types/ski';
@@ -237,6 +238,55 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     };
   }, [inputRef]);
 
+  // Direct canvas swipe-up to Ollie gesture (natural touch shortcut on mobile/tablet)
+  useEffect(() => {
+    const container = mountRef.current;
+    if (!container) return;
+
+    let swipePointerId: number | null = null;
+    let startY = 0;
+    let triggered = false;
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (phaseRef.current !== 'playing') return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      swipePointerId = e.pointerId;
+      startY = e.clientY;
+      triggered = false;
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (swipePointerId !== e.pointerId || triggered) return;
+      const dy = e.clientY - startY;
+      if (dy < -24) {
+        triggered = true;
+        inputRef.current.jumpPressed = true;
+        inputRef.current.jumpHeld = true;
+      }
+    };
+
+    const onPointerEnd = (e: PointerEvent) => {
+      if (swipePointerId !== e.pointerId) return;
+      if (triggered) {
+        inputRef.current.jumpHeld = false;
+      }
+      swipePointerId = null;
+      triggered = false;
+    };
+
+    container.addEventListener('pointerdown', onPointerDown);
+    container.addEventListener('pointermove', onPointerMove);
+    container.addEventListener('pointerup', onPointerEnd);
+    container.addEventListener('pointercancel', onPointerEnd);
+
+    return () => {
+      container.removeEventListener('pointerdown', onPointerDown);
+      container.removeEventListener('pointermove', onPointerMove);
+      container.removeEventListener('pointerup', onPointerEnd);
+      container.removeEventListener('pointercancel', onPointerEnd);
+    };
+  }, [inputRef]);
+
   // Isolated Three.js scene lifecycle per map/gear/runSeed
   useEffect(() => {
     const container = mountRef.current;
@@ -410,6 +460,26 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       renderer.compile(scene, camera);
     }
 
+    const COMBO_WINDOW_SEC = 3.5;
+    const bronzeTarget = Math.round(map.targetScore * 0.5);
+    const silverTarget = map.targetScore;
+    const goldTarget = Math.round(map.targetScore * 1.6);
+
+    const computeMedalState = (
+      scoreVal: number
+    ): { medal: SkiMedalTier; nextLabel: string; nextTarget: number } => {
+      if (scoreVal >= goldTarget) {
+        return { medal: 'gold', nextLabel: 'Gold Cleared', nextTarget: goldTarget };
+      }
+      if (scoreVal >= silverTarget) {
+        return { medal: 'silver', nextLabel: 'Gold', nextTarget: goldTarget };
+      }
+      if (scoreVal >= bronzeTarget) {
+        return { medal: 'bronze', nextLabel: 'Silver', nextTarget: silverTarget };
+      }
+      return { medal: 'none', nextLabel: 'Bronze', nextTarget: bronzeTarget };
+    };
+
     // Physics State
     const startY = getBaseTerrainHeight(map, 0, 0);
     const state = {
@@ -435,7 +505,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       bailTimer: 0,
       score: 0,
       comboScore: 0,
+      comboTrickBase: 0,
+      comboRailBase: 0,
+      comboGateBase: 0,
       comboMultiplier: 1,
+      comboTimer: 0,
       maxCombo: 1,
       bestTrickName: '',
       bestTrickPoints: 0,
@@ -443,6 +517,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       railsHit: 0,
       cleanLandings: 0,
       bails: 0,
+      trickScoreTotal: 0,
+      railScoreTotal: 0,
+      flowScoreTotal: 0,
+      gatesCleared: 0,
+      unlockedMedal: 'none' as SkiMedalTier,
       finished: false,
       passedGates: new Set<string>(),
       hitRails: new Set<string>(),
@@ -457,35 +536,56 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     camera.position.set(0, startY + 4.4, -8.5);
     camera.lookAt(0, startY + 1.2, 12);
 
-    const buildSnapshot = (liveLabel: string, grab: SkiGrabType, speedKmh: number): SkiHudSnapshot => ({
-      score: Math.round(state.score),
-      comboScore: Math.round(state.comboScore),
-      comboMultiplier: state.comboMultiplier,
-      speedKmh: Math.round(speedKmh),
-      distanceMeters: Math.min(map.lengthMeters, Math.max(0, Math.round(state.z))),
-      lengthMeters: map.lengthMeters,
-      progressPct: Math.min(100, Math.max(0, (state.z / map.lengthMeters) * 100)),
-      isAirborne: !state.onGround && !state.grindingRail,
-      isGrinding: Boolean(state.grindingRail),
-      isBailing: state.bailTimer > 0,
-      airtime: state.airtime,
-      spinDeg: Math.round(THREE.MathUtils.radToDeg(Math.abs(state.airSpinRad))),
-      flipDeg: Math.round(THREE.MathUtils.radToDeg(Math.abs(state.airFlipRad))),
-      grab,
-      liveTrickText: liveLabel,
-      calloutText: state.calloutTimer > 0 ? state.calloutText : '',
-      calloutSubtext: state.calloutTimer > 0 ? state.calloutSubtext : '',
-      calloutTone: state.calloutTone,
-      calloutNonce: state.calloutNonce,
-      bestTrickName: state.bestTrickName,
-      bestTrickPoints: Math.round(state.bestTrickPoints),
-      maxCombo: state.maxCombo,
-      topSpeedKmh: Math.round(state.topSpeedKmh),
-      railsHit: state.railsHit,
-      cleanLandings: state.cleanLandings,
-      bails: state.bails,
-      cameraMode: cameraModeRef.current,
-    });
+    const buildSnapshot = (
+      liveLabel: string,
+      livePoints: number,
+      grab: SkiGrabType,
+      speedKmh: number
+    ): SkiHudSnapshot => {
+      const projectedTotal =
+        state.score + state.comboScore * state.comboMultiplier;
+      const medalInfo = computeMedalState(projectedTotal);
+      return {
+        score: Math.round(state.score),
+        comboScore: Math.round(state.comboScore),
+        comboMultiplier: state.comboMultiplier,
+        comboTimeRatio:
+          state.comboScore > 0 ? Math.max(0, Math.min(1, state.comboTimer / COMBO_WINDOW_SEC)) : 0,
+        speedKmh: Math.round(speedKmh),
+        distanceMeters: Math.min(map.lengthMeters, Math.max(0, Math.round(state.z))),
+        lengthMeters: map.lengthMeters,
+        progressPct: Math.min(100, Math.max(0, (state.z / map.lengthMeters) * 100)),
+        isAirborne: !state.onGround && !state.grindingRail,
+        isGrinding: Boolean(state.grindingRail),
+        isBailing: state.bailTimer > 0,
+        airtime: state.airtime,
+        spinDeg: Math.round(THREE.MathUtils.radToDeg(Math.abs(state.airSpinRad))),
+        flipDeg: Math.round(THREE.MathUtils.radToDeg(Math.abs(state.airFlipRad))),
+        grab,
+        liveTrickText: liveLabel,
+        liveTrickPoints: Math.round(livePoints),
+        calloutText: state.calloutTimer > 0 ? state.calloutText : '',
+        calloutSubtext: state.calloutTimer > 0 ? state.calloutSubtext : '',
+        calloutTone: state.calloutTone,
+        calloutNonce: state.calloutNonce,
+        bestTrickName: state.bestTrickName,
+        bestTrickPoints: Math.round(state.bestTrickPoints),
+        maxCombo: state.maxCombo,
+        topSpeedKmh: Math.round(state.topSpeedKmh),
+        railsHit: state.railsHit,
+        cleanLandings: state.cleanLandings,
+        bails: state.bails,
+        trickScoreTotal: Math.round(state.trickScoreTotal),
+        railScoreTotal: Math.round(state.railScoreTotal),
+        flowScoreTotal: Math.round(state.flowScoreTotal),
+        gatesCleared: state.gatesCleared,
+        totalGates: layout.gates.length,
+        medalEarned: medalInfo.medal,
+        nextMedalLabel: medalInfo.nextLabel,
+        nextMedalTarget: medalInfo.nextTarget,
+        cameraMode: cameraModeRef.current,
+      };
+    };
 
     const triggerCallout = (
       text: string,
@@ -499,11 +599,44 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       state.calloutTimer = 1.9;
     };
 
-    const bankCombo = () => {
+    const checkMedalUnlock = () => {
+      const m = computeMedalState(state.score).medal;
+      const rank: Record<SkiMedalTier, number> = {
+        none: 0,
+        bronze: 1,
+        silver: 2,
+        gold: 3,
+      };
+      if (rank[m] > rank[state.unlockedMedal]) {
+        state.unlockedMedal = m;
+        const label = m === 'gold' ? 'GOLD MEDAL!' : m === 'silver' ? 'SILVER MEDAL!' : 'BRONZE MEDAL!';
+        triggerCallout(label, `${Math.round(state.score).toLocaleString()} pts`, 'clean');
+        playSkiSound('gate', soundRef.current);
+      }
+    };
+
+    const bankCombo = (silent = false) => {
       if (state.comboScore > 0) {
-        state.score += state.comboScore * state.comboMultiplier;
+        const mult = state.comboMultiplier;
+        const tPts = state.comboTrickBase * mult;
+        const rPts = state.comboRailBase * mult;
+        const gPts = state.comboGateBase * mult;
+        const banked = Math.round(tPts + rPts + gPts);
+        state.trickScoreTotal += tPts;
+        state.railScoreTotal += rPts;
+        state.flowScoreTotal += gPts;
+        state.score += banked;
         state.comboScore = 0;
+        state.comboTrickBase = 0;
+        state.comboRailBase = 0;
+        state.comboGateBase = 0;
         state.comboMultiplier = 1;
+        state.comboTimer = 0;
+        if (!silent && banked >= 350) {
+          triggerCallout('COMBO BANKED!', `+${banked.toLocaleString()} (${mult}x)`, 'clean');
+          playSkiSound('stomp', soundRef.current, mult);
+        }
+        checkMedalUnlock();
       }
     };
 
@@ -512,7 +645,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       state.bailTimer = 1.05;
       state.bails += 1;
       state.comboScore = 0;
+      state.comboTrickBase = 0;
+      state.comboRailBase = 0;
+      state.comboGateBase = 0;
       state.comboMultiplier = 1;
+      state.comboTimer = 0;
       state.grindingRail = null;
       state.airSpinRad = 0;
       state.airFlipRad = 0;
@@ -609,9 +746,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           state.vy = 0;
           state.onGround = false;
 
-          const addPts = 260 * dt;
+          const addPts = 280 * dt;
           state.grindPointsAccum += addPts;
+          state.comboRailBase += addPts;
           state.comboScore += addPts;
+          state.comboTimer = COMBO_WINDOW_SEC;
 
           state.grindSparkCooldown -= dt;
           if (state.grindSparkCooldown <= 0) {
@@ -631,9 +770,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           if (jumpTriggered) {
             // Pop off rail into air!
             state.grindingRail = null;
-            state.vy = 7.4;
+            state.vy = 7.6;
             state.onGround = false;
             state.airtime = 0.05;
+            state.comboMultiplier = Math.min(10, state.comboMultiplier + 1);
+            state.maxCombo = Math.max(state.maxCombo, state.comboMultiplier);
             playSkiSound('ollie', soundRef.current);
           } else if (state.z > rail.z + rail.length) {
             // Clean exit off end of rail
@@ -641,36 +782,59 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             state.onGround = false;
             state.vy = 2.4;
             state.airtime = 0.05;
+            state.comboMultiplier = Math.min(10, state.comboMultiplier + 1);
+            state.maxCombo = Math.max(state.maxCombo, state.comboMultiplier);
             triggerCallout(
               'RAIL CLEAN!',
-              `+${Math.round(state.grindPointsAccum)} pts`,
+              `+${Math.round(state.grindPointsAccum * (state.comboMultiplier - 1)).toLocaleString()} · ${state.comboMultiplier}x`,
               'grind'
             );
             state.grindPointsAccum = 0;
           }
         } else if (state.onGround) {
-          // 2. Ground Carving & Kicker Launch Physics
-          const steerDir = (inp.left ? 1 : 0) - (inp.right ? 1 : 0);
-          const tucking = inp.up && !inp.down && state.bailTimer <= 0;
-          const braking = inp.down && !inp.up;
+          // 2. Ground Carving & Kicker Launch Physics (Keyboard + Analog Thumbstick)
+          const rawSteer = (inp.left ? 1 : 0) - (inp.right ? 1 : 0);
+          const steerAxis =
+            Math.abs(inp.analogX) > 0.08 ? -inp.analogX : rawSteer;
+
+          const tuckAmount = Math.max(
+            inp.up && !inp.down ? 1 : 0,
+            inp.analogY > 0.22 ? inp.analogY : 0
+          );
+          const brakeAmount = Math.max(
+            inp.down && !inp.up ? 1 : 0,
+            inp.analogY < -0.25 ? -inp.analogY : 0
+          );
+          const tucking = tuckAmount > 0.15 && brakeAmount < 0.15 && state.bailTimer <= 0;
 
           if (state.bailTimer <= 0) {
             state.heading = THREE.MathUtils.clamp(
-              state.heading + steerDir * 1.95 * dt,
-              -0.95,
-              0.95
+              state.heading + steerAxis * 2.05 * dt,
+              -0.96,
+              0.96
             );
-            if (steerDir === 0) {
+            if (Math.abs(steerAxis) < 0.06) {
               state.heading = THREE.MathUtils.damp(state.heading, 0, 2.2, dt);
             }
           }
 
+          // Combo window countdown on snow
+          if (state.comboScore > 0) {
+            state.comboTimer -= dt;
+            if (state.comboTimer <= 0) {
+              bankCombo();
+            }
+          }
+
           // Forward speed acceleration down pitch
-          const gravityAccel = map.slopePitch * 23.5 + (tucking ? 10.5 : 0) - (braking ? 18 : 0);
+          const gravityAccel =
+            map.slopePitch * 23.5 +
+            tuckAmount * 10.5 -
+            brakeAmount * 18;
           const drag = 0.011 * state.vz * state.vz * (tucking ? 0.68 : 1.0);
           const forwardSpeed = THREE.MathUtils.clamp(
             Math.hypot(state.vx, state.vz) + (gravityAccel - drag) * dt,
-            braking ? 7.5 : 13.5,
+            brakeAmount > 0.35 ? 7.5 : 13.5,
             tucking ? 37.5 : 31.5
           );
 
@@ -678,10 +842,20 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           state.vz = Math.cos(state.heading) * forwardSpeed;
           state.carveRoll = THREE.MathUtils.damp(
             state.carveRoll,
-            -steerDir * 0.42,
+            -steerAxis * 0.44,
             10,
             dt
           );
+
+          // Continuous Carving & Speed Flow Score
+          const curKmh = forwardSpeed * 3.6;
+          if (state.bailTimer <= 0 && curKmh > 52) {
+            const carveBonus = Math.abs(steerAxis) > 0.25 ? 1.35 : 1.0;
+            const flowPts = (curKmh - 42) * 0.9 * carveBonus * dt;
+            state.flowScoreTotal += flowPts;
+            state.score += flowPts;
+            checkMedalUnlock();
+          }
 
           state.x += state.vx * dt;
           state.z += state.vz * dt;
@@ -694,12 +868,13 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           }
 
           // Snow carve spray particles
-          if (Math.abs(steerDir) > 0 && state.bailTimer <= 0 && Math.random() < 0.65) {
+          if (Math.abs(steerAxis) > 0.25 && state.bailTimer <= 0 && Math.random() < 0.65) {
+            const sprayDir = Math.sign(steerAxis);
             spawnParticle(
-              state.x - steerDir * 0.28,
+              state.x - sprayDir * 0.28,
               groundY + 0.08,
               state.z - 0.4,
-              -steerDir * (2.2 + Math.random() * 2.5),
+              -sprayDir * (2.2 + Math.random() * 2.5),
               1.1 + Math.random() * 1.6,
               state.vz * 0.35,
               false
@@ -769,11 +944,15 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           }
 
           const grabSpeedBoost = inp.grab !== 'none' ? 1.18 : 1.0;
-          const spinInput = (inp.left ? 1 : 0) - (inp.right ? 1 : 0);
-          const flipInput = (inp.up ? 1 : 0) - (inp.down ? 1 : 0);
+          const rawSpin = (inp.left ? 1 : 0) - (inp.right ? 1 : 0);
+          const rawFlip = (inp.up ? 1 : 0) - (inp.down ? 1 : 0);
+          const spinInput =
+            Math.abs(inp.analogX) > 0.14 ? -inp.analogX : rawSpin;
+          const flipInput =
+            Math.abs(inp.analogY) > 0.14 ? inp.analogY : rawFlip;
 
-          state.airSpinRad += spinInput * 6.35 * grabSpeedBoost * dt;
-          state.airFlipRad += flipInput * 5.85 * grabSpeedBoost * dt;
+          state.airSpinRad += spinInput * 6.45 * grabSpeedBoost * dt;
+          state.airFlipRad += flipInput * 5.95 * grabSpeedBoost * dt;
 
           if (inp.grab !== 'none') {
             state.bestGrabInAir = inp.grab;
@@ -818,9 +997,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
                         isGrinding: false,
                       });
                       if (trick.basePoints > 0) {
+                        state.comboTrickBase += trick.basePoints;
                         state.comboScore += trick.basePoints;
-                        state.comboMultiplier = Math.min(8, state.comboMultiplier + 1);
+                        state.comboMultiplier = Math.min(10, state.comboMultiplier + 1);
                         state.maxCombo = Math.max(state.maxCombo, state.comboMultiplier);
+                        state.comboTimer = COMBO_WINDOW_SEC;
                       }
                     }
                     state.airSpinRad = 0;
@@ -859,44 +1040,48 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
                 grab: state.bestGrabInAir,
                 isGrinding: false,
               });
-              const airBonus = Math.round(state.airtime * 120);
+              const airBonus = Math.round(state.airtime * 140);
               const totalTrickPts = trick.basePoints + airBonus;
 
-              if (spinErr <= 44 && flipErr <= 44) {
+              if (spinErr <= 48 && flipErr <= 48) {
                 state.cleanLandings += 1;
+                const earnedPreview = Math.round(totalTrickPts * state.comboMultiplier);
+                state.comboTrickBase += totalTrickPts;
                 state.comboScore += totalTrickPts;
-                const earned = Math.round(totalTrickPts * state.comboMultiplier);
-                state.comboMultiplier = Math.min(8, state.comboMultiplier + 1);
+                state.comboMultiplier = Math.min(10, state.comboMultiplier + 1);
                 state.maxCombo = Math.max(state.maxCombo, state.comboMultiplier);
-                if (earned > state.bestTrickPoints) {
-                  state.bestTrickPoints = earned;
+                state.comboTimer = COMBO_WINDOW_SEC;
+                if (earnedPreview > state.bestTrickPoints) {
+                  state.bestTrickPoints = earnedPreview;
                   state.bestTrickName = trick.label || 'Clean Air';
                 }
                 triggerCallout(
                   `${trick.label || 'STOMPED'}!`,
-                  `+${earned.toLocaleString()} · ${state.comboMultiplier - 1}x Combo`,
+                  `+${earnedPreview.toLocaleString()} · Combo ${state.comboMultiplier}x`,
                   'clean'
                 );
                 playSkiSound('stomp', soundRef.current, state.comboMultiplier);
-                // Immediate partial bank if no further trick within combo? Bank continuously on clean run or keep combo chaining!
-                state.score += state.comboScore * 0.45;
-                state.comboScore *= 0.55;
-              } else if (spinErr <= 68 && flipErr <= 68) {
+              } else if (spinErr <= 72 && flipErr <= 72) {
                 const earned = Math.round(totalTrickPts * 0.55);
-                state.score += earned + state.comboScore;
-                state.comboScore = 0;
-                state.comboMultiplier = 1;
+                state.trickScoreTotal += earned;
+                state.score += earned;
+                bankCombo(true);
                 triggerCallout(
                   `SKETCHY ${trick.label}`,
                   `+${earned.toLocaleString()} pts`,
                   'sketchy'
                 );
                 playSkiSound('sketchy', soundRef.current);
+                checkMedalUnlock();
               } else {
                 triggerBail(`Over-rotated ${trick.label || 'landing'}`);
               }
             } else if (state.airtime > 0.35) {
-              bankCombo();
+              const airOnly = Math.round(state.airtime * 120);
+              state.flowScoreTotal += airOnly;
+              state.score += airOnly;
+              state.comboTimer = state.comboScore > 0 ? COMBO_WINDOW_SEC : 0;
+              checkMedalUnlock();
             }
 
             state.airSpinRad = 0;
@@ -949,16 +1134,20 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         for (const gate of layout.gates) {
           if (
             !state.passedGates.has(gate.id) &&
-            Math.abs(state.z - gate.z) < 1.6 &&
-            Math.abs(state.x - gate.x) < 2.25
+            Math.abs(state.z - gate.z) < 1.65 &&
+            Math.abs(state.x - gate.x) < 2.35
           ) {
             state.passedGates.add(gate.id);
-            state.score += gate.bonus * state.comboMultiplier;
-            state.comboMultiplier = Math.min(8, state.comboMultiplier + 1);
+            state.gatesCleared += 1;
+            const gatePreview = gate.bonus * state.comboMultiplier;
+            state.comboGateBase += gate.bonus;
+            state.comboScore += gate.bonus;
+            state.comboMultiplier = Math.min(10, state.comboMultiplier + 1);
             state.maxCombo = Math.max(state.maxCombo, state.comboMultiplier);
+            state.comboTimer = COMBO_WINDOW_SEC;
             triggerCallout(
               'GATE CLEARED!',
-              `+${gate.bonus * (state.comboMultiplier - 1)} · ${state.comboMultiplier}x`,
+              `+${gatePreview.toLocaleString()} · Combo ${state.comboMultiplier}x`,
               'gate'
             );
             playSkiSound('gate', soundRef.current);
@@ -968,11 +1157,12 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         // 5. Check Finish Arch
         if (state.z >= map.lengthMeters) {
           state.finished = true;
-          bankCombo();
+          bankCombo(true);
+          state.flowScoreTotal += 1000;
           state.score += 1000; // Finish bonus
           playSkiSound('finish', soundRef.current);
           const speedKmh = Math.hypot(state.vx, state.vz) * 3.6;
-          onFinishRef.current(buildSnapshot('', 'none', speedKmh));
+          onFinishRef.current(buildSnapshot('', 0, 'none', speedKmh));
         }
       }
 
@@ -1035,8 +1225,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         );
       }
 
+      const tuckHeld =
+        (inp.up && state.onGround && !inp.down) ||
+        (inp.analogY > 0.25 && state.onGround);
       updateSkierPose(skier, {
-        tuck: inp.up && state.onGround && !inp.down,
+        tuck: tuckHeld,
         grab: inp.grab,
         isAirborne: !state.onGround && !state.grindingRail,
         isGrinding: Boolean(state.grindingRail),
@@ -1124,23 +1317,30 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       if (hudEmitTimer >= 0.055) {
         hudEmitTimer = 0;
         let liveLabel = '';
+        let livePoints = 0;
         if (state.grindingRail) {
-          liveLabel = formatLiveTrick({
+          const railInfo = formatLiveTrick({
             spinDeg: 0,
             flipDeg: 0,
             grab: 'none',
             isGrinding: true,
             railStyle: state.grindingRail.style,
-          }).label;
+          });
+          liveLabel = railInfo.label;
+          livePoints = state.grindPointsAccum * state.comboMultiplier;
         } else if (!state.onGround && state.airtime > 0.14) {
-          liveLabel = formatLiveTrick({
+          const airInfo = formatLiveTrick({
             spinDeg: THREE.MathUtils.radToDeg(state.airSpinRad),
             flipDeg: THREE.MathUtils.radToDeg(state.airFlipRad),
             grab: state.bestGrabInAir,
             isGrinding: false,
-          }).label;
+          });
+          liveLabel = airInfo.label;
+          if (airInfo.basePoints > 0) {
+            livePoints = (airInfo.basePoints + state.airtime * 140) * state.comboMultiplier;
+          }
         }
-        onHudRef.current(buildSnapshot(liveLabel, inp.grab, speedKmh));
+        onHudRef.current(buildSnapshot(liveLabel, livePoints, inp.grab, speedKmh));
       }
 
       renderer.render(scene, camera);
@@ -1180,5 +1380,5 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     );
   }
 
-  return <div ref={mountRef} className="h-full w-full select-none" />;
+  return <div ref={mountRef} className="h-full w-full select-none touch-none" />;
 };

@@ -165,11 +165,19 @@ export function saveSkiSelection(selectedMapId: SkiMapId, selectedGearId: string
   return next;
 }
 
+const MEDAL_RANK: Record<'none' | 'bronze' | 'silver' | 'gold', number> = {
+  none: 0,
+  bronze: 1,
+  silver: 2,
+  gold: 3,
+};
+
 export function recordSkiRunResult(params: {
   mapId: SkiMapId;
   score: number;
   bestTrickName: string;
   bestTrickPoints: number;
+  medal?: 'none' | 'bronze' | 'silver' | 'gold';
   completed: boolean;
 }): { progress: StoredSkiProgress; isNewBest: boolean } {
   const cur = loadSkiProgress();
@@ -178,10 +186,15 @@ export function recordSkiRunResult(params: {
     bestTrickName: '',
     bestTrickPoints: 0,
     runsCompleted: 0,
+    bestMedal: 'none' as const,
   };
 
   const isNewBest = params.score > prevMap.bestScore;
   const beatTrick = params.bestTrickPoints > prevMap.bestTrickPoints;
+  const incomingMedal = params.medal ?? 'none';
+  const prevMedal = prevMap.bestMedal ?? 'none';
+  const bestMedal =
+    MEDAL_RANK[incomingMedal] > MEDAL_RANK[prevMedal] ? incomingMedal : prevMedal;
 
   const next: StoredSkiProgress = {
     ...cur,
@@ -192,6 +205,7 @@ export function recordSkiRunResult(params: {
         bestTrickName: beatTrick ? params.bestTrickName : prevMap.bestTrickName,
         bestTrickPoints: Math.max(prevMap.bestTrickPoints, params.bestTrickPoints),
         runsCompleted: prevMap.runsCompleted + (params.completed ? 1 : 0),
+        bestMedal,
       },
     },
   };

@@ -4,6 +4,8 @@ import {
   Camera,
   ChevronLeft,
   Flag,
+  Gamepad2,
+  Medal,
   Mountain,
   Pause,
   Play,
@@ -46,6 +48,7 @@ const INITIAL_HUD: SkiHudSnapshot = {
   score: 0,
   comboScore: 0,
   comboMultiplier: 1,
+  comboTimeRatio: 0,
   speedKmh: 0,
   distanceMeters: 0,
   lengthMeters: 1100,
@@ -58,6 +61,7 @@ const INITIAL_HUD: SkiHudSnapshot = {
   flipDeg: 0,
   grab: 'none',
   liveTrickText: '',
+  liveTrickPoints: 0,
   calloutText: '',
   calloutSubtext: '',
   calloutTone: 'clean',
@@ -69,8 +73,52 @@ const INITIAL_HUD: SkiHudSnapshot = {
   railsHit: 0,
   cleanLandings: 0,
   bails: 0,
+  trickScoreTotal: 0,
+  railScoreTotal: 0,
+  flowScoreTotal: 0,
+  gatesCleared: 0,
+  totalGates: 0,
+  medalEarned: 'none',
+  nextMedalLabel: 'Bronze',
+  nextMedalTarget: 2500,
   cameraMode: 'chase',
 };
+
+const MEDAL_STYLES: Record<
+  'none' | 'bronze' | 'silver' | 'gold',
+  { label: string; colorClass: string; borderClass: string }
+> = {
+  none: {
+    label: 'No Medal',
+    colorClass: 'text-stone-400',
+    borderClass: 'border-stone-700',
+  },
+  bronze: {
+    label: 'Bronze',
+    colorClass: 'text-amber-500',
+    borderClass: 'border-amber-600/50',
+  },
+  silver: {
+    label: 'Silver',
+    colorClass: 'text-slate-200',
+    borderClass: 'border-slate-400/50',
+  },
+  gold: {
+    label: 'Gold',
+    colorClass: 'text-yellow-300',
+    borderClass: 'border-yellow-400/60',
+  },
+};
+
+function triggerHaptic(ms = 10) {
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate(ms);
+    }
+  } catch {
+    // Ignore unsupported environments
+  }
+}
 
 export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
   soundEnabled,
@@ -91,16 +139,46 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
   const [cameraMode, setCameraMode] = useState<SkiCameraMode>('chase');
   const [hud, setHud] = useState<SkiHudSnapshot>(INITIAL_HUD);
   const [isNewBest, setIsNewBest] = useState<boolean>(false);
+  const [touchHudOverride, setTouchHudOverride] = useState<boolean | null>(null);
+  const [isTouchViewport, setIsTouchViewport] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    const coarse = window.matchMedia?.('(pointer: coarse)')?.matches ?? false;
+    return coarse || window.innerWidth < 1024;
+  });
+
+  useEffect(() => {
+    const update = () => {
+      const coarse = window.matchMedia?.('(pointer: coarse)')?.matches ?? false;
+      setIsTouchViewport(coarse || window.innerWidth < 1024);
+    };
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+
+  const showTouchControls = touchHudOverride ?? isTouchViewport;
 
   const inputRef = useRef<SkiInputState>({
     left: false,
     right: false,
     up: false,
     down: false,
+    analogX: 0,
+    analogY: 0,
     jumpPressed: false,
     jumpHeld: false,
     grab: 'none',
   });
+
+  const joystickBaseRef = useRef<HTMLDivElement>(null);
+  const joystickKnobRef = useRef<HTMLDivElement>(null);
+  const joystickPointerIdRef = useRef<number | null>(null);
+  const [joystickActive, setJoystickActive] = useState(false);
+
+  const olliePointerIdRef = useRef<number | null>(null);
+  const [olliePressedUi, setOlliePressedUi] = useState(false);
+
+  const grabPointerIdRef = useRef<number | null>(null);
+  const [activeGrabUi, setActiveGrabUi] = useState<SkiGrabType>('none');
 
   const gearIdRef = useRef<string>(gearId);
   gearIdRef.current = gearId;
@@ -124,6 +202,17 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
 
   const activeMap = useMemo(() => getSkiMapById(mapId), [mapId]);
   const activeGear = useMemo(() => getSkiGearById(gearId), [gearId]);
+  const currentMapBest = progress.records[mapId]?.bestScore ?? 0;
+
+  const resetStickVisual = useCallback(() => {
+    joystickPointerIdRef.current = null;
+    inputRef.current.analogX = 0;
+    inputRef.current.analogY = 0;
+    setJoystickActive(false);
+    if (joystickKnobRef.current) {
+      joystickKnobRef.current.style.transform = 'translate3d(0px, 0px, 0)';
+    }
+  }, []);
 
   const clearInputs = useCallback(() => {
     inputRef.current = {
@@ -131,11 +220,18 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
       right: false,
       up: false,
       down: false,
+      analogX: 0,
+      analogY: 0,
       jumpPressed: false,
       jumpHeld: false,
       grab: 'none',
     };
-  }, []);
+    resetStickVisual();
+    olliePointerIdRef.current = null;
+    grabPointerIdRef.current = null;
+    setOlliePressedUi(false);
+    setActiveGrabUi('none');
+  }, [resetStickVisual]);
 
   const handleDropIn = useCallback(
     (targetMapId: SkiMapId = mapId) => {
@@ -162,12 +258,13 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
   );
 
   const handleTogglePause = useCallback(() => {
+    clearInputs();
     setPhase((prev) => {
       if (prev === 'playing') return 'paused';
       if (prev === 'paused') return 'playing';
       return prev;
     });
-  }, []);
+  }, [clearInputs]);
 
   const handleCycleCamera = useCallback(() => {
     setCameraMode((prev) =>
@@ -177,12 +274,14 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
 
   const handleFinishRun = useCallback(
     (finalSnapshot: SkiHudSnapshot) => {
+      clearInputs();
       setHud(finalSnapshot);
       const res = recordSkiRunResult({
         mapId,
         score: finalSnapshot.score,
         bestTrickName: finalSnapshot.bestTrickName,
         bestTrickPoints: finalSnapshot.bestTrickPoints,
+        medal: finalSnapshot.medalEarned,
         completed: true,
       });
       setProgress(res.progress);
@@ -190,27 +289,118 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
       setPhase('finished');
       onStatsChange?.();
     },
-    [mapId, onStatsChange]
+    [clearInputs, mapId, onStatsChange]
   );
 
-  const setTouchFlag = useCallback(
-    (field: 'left' | 'right' | 'up' | 'down', val: boolean) => {
-      inputRef.current[field] = val;
+  // Analog Virtual Thumbstick Pointer Handlers (Zero-lag DOM transform + Multi-touch capture)
+  const updateJoystickFromPointer = useCallback((clientX: number, clientY: number) => {
+    const base = joystickBaseRef.current;
+    if (!base) return;
+    const rect = base.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const maxRadius = Math.max(36, rect.width * 0.36);
+
+    let dx = clientX - cx;
+    let dy = clientY - cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > maxRadius) {
+      const scale = maxRadius / dist;
+      dx *= scale;
+      dy *= scale;
+    }
+
+    inputRef.current.analogX = Number((dx / maxRadius).toFixed(3));
+    inputRef.current.analogY = Number((-dy / maxRadius).toFixed(3));
+
+    if (joystickKnobRef.current) {
+      joystickKnobRef.current.style.transform = `translate3d(${dx.toFixed(1)}px, ${dy.toFixed(1)}px, 0)`;
+    }
+  }, []);
+
+  const handleJoystickDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      joystickPointerIdRef.current = e.pointerId;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setJoystickActive(true);
+      updateJoystickFromPointer(e.clientX, e.clientY);
+    },
+    [updateJoystickFromPointer]
+  );
+
+  const handleJoystickMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (joystickPointerIdRef.current !== e.pointerId) return;
+      e.preventDefault();
+      updateJoystickFromPointer(e.clientX, e.clientY);
+    },
+    [updateJoystickFromPointer]
+  );
+
+  const handleJoystickUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (joystickPointerIdRef.current !== e.pointerId) return;
+      e.preventDefault();
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // Ignore if already released
+      }
+      resetStickVisual();
+    },
+    [resetStickVisual]
+  );
+
+  const handleOllieDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    olliePointerIdRef.current = e.pointerId;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    inputRef.current.jumpPressed = true;
+    inputRef.current.jumpHeld = true;
+    setOlliePressedUi(true);
+    triggerHaptic(12);
+  }, []);
+
+  const handleOllieUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    if (olliePointerIdRef.current !== e.pointerId) return;
+    e.preventDefault();
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // Ignore
+    }
+    olliePointerIdRef.current = null;
+    inputRef.current.jumpHeld = false;
+    setOlliePressedUi(false);
+  }, []);
+
+  const handleGrabDown = useCallback(
+    (grab: Exclude<SkiGrabType, 'none'>) => (e: React.PointerEvent<HTMLButtonElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      grabPointerIdRef.current = e.pointerId;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      inputRef.current.grab = grab;
+      setActiveGrabUi(grab);
+      triggerHaptic(8);
     },
     []
   );
 
-  const triggerTouchJump = useCallback((down: boolean) => {
-    if (down) {
-      inputRef.current.jumpPressed = true;
-      inputRef.current.jumpHeld = true;
-    } else {
-      inputRef.current.jumpHeld = false;
+  const handleGrabUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    if (grabPointerIdRef.current !== e.pointerId) return;
+    e.preventDefault();
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // Ignore
     }
-  }, []);
-
-  const setTouchGrab = useCallback((grab: SkiGrabType) => {
-    inputRef.current.grab = grab;
+    grabPointerIdRef.current = null;
+    inputRef.current.grab = 'none';
+    setActiveGrabUi('none');
   }, []);
 
   if (phase === 'menu') {
@@ -373,6 +563,14 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                       </span>
                       <span aria-hidden="true">·</span>
                       <span>Target: {m.targetScore.toLocaleString()}</span>
+                      {rec?.bestMedal && rec.bestMedal !== 'none' && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-semibold text-amber-600 dark:text-amber-400 capitalize">
+                            {rec.bestMedal}
+                          </span>
+                        </>
+                      )}
                     </div>
 
                     <button
@@ -496,8 +694,12 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
   }
 
   // Active 3D Viewport (Playing / Paused / Finished)
+  const projectedRunTotal = hud.score + hud.comboScore * hud.comboMultiplier;
+  const beatingRecordLive = currentMapBest > 0 && projectedRunTotal > currentMapBest;
+  const activeMedalMeta = MEDAL_STYLES[hud.medalEarned];
+
   return (
-    <div className="relative w-full h-[calc(100vh-146px)] min-h-[520px] max-h-[840px] overflow-hidden rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-950 shadow-sm">
+    <div className="relative w-full h-[calc(100dvh-118px)] sm:h-[calc(100dvh-138px)] min-h-[400px] sm:min-h-[520px] max-h-[860px] overflow-hidden rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-950 shadow-sm touch-none select-none">
       {/* Isolated WebGL Canvas Container */}
       <SkiViewport
         mapId={mapId}
@@ -514,10 +716,10 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
       />
 
       {/* Top HUD Bar (No backdrop-blur over WebGL; solid rgba surfaces) */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-3 p-3 sm:p-4">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 sm:gap-3 p-2.5 sm:p-4">
         {/* Top-Left Telemetry: Map + Distance + Speed */}
-        <div className="pointer-events-auto rounded-lg border border-white/15 bg-stone-950/80 px-3 py-2 text-white space-y-1.5 min-w-[180px]">
-          <div className="flex items-center justify-between gap-3 text-xs">
+        <div className="pointer-events-auto rounded-lg border border-white/15 bg-stone-950/82 px-2.5 py-2 sm:px-3 text-white space-y-1 min-w-[144px] sm:min-w-[190px]">
+          <div className="flex items-center justify-between gap-2 text-[11px] sm:text-xs">
             <span className="font-display font-bold tracking-tight truncate">
               {activeMap.name}
             </span>
@@ -537,26 +739,72 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
           </div>
         </div>
 
-        {/* Top-Right Telemetry: Score + Combo + Controls */}
-        <div className="pointer-events-auto flex items-start gap-2">
-          <div className="rounded-lg border border-white/15 bg-stone-950/80 px-3.5 py-2 text-right text-white">
-            <div className="text-[10px] font-medium text-stone-300">Run Score</div>
-            <div className="font-mono text-lg sm:text-xl font-bold leading-tight tabular-nums">
+        {/* Top-Right Telemetry: Score + Combo Bank Timer + Medal + Quick Controls */}
+        <div className="pointer-events-auto flex items-start gap-1.5 sm:gap-2">
+          <div className="rounded-lg border border-white/15 bg-stone-950/85 px-3 py-1.5 sm:px-3.5 sm:py-2 text-right text-white min-w-[132px] sm:min-w-[164px]">
+            <div className="flex items-center justify-end gap-2 text-[10px] font-medium">
+              {hud.medalEarned !== 'none' && (
+                <span className={`font-semibold ${activeMedalMeta.colorClass}`}>
+                  {activeMedalMeta.label}
+                </span>
+              )}
+              <span className="text-stone-300">Score</span>
+            </div>
+            <div className="font-mono text-lg sm:text-2xl font-bold leading-tight tabular-nums">
               {hud.score.toLocaleString()}
             </div>
-            {(hud.comboScore > 0 || hud.comboMultiplier > 1) && (
-              <div className="mt-0.5 font-mono text-[11px] font-semibold text-amber-300 tabular-nums">
-                {hud.comboMultiplier}x · +{hud.comboScore.toLocaleString()}
+
+            {hud.comboScore > 0 ? (
+              <div className="mt-1 space-y-1">
+                <div className="font-mono text-[11px] font-semibold text-amber-300 tabular-nums">
+                  {hud.comboMultiplier}x · +{hud.comboScore.toLocaleString()}
+                </div>
+                <div className="h-1 w-full overflow-hidden rounded-full bg-white/15">
+                  <div
+                    className="h-full bg-amber-400 transition-[width] duration-75"
+                    style={{ width: `${Math.round(hud.comboTimeRatio * 100)}%` }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="mt-0.5 font-mono text-[10px] tabular-nums text-stone-400">
+                {beatingRecordLive ? (
+                  <span className="font-semibold text-emerald-400">New Record Pace</span>
+                ) : currentMapBest > 0 ? (
+                  <span>Best {currentMapBest.toLocaleString()}</span>
+                ) : (
+                  <span>
+                    {hud.nextMedalLabel} {hud.nextMedalTarget.toLocaleString()}
+                  </span>
+                )}
               </div>
             )}
           </div>
 
-          <div className="flex flex-col sm:flex-row items-center gap-1.5">
+          <div className="flex flex-col sm:flex-row items-center gap-1 sm:gap-1.5">
+            <button
+              type="button"
+              onClick={() =>
+                setTouchHudOverride((prev) =>
+                  prev === null ? !isTouchViewport : !prev
+                )
+              }
+              title={showTouchControls ? 'Hide Touch Controls' : 'Show Touch Controls'}
+              className={`inline-flex h-9 w-9 sm:w-auto items-center justify-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition-colors whitespace-nowrap ${
+                showTouchControls
+                  ? 'border-emerald-400/50 bg-emerald-950/80 text-emerald-200'
+                  : 'border-white/15 bg-stone-950/80 text-white hover:bg-stone-900'
+              }`}
+            >
+              <Gamepad2 className="w-3.5 h-3.5" aria-hidden="true" />
+              <span className="hidden md:inline">Touch</span>
+            </button>
+
             <button
               type="button"
               onClick={handleCycleCamera}
               title={`Camera: ${cameraMode} (C)`}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/15 bg-stone-950/80 px-2.5 text-xs font-medium text-white hover:bg-stone-900 transition-colors whitespace-nowrap"
+              className="inline-flex h-9 w-9 sm:w-auto items-center justify-center gap-1.5 rounded-lg border border-white/15 bg-stone-950/80 sm:px-2.5 text-xs font-medium text-white hover:bg-stone-900 transition-colors whitespace-nowrap"
             >
               <Camera className="w-3.5 h-3.5" aria-hidden="true" />
               <span className="hidden sm:inline capitalize">{cameraMode}</span>
@@ -575,7 +823,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
               type="button"
               onClick={handleTogglePause}
               title="Pause / Parks (Esc)"
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/15 bg-stone-950/80 px-2.5 text-xs font-medium text-white hover:bg-stone-900 transition-colors whitespace-nowrap"
+              className="inline-flex h-9 w-9 sm:w-auto items-center justify-center gap-1.5 rounded-lg border border-white/15 bg-stone-950/80 sm:px-2.5 text-xs font-medium text-white hover:bg-stone-900 transition-colors whitespace-nowrap"
             >
               <Pause className="w-3.5 h-3.5" aria-hidden="true" />
               <span className="hidden sm:inline">Menu</span>
@@ -585,11 +833,18 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
       </div>
 
       {/* Live Mid-Air Trick & Stomp Callout (Top Center, never occluding skier) */}
-      <div className="pointer-events-none absolute inset-x-0 top-20 sm:top-4 z-10 flex flex-col items-center gap-1.5 px-4">
+      <div className="pointer-events-none absolute inset-x-0 top-[76px] sm:top-4 z-10 flex flex-col items-center gap-1.5 px-4">
         {hud.liveTrickText && (
           <div className="rounded-lg border border-amber-400/50 bg-stone-950/85 px-3.5 py-1.5 text-center text-white shadow-md">
-            <div className="font-display text-sm sm:text-base font-bold tracking-wide text-amber-300">
-              {hud.liveTrickText}
+            <div className="flex items-center justify-center gap-2">
+              <span className="font-display text-sm sm:text-base font-bold tracking-wide text-amber-300">
+                {hud.liveTrickText}
+              </span>
+              {hud.liveTrickPoints > 0 && (
+                <span className="font-mono text-xs sm:text-sm font-bold text-emerald-300 tabular-nums">
+                  +{hud.liveTrickPoints.toLocaleString()}
+                </span>
+              )}
             </div>
             {(hud.spinDeg >= 90 || hud.flipDeg >= 90) && (
               <div className="font-mono text-[10px] text-stone-300 tabular-nums">
@@ -624,105 +879,150 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
         )}
       </div>
 
-      {/* Bottom Controls Dock (Touch-Friendly + Desktop Reminder) */}
+      {/* Bottom Controls Dock: 360° Analog Thumbstick + Multi-Touch Ollie/Grab Arc */}
       {phase === 'playing' && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end justify-between gap-2 p-3 sm:p-4">
-          {/* Left Steer & Tuck/Flip Controls */}
-          <div className="pointer-events-auto flex items-center gap-1.5">
-            <button
-              type="button"
-              onPointerDown={() => setTouchFlag('left', true)}
-              onPointerUp={() => setTouchFlag('left', false)}
-              onPointerLeave={() => setTouchFlag('left', false)}
-              onPointerCancel={() => setTouchFlag('left', false)}
-              className="h-11 w-11 rounded-lg border border-white/15 bg-stone-950/80 text-sm font-bold text-white active:bg-emerald-700 select-none"
-              aria-label="Steer or spin left"
-            >
-              ←
-            </button>
-            <div className="flex flex-col gap-1">
-              <button
-                type="button"
-                onPointerDown={() => setTouchFlag('up', true)}
-                onPointerUp={() => setTouchFlag('up', false)}
-                onPointerLeave={() => setTouchFlag('up', false)}
-                onPointerCancel={() => setTouchFlag('up', false)}
-                className="h-7 px-2.5 rounded-md border border-white/15 bg-stone-950/80 text-[11px] font-semibold text-white active:bg-emerald-700 select-none"
-              >
-                Tuck / Front
-              </button>
-              <button
-                type="button"
-                onPointerDown={() => setTouchFlag('down', true)}
-                onPointerUp={() => setTouchFlag('down', false)}
-                onPointerLeave={() => setTouchFlag('down', false)}
-                onPointerCancel={() => setTouchFlag('down', false)}
-                className="h-7 px-2.5 rounded-md border border-white/15 bg-stone-950/80 text-[11px] font-semibold text-white active:bg-emerald-700 select-none"
-              >
-                Brake / Back
-              </button>
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end justify-between gap-2 p-3 sm:p-5">
+          {showTouchControls ? (
+            <>
+              {/* Left Thumb: 360° Proportional Analog Thumbstick (Carve, Tuck, Brake, & Cork) */}
+              <div className="pointer-events-auto flex flex-col items-center gap-1 touch-none">
+                <div
+                  ref={joystickBaseRef}
+                  onPointerDown={handleJoystickDown}
+                  onPointerMove={handleJoystickMove}
+                  onPointerUp={handleJoystickUp}
+                  onPointerCancel={handleJoystickUp}
+                  className={`relative flex h-28 w-28 sm:h-32 sm:w-32 items-center justify-center rounded-full border-2 transition-colors touch-none select-none ${
+                    joystickActive
+                      ? 'border-emerald-400/80 bg-stone-950/75'
+                      : 'border-white/25 bg-stone-950/55'
+                  }`}
+                  aria-label="360 degree carve, tuck, and cork joystick"
+                >
+                  {/* Cardinal directional ticks */}
+                  <span className="pointer-events-none absolute top-1.5 text-[9px] font-mono font-semibold text-stone-300/80">
+                    {hud.isAirborne ? 'FLIP' : 'TUCK'}
+                  </span>
+                  <span className="pointer-events-none absolute bottom-1.5 text-[9px] font-mono font-semibold text-stone-300/80">
+                    {hud.isAirborne ? 'BACK' : 'BRAKE'}
+                  </span>
+                  <span className="pointer-events-none absolute left-2 text-[10px] font-bold text-stone-300/80">
+                    ←
+                  </span>
+                  <span className="pointer-events-none absolute right-2 text-[10px] font-bold text-stone-300/80">
+                    →
+                  </span>
+                  <div className="pointer-events-none h-12 w-12 rounded-full border border-white/10" />
+
+                  {/* Draggable Thumb Puck */}
+                  <div
+                    ref={joystickKnobRef}
+                    className={`pointer-events-none flex h-12 w-12 sm:h-14 sm:w-14 items-center justify-center rounded-full border shadow-lg transition-colors ${
+                      joystickActive
+                        ? 'border-emerald-300 bg-emerald-500/90 text-white'
+                        : 'border-white/40 bg-stone-800/90 text-stone-200'
+                    }`}
+                  >
+                    <span className="h-2.5 w-2.5 rounded-full bg-white/85" />
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono text-white/75 bg-stone-950/65 px-2 py-0.5 rounded">
+                  {hud.isAirborne ? 'Drag Diagonal = Cork' : 'Drag Stick to Carve'}
+                </span>
+              </div>
+
+              {/* Center Desktop Tip (Visible only on large screens when Touch HUD is toggled ON) */}
+              <div className="hidden lg:flex items-center gap-3 rounded-lg border border-white/15 bg-stone-950/80 px-3 py-1.5 text-[11px] text-stone-200 font-mono">
+                <span>WASD / Arrows: Carve & Cork</span>
+                <span aria-hidden="true">·</span>
+                <span>Space: Ollie</span>
+                <span aria-hidden="true">·</span>
+                <span>J / K / L: Grabs</span>
+              </div>
+
+              {/* Right Thumb: Grab Arc + Large Primary Ollie Trigger */}
+              <div className="pointer-events-auto flex flex-col items-end gap-2 touch-none">
+                {/* 3 Grab Triggers */}
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onPointerDown={handleGrabDown('mute')}
+                    onPointerUp={handleGrabUp}
+                    onPointerCancel={handleGrabUp}
+                    className={`h-12 min-w-[54px] px-3 rounded-xl border text-xs font-bold transition-transform touch-none select-none ${
+                      activeGrabUi === 'mute'
+                        ? 'scale-95 border-amber-300 bg-amber-500 text-stone-950'
+                        : 'border-white/20 bg-stone-950/75 text-amber-300'
+                    }`}
+                  >
+                    Mute
+                  </button>
+                  <button
+                    type="button"
+                    onPointerDown={handleGrabDown('tail')}
+                    onPointerUp={handleGrabUp}
+                    onPointerCancel={handleGrabUp}
+                    className={`h-12 min-w-[54px] px-3 rounded-xl border text-xs font-bold transition-transform touch-none select-none ${
+                      activeGrabUi === 'tail'
+                        ? 'scale-95 border-sky-300 bg-sky-500 text-stone-950'
+                        : 'border-white/20 bg-stone-950/75 text-sky-300'
+                    }`}
+                  >
+                    Tail
+                  </button>
+                  <button
+                    type="button"
+                    onPointerDown={handleGrabDown('japan')}
+                    onPointerUp={handleGrabUp}
+                    onPointerCancel={handleGrabUp}
+                    className={`h-12 min-w-[56px] px-3 rounded-xl border text-xs font-bold transition-transform touch-none select-none ${
+                      activeGrabUi === 'japan'
+                        ? 'scale-95 border-rose-300 bg-rose-500 text-white'
+                        : 'border-white/20 bg-stone-950/75 text-rose-300'
+                    }`}
+                  >
+                    Japan
+                  </button>
+                </div>
+
+                {/* Large Primary Ollie Button + Swipe Hint */}
+                <div className="flex items-center gap-2.5">
+                  <span className="hidden sm:inline text-[10px] font-mono text-white/70 bg-stone-950/60 px-2 py-1 rounded">
+                    Swipe Snow ↑ = Ollie
+                  </span>
+                  <button
+                    type="button"
+                    onPointerDown={handleOllieDown}
+                    onPointerUp={handleOllieUp}
+                    onPointerCancel={handleOllieUp}
+                    className={`h-16 w-24 sm:h-[70px] sm:w-28 rounded-2xl border-2 text-sm font-extrabold tracking-wide text-white shadow-lg transition-transform touch-none select-none ${
+                      olliePressedUi
+                        ? 'scale-95 border-emerald-200 bg-emerald-500'
+                        : 'border-emerald-300/60 bg-emerald-600/95 hover:bg-emerald-500'
+                    }`}
+                  >
+                    OLLIE
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="mx-auto flex items-center gap-3 rounded-lg border border-white/15 bg-stone-950/80 px-3.5 py-1.5 text-[11px] text-stone-200 font-mono">
+              <span>WASD / Arrows: Carve & Cork</span>
+              <span aria-hidden="true">·</span>
+              <span>Space: Ollie</span>
+              <span aria-hidden="true">·</span>
+              <span>J / K / L: Mute · Tail · Japan</span>
+              <span aria-hidden="true">·</span>
+              <span>C: Camera</span>
             </div>
-            <button
-              type="button"
-              onPointerDown={() => setTouchFlag('right', true)}
-              onPointerUp={() => setTouchFlag('right', false)}
-              onPointerLeave={() => setTouchFlag('right', false)}
-              onPointerCancel={() => setTouchFlag('right', false)}
-              className="h-11 w-11 rounded-lg border border-white/15 bg-stone-950/80 text-sm font-bold text-white active:bg-emerald-700 select-none"
-              aria-label="Steer or spin right"
-            >
-              →
-            </button>
-          </div>
-
-          {/* Center Desktop Keyboard Shortcut Tip */}
-          <div className="hidden lg:flex items-center gap-3 rounded-lg border border-white/15 bg-stone-950/80 px-3 py-1.5 text-[11px] text-stone-200 font-mono">
-            <span>WASD / Arrows: Carve & Cork</span>
-            <span aria-hidden="true">·</span>
-            <span>Space: Ollie</span>
-            <span aria-hidden="true">·</span>
-            <span>J / K / L: Grabs</span>
-          </div>
-
-          {/* Right Jump & Grab Buttons */}
-          <div className="pointer-events-auto flex items-center gap-1.5">
-            <button
-              type="button"
-              onPointerDown={() => setTouchGrab('mute')}
-              onPointerUp={() => setTouchGrab('none')}
-              onPointerLeave={() => setTouchGrab('none')}
-              onPointerCancel={() => setTouchGrab('none')}
-              className="h-11 px-3 rounded-lg border border-white/15 bg-stone-950/80 text-xs font-semibold text-amber-300 active:bg-amber-600 active:text-white select-none"
-            >
-              Mute
-            </button>
-            <button
-              type="button"
-              onPointerDown={() => setTouchGrab('tail')}
-              onPointerUp={() => setTouchGrab('none')}
-              onPointerLeave={() => setTouchGrab('none')}
-              onPointerCancel={() => setTouchGrab('none')}
-              className="h-11 px-3 rounded-lg border border-white/15 bg-stone-950/80 text-xs font-semibold text-sky-300 active:bg-sky-600 active:text-white select-none"
-            >
-              Tail
-            </button>
-            <button
-              type="button"
-              onPointerDown={() => triggerTouchJump(true)}
-              onPointerUp={() => triggerTouchJump(false)}
-              onPointerLeave={() => triggerTouchJump(false)}
-              onPointerCancel={() => triggerTouchJump(false)}
-              className="h-11 px-4 rounded-lg bg-emerald-600 text-xs font-bold text-white hover:bg-emerald-500 active:bg-emerald-700 select-none"
-            >
-              Ollie
-            </button>
-          </div>
+          )}
         </div>
       )}
 
       {/* Pause Modal */}
       {phase === 'paused' && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-stone-950/70 p-4">
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-stone-950/75 p-4">
           <div className="w-full max-w-sm rounded-xl border border-stone-700 bg-stone-900 p-5 text-white space-y-4 animate-chess-modal">
             <div>
               <div className="text-xs font-medium text-emerald-400">Run Paused</div>
@@ -740,6 +1040,20 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
               >
                 <Play className="w-3.5 h-3.5" />
                 <span>Resume Run</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setTouchHudOverride((prev) =>
+                    prev === null ? !isTouchViewport : !prev
+                  )
+                }
+                className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-stone-700 bg-stone-800 py-2.5 px-4 text-xs font-semibold text-stone-100 hover:bg-stone-700 transition-colors"
+              >
+                <Gamepad2 className="w-3.5 h-3.5" />
+                <span>
+                  On-Screen Touch Joystick: {showTouchControls ? 'On' : 'Off'}
+                </span>
               </button>
               <button
                 type="button"
@@ -771,18 +1085,30 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Finish Run Summary Modal */}
+      {/* Finish Run Summary Modal with Full Score Breakdown */}
       {phase === 'finished' && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-stone-950/75 p-4">
-          <div className="w-full max-w-md rounded-xl border border-emerald-500/40 bg-stone-900 p-5 text-white space-y-4 animate-chess-modal">
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-stone-950/78 p-4">
+          <div className="w-full max-w-md rounded-xl border border-emerald-500/40 bg-stone-900 p-5 text-white space-y-4 animate-chess-modal max-h-full overflow-y-auto">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="text-xs font-semibold text-emerald-400">
-                  {isNewBest ? 'New Mountain Record!' : 'Finish Arch Cleared'}
+                <div className="flex items-center gap-2 text-xs font-semibold">
+                  <span className="text-emerald-400">
+                    {isNewBest ? 'New Mountain Record!' : 'Finish Arch Cleared'}
+                  </span>
+                  {hud.medalEarned !== 'none' && (
+                    <>
+                      <span aria-hidden="true" className="text-stone-600">·</span>
+                      <span className={`inline-flex items-center gap-1 ${activeMedalMeta.colorClass}`}>
+                        <Medal className="w-3.5 h-3.5" />
+                        <span>{activeMedalMeta.label} Medal</span>
+                      </span>
+                    </>
+                  )}
                 </div>
                 <h2 className="mt-0.5 font-display text-xl font-bold">{activeMap.name}</h2>
-                <p className="mt-0.5 text-xs text-stone-400">
-                  Target Score: {activeMap.targetScore.toLocaleString()} pts
+                <p className="mt-0.5 text-xs text-stone-400 font-mono tabular-nums">
+                  Silver Target: {activeMap.targetScore.toLocaleString()} · Gold:{' '}
+                  {Math.round(activeMap.targetScore * 1.6).toLocaleString()}
                 </p>
               </div>
               <div className="text-right">
@@ -790,6 +1116,30 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                 <div className="font-mono text-2xl font-bold text-amber-300 tabular-nums">
                   {hud.score.toLocaleString()}
                 </div>
+              </div>
+            </div>
+
+            {/* Score Breakdown */}
+            <div className="rounded-lg border border-stone-800 bg-stone-950/70 p-3 space-y-1.5 text-xs">
+              <div className="flex items-center justify-between text-stone-300">
+                <span>Tricks & Corks ({hud.cleanLandings} stomped)</span>
+                <span className="font-mono font-semibold tabular-nums text-white">
+                  +{hud.trickScoreTotal.toLocaleString()}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-stone-300">
+                <span>Rails & Boxes ({hud.railsHit} hit)</span>
+                <span className="font-mono font-semibold tabular-nums text-white">
+                  +{hud.railScoreTotal.toLocaleString()}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-stone-300">
+                <span>
+                  Carve Flow, Gates ({hud.gatesCleared}/{hud.totalGates}) & Finish
+                </span>
+                <span className="font-mono font-semibold tabular-nums text-white">
+                  +{hud.flowScoreTotal.toLocaleString()}
+                </span>
               </div>
             </div>
 
@@ -815,10 +1165,10 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
               <div>
                 <div className="text-[10px] text-stone-400 flex items-center justify-center gap-1">
                   <Award className="w-3 h-3 text-sky-400" />
-                  <span>Rails / Clean</span>
+                  <span>Wipeouts</span>
                 </div>
                 <div className="mt-0.5 font-mono text-sm font-bold tabular-nums">
-                  {hud.railsHit} / {hud.cleanLandings}
+                  {hud.bails}
                 </div>
               </div>
             </div>
