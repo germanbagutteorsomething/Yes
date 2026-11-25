@@ -5,6 +5,7 @@ import type {
   SavedMatch,
   StockfishLevelNumber,
 } from '../types/chess';
+import type { SkiMapId, StoredSkiProgress } from '../types/ski';
 
 const MATCHES_KEY = 'squareeight_matches_v1';
 const DEFEATED_BOTS_KEY = 'squareeight_defeated_bots_v1';
@@ -142,3 +143,60 @@ export function loadPreferences(): StoredPreferences {
 export function savePreferences(prefs: StoredPreferences) {
   safeWriteJson(PREFS_KEY, prefs);
 }
+
+const SKI_PROGRESS_KEY = 'squareeight_ski_progress_v1';
+
+export function loadSkiProgress(): StoredSkiProgress {
+  return safeReadJson<StoredSkiProgress>(SKI_PROGRESS_KEY, {
+    selectedMapId: 'the-yard',
+    selectedGearId: 'alpine-orange',
+    records: {},
+  });
+}
+
+export function saveSkiSelection(selectedMapId: SkiMapId, selectedGearId: string): StoredSkiProgress {
+  const cur = loadSkiProgress();
+  const next: StoredSkiProgress = {
+    ...cur,
+    selectedMapId,
+    selectedGearId,
+  };
+  safeWriteJson(SKI_PROGRESS_KEY, next);
+  return next;
+}
+
+export function recordSkiRunResult(params: {
+  mapId: SkiMapId;
+  score: number;
+  bestTrickName: string;
+  bestTrickPoints: number;
+  completed: boolean;
+}): { progress: StoredSkiProgress; isNewBest: boolean } {
+  const cur = loadSkiProgress();
+  const prevMap = cur.records[params.mapId] ?? {
+    bestScore: 0,
+    bestTrickName: '',
+    bestTrickPoints: 0,
+    runsCompleted: 0,
+  };
+
+  const isNewBest = params.score > prevMap.bestScore;
+  const beatTrick = params.bestTrickPoints > prevMap.bestTrickPoints;
+
+  const next: StoredSkiProgress = {
+    ...cur,
+    records: {
+      ...cur.records,
+      [params.mapId]: {
+        bestScore: Math.max(prevMap.bestScore, params.score),
+        bestTrickName: beatTrick ? params.bestTrickName : prevMap.bestTrickName,
+        bestTrickPoints: Math.max(prevMap.bestTrickPoints, params.bestTrickPoints),
+        runsCompleted: prevMap.runsCompleted + (params.completed ? 1 : 0),
+      },
+    },
+  };
+
+  safeWriteJson(SKI_PROGRESS_KEY, next);
+  return { progress: next, isNewBest };
+}
+

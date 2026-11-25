@@ -10,10 +10,12 @@ import {
   Crown,
   FileDown,
   Flag,
+  Gamepad2,
   Handshake,
   Lightbulb,
   Loader2,
   Moon,
+  Mountain,
   Puzzle,
   RotateCcw,
   Sun,
@@ -28,12 +30,14 @@ import { ArchiveWorkspace } from './components/ArchiveWorkspace';
 import { ChessBoard } from './components/ChessBoard';
 import { EndgamesWorkspace } from './components/EndgamesWorkspace';
 import { EvalBar } from './components/EvalBar';
+import { GamesHub } from './components/GamesHub';
 import { MatchAnalysisPanel } from './components/MatchAnalysisPanel';
 import { MoveHistoryPanel } from './components/MoveHistoryPanel';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PlayerBar } from './components/PlayerBar';
 import { PuzzlesWorkspace } from './components/PuzzlesWorkspace';
 import { PWAInstallButton } from './components/PWAInstallButton';
+import { SkiGameWorkspace } from './components/SkiGameWorkspace';
 import { detectOpening } from './data/openings';
 import { getBotMove } from './engine/botService';
 import { stockfishService } from './engine/stockfishService';
@@ -63,6 +67,7 @@ import {
   type StockfishLevelNumber,
   type TimeControlId,
 } from './types/chess';
+import type { SkiMapId } from './types/ski';
 import { playChessSound } from './utils/sound';
 import {
   clearSavedMatches,
@@ -253,9 +258,12 @@ export default function App() {
   const currentMatchIdRef = useRef<string | null>(null);
   const isLoadedArchiveRef = useRef<boolean>(false);
 
-  // Navigation & Studio Layout
+  // Top-Level Game Hub & Studio Layout
+  const [activeGame, setActiveGame] = useState<'hub' | 'chess' | 'ski'>('hub');
   const [activeView, setActiveView] = useState<AppView>('play');
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('moves');
+  const [requestedSkiMapId, setRequestedSkiMapId] = useState<SkiMapId | null>(null);
+  const [requestedSkiNonce, setRequestedSkiNonce] = useState<number>(0);
 
   // Preferences (persisted)
   const [darkMode, setDarkMode] = useState<boolean>(initialPrefs.darkMode);
@@ -431,7 +439,7 @@ export default function App() {
 
   // Active move timer / chess clock tick
   useEffect(() => {
-    if (activeView !== 'play') return;
+    if (activeGame !== 'chess' || activeView !== 'play') return;
     if (currentTimeControl.id === 'none') return;
     if (gameResult) return;
     if (moves.length === 0) return;
@@ -481,7 +489,7 @@ export default function App() {
     }, 100);
 
     return () => window.clearInterval(interval);
-  }, [activeView, currentTimeControl.id, gameResult, moves.length, soundEnabled, turn]);
+  }, [activeGame, activeView, currentTimeControl.id, gameResult, moves.length, soundEnabled, turn]);
 
   const startNewGame = useCallback(
     (overrides?: {
@@ -726,7 +734,7 @@ export default function App() {
 
   // Trigger Stockfish engine or selected Bot automatically when it is the AI's turn
   useEffect(() => {
-    if (activeView !== 'play') return;
+    if (activeGame !== 'chess' || activeView !== 'play') return;
     if (gameMode !== 'stockfish') return;
     if (gameResult) return;
     if (isAnalyzing) return;
@@ -773,6 +781,7 @@ export default function App() {
       setIsEngineThinking(false);
     };
   }, [
+    activeGame,
     activeView,
     gameMode,
     opponentKind,
@@ -789,6 +798,7 @@ export default function App() {
   ]);
 
   const canInteractWithBoard =
+    activeGame === 'chess' &&
     activeView === 'play' &&
     viewIndex === null &&
     !gameResult &&
@@ -1262,7 +1272,7 @@ export default function App() {
   // Keyboard shortcuts for history review and board flip in Play view
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (activeView !== 'play') return;
+      if (activeGame !== 'chess' || activeView !== 'play') return;
       if (pendingPromotion) return;
       const target = e.target as HTMLElement | null;
       if (
@@ -1295,7 +1305,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeView, handleSelectHistoryPly, moves.length, pendingPromotion, viewIndex]);
+  }, [activeGame, activeView, handleSelectHistoryPly, moves.length, pendingPromotion, viewIndex]);
 
   // Displayed board state (live or historical)
   const isReviewingHistory = viewIndex !== null;
@@ -1405,22 +1415,77 @@ export default function App() {
     return color === 'w' ? 'White' : 'Black';
   };
 
-  const navItems: { id: AppView; label: string; icon: React.ReactNode }[] = [
+  const handleSelectHub = useCallback(() => {
+    engineAbortRef.current?.abort();
+    hintAbortRef.current?.abort();
+    stockfishService.cancelPending();
+    setIsEngineThinking(false);
+    setIsFetchingHint(false);
+    setActiveGame('hub');
+  }, []);
+
+  const handleSelectChess = useCallback((chessView?: AppView) => {
+    setActiveGame('chess');
+    if (chessView) setActiveView(chessView);
+  }, []);
+
+  const handleSelectSki = useCallback((mapId?: SkiMapId) => {
+    engineAbortRef.current?.abort();
+    hintAbortRef.current?.abort();
+    stockfishService.cancelPending();
+    setIsEngineThinking(false);
+    setIsFetchingHint(false);
+    setActiveGame('ski');
+    if (mapId) {
+      setRequestedSkiMapId(mapId);
+      setRequestedSkiNonce((n) => n + 1);
+    } else {
+      setRequestedSkiMapId(null);
+    }
+  }, []);
+
+  const chessNavItems: { id: AppView; label: string; icon: React.ReactNode }[] = [
     { id: 'play', label: 'Play', icon: <Swords className="w-3.5 h-3.5" aria-hidden="true" /> },
     { id: 'puzzles', label: 'Puzzles', icon: <Puzzle className="w-3.5 h-3.5" aria-hidden="true" /> },
     { id: 'endgames', label: 'Endgames', icon: <Crown className="w-3.5 h-3.5" aria-hidden="true" /> },
     { id: 'archive', label: 'Archive', icon: <Archive className="w-3.5 h-3.5" aria-hidden="true" /> },
   ];
 
+  const gameNavItems: {
+    id: 'hub' | 'chess' | 'ski';
+    label: string;
+    icon: React.ReactNode;
+    onClick: () => void;
+  }[] = [
+    {
+      id: 'hub',
+      label: 'Games',
+      icon: <Gamepad2 className="w-3.5 h-3.5" aria-hidden="true" />,
+      onClick: handleSelectHub,
+    },
+    {
+      id: 'chess',
+      label: 'Chess',
+      icon: <Swords className="w-3.5 h-3.5" aria-hidden="true" />,
+      onClick: () => handleSelectChess(),
+    },
+    {
+      id: 'ski',
+      label: 'Cork7 Ski',
+      icon: <Mountain className="w-3.5 h-3.5" aria-hidden="true" />,
+      onClick: () => handleSelectSki(),
+    },
+  ];
+
   return (
     <div className="min-h-screen flex flex-col bg-stone-100 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
       {/* 3-Zone Top Navigation Bar */}
       <header className="border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
-        <div className="mx-auto flex h-14 max-w-[1200px] items-center justify-between gap-4 px-4 sm:px-6">
+        <div className="mx-auto flex h-14 max-w-[1200px] items-center justify-between gap-4 sm:gap-8 px-4 sm:px-6">
           {/* Zone 1: Brand Identity */}
           <button
             type="button"
-            onClick={() => setActiveView('play')}
+            onClick={handleSelectHub}
             className="flex items-center gap-2.5 shrink-0 text-left focus:outline-none"
           >
             <svg
@@ -1447,15 +1512,15 @@ export default function App() {
             </span>
           </button>
 
-          {/* Zone 2: Desktop Primary Studio Navigation */}
-          <nav aria-label="Studio sections" className="hidden md:flex items-center gap-1 h-full">
-            {navItems.map((item) => {
-              const active = activeView === item.id;
+          {/* Zone 2: Desktop Multi-Game Navigation */}
+          <nav aria-label="Games navigation" className="hidden md:flex items-center gap-2 h-full">
+            {gameNavItems.map((item) => {
+              const active = activeGame === item.id;
               return (
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setActiveView(item.id)}
+                  onClick={item.onClick}
                   className={`inline-flex h-full items-center gap-1.5 px-3 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 ${
                     active
                       ? 'border-emerald-700 dark:border-emerald-400 text-emerald-800 dark:text-emerald-300'
@@ -1464,24 +1529,19 @@ export default function App() {
                 >
                   {item.icon}
                   <span>{item.label}</span>
-                  {item.id === 'archive' && savedMatches.length > 0 && (
-                    <span className="font-mono text-[10px] opacity-70 tabular-nums">
-                      ({savedMatches.length})
-                    </span>
-                  )}
                 </button>
               );
             })}
           </nav>
 
-          {/* Zone 3: Utility Controls & Primary CTA */}
+          {/* Zone 3: Utility Controls & Primary Contextual CTA */}
           <div className="flex items-center gap-2 shrink-0">
             <PWAInstallButton />
 
             <button
               type="button"
               onClick={() => setSoundEnabled((s) => !s)}
-              aria-label={soundEnabled ? 'Mute board sounds' : 'Enable board sounds'}
+              aria-label={soundEnabled ? 'Mute game sounds' : 'Enable game sounds'}
               title={soundEnabled ? 'Sound On' : 'Sound Off'}
               className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 transition-colors shrink-0"
             >
@@ -1502,29 +1562,49 @@ export default function App() {
               {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
 
-            <button
-              type="button"
-              onClick={() => startNewGame()}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0"
-            >
-              <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>New Game</span>
-            </button>
+            {activeGame === 'chess' ? (
+              <button
+                type="button"
+                onClick={() => startNewGame()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0"
+              >
+                <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>New Game</span>
+              </button>
+            ) : activeGame === 'ski' ? (
+              <button
+                type="button"
+                onClick={handleSelectHub}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0"
+              >
+                <Gamepad2 className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>All Games</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleSelectSki('the-yard')}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0"
+              >
+                <Mountain className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Drop In Ski</span>
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Mobile Compact Section Tabs */}
+        {/* Mobile Multi-Game Strip */}
         <nav
-          aria-label="Mobile studio sections"
-          className="md:hidden border-t border-stone-200/80 dark:border-stone-800/80 grid grid-cols-4 bg-stone-50/70 dark:bg-stone-900"
+          aria-label="Mobile games navigation"
+          className="md:hidden border-t border-stone-200/80 dark:border-stone-800/80 grid grid-cols-3 bg-stone-50/70 dark:bg-stone-900"
         >
-          {navItems.map((item) => {
-            const active = activeView === item.id;
+          {gameNavItems.map((item) => {
+            const active = activeGame === item.id;
             return (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setActiveView(item.id)}
+                onClick={item.onClick}
                 className={`inline-flex items-center justify-center gap-1.5 py-2 text-[11px] font-semibold border-b-2 transition-colors whitespace-nowrap ${
                   active
                     ? 'border-emerald-700 dark:border-emerald-400 text-emerald-800 dark:text-emerald-300 bg-white dark:bg-stone-900'
@@ -1539,9 +1619,60 @@ export default function App() {
         </nav>
       </header>
 
-      {/* Active Studio Workspace */}
+      {/* Secondary Chess Studio Sub-Navigation (when inside Chess) */}
+      {activeGame === 'chess' && (
+        <div className="border-b border-stone-200/80 dark:border-stone-800/80 bg-stone-50/90 dark:bg-stone-900/70">
+          <nav
+            aria-label="Chess studio sections"
+            className="mx-auto flex max-w-[1200px] items-center gap-1 px-4 sm:px-6 overflow-x-auto"
+          >
+            {chessNavItems.map((item) => {
+              const active = activeView === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveView(item.id)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+                    active
+                      ? 'border-emerald-700 dark:border-emerald-400 text-emerald-800 dark:text-emerald-300'
+                      : 'border-transparent text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                  }`}
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                  {item.id === 'archive' && savedMatches.length > 0 && (
+                    <span className="font-mono text-[10px] opacity-70 tabular-nums">
+                      ({savedMatches.length})
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+      )}
+
+      {/* Active Game / Hub Workspace */}
       <main className="mx-auto w-full max-w-[1200px] flex-1 px-4 py-4 sm:px-6 sm:py-6">
-        {activeView === 'play' && (
+        {activeGame === 'hub' && (
+          <GamesHub
+            onSelectChess={handleSelectChess}
+            onSelectSki={handleSelectSki}
+          />
+        )}
+
+        {activeGame === 'ski' && (
+          <SkiGameWorkspace
+            soundEnabled={soundEnabled}
+            requestedMapId={requestedSkiMapId}
+            requestedStartNonce={requestedSkiNonce}
+            onBackToHub={handleSelectHub}
+            onStatsChange={refreshArchiveData}
+          />
+        )}
+
+        {activeGame === 'chess' && activeView === 'play' && (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_400px] lg:items-start">
             {/* Left Column: Board & Player Bars */}
             <div className="flex flex-col items-center">
@@ -2328,7 +2459,7 @@ export default function App() {
           </div>
         )}
 
-        {activeView === 'puzzles' && (
+        {activeGame === 'chess' && activeView === 'puzzles' && (
           <PuzzlesWorkspace
             boardTheme={boardTheme}
             pieceSet={pieceSet}
@@ -2337,7 +2468,7 @@ export default function App() {
           />
         )}
 
-        {activeView === 'endgames' && (
+        {activeGame === 'chess' && activeView === 'endgames' && (
           <EndgamesWorkspace
             boardTheme={boardTheme}
             pieceSet={pieceSet}
@@ -2346,7 +2477,7 @@ export default function App() {
           />
         )}
 
-        {activeView === 'archive' && (
+        {activeGame === 'chess' && activeView === 'archive' && (
           <ArchiveWorkspace
             matches={savedMatches}
             defeatedBots={defeatedBots}
