@@ -1,5 +1,17 @@
 import { Chess, type Move, type PieceSymbol, type Square } from 'chess.js';
-import type { GameResult, GameVariant, MoveRecord, PlayerColor } from '../types/chess';
+import type {
+  CrazyhousePocket,
+  CrazyhouseSetupMode,
+  GameResult,
+  GameVariant,
+  MoveRecord,
+  PlayerColor,
+} from '../types/chess';
+import {
+  computeCrazyhouseState,
+  DROPPABLE_PIECES,
+  hasAnyCrazyhouseLegalMoveOrDrop,
+} from './crazyhouse';
 
 const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const RACING_KINGS_FEN = '8/8/8/8/8/8/krbnNBRK/qrbnNBRQ w - - 0 1';
@@ -102,7 +114,8 @@ export function generateDouble960Fen(): { fen: string; wSp: number; bSp: number 
  */
 export function generateVariantStartFen(
   variant: GameVariant,
-  humanColor: PlayerColor
+  humanColor: PlayerColor,
+  crazyhouseSetup: CrazyhouseSetupMode = 'classic'
 ): { fen: string; note?: string } {
   if (variant === 'standard') {
     return { fen: INITIAL_FEN };
@@ -122,6 +135,17 @@ export function generateVariantStartFen(
 
   if (variant === 'racing-kings') {
     return { fen: RACING_KINGS_FEN, note: 'No Checks · Race to Rank 8' };
+  }
+
+  if (variant === 'crazyhouse') {
+    if (crazyhouseSetup === '960') {
+      const { fen, spNumber } = generateShuffle960Fen();
+      return { fen, note: `960 Setup #${spNumber} · Reserve Drops` };
+    }
+    if (crazyhouseSetup === 'starter') {
+      return { fen: INITIAL_FEN, note: 'Starter Reserve (+B·N·P)' };
+    }
+    return { fen: INITIAL_FEN, note: 'Captures Join Reserve Pocket' };
   }
 
   if (variant === 'shuffle960') {
@@ -277,7 +301,10 @@ export function isVariantMoveLegal(
 export function evaluateVariantGameEnd(
   chess: Chess,
   variant: GameVariant,
-  moves: MoveRecord[]
+  moves: MoveRecord[],
+  crazyhousePockets?: { w: CrazyhousePocket; b: CrazyhousePocket },
+  startFen?: string,
+  crazyhouseSetup: CrazyhouseSetupMode = 'classic'
 ): GameResult | null {
   if (variant === 'king-of-the-hill') {
     const wKing = findKingSquare(chess, 'w');
@@ -365,6 +392,70 @@ export function evaluateVariantGameEnd(
         detail: 'Black’s king crossed the rank 8 finish line first.',
       };
     }
+  }
+
+  if (variant === 'crazyhouse') {
+    const chState =
+      crazyhousePockets
+        ? { w: crazyhousePockets.w, b: crazyhousePockets.b, repetitionKeyCount: null }
+        : computeCrazyhouseState(startFen ?? INITIAL_FEN, moves, crazyhouseSetup);
+    const activeTurn = chess.turn();
+    const activePocket = chState[activeTurn];
+    const hasAnyAction = hasAnyCrazyhouseLegalMoveOrDrop(chess, activePocket);
+
+    if (!hasAnyAction) {
+      if (chess.isCheck()) {
+        const winner: PlayerColor = activeTurn === 'w' ? 'b' : 'w';
+        const winnerName = winner === 'w' ? 'White' : 'Black';
+        return {
+          winner,
+          reason: 'checkmate',
+          headline: `${winnerName} wins by Checkmate`,
+          detail: 'The opposing king has no legal move or blocking drop.',
+        };
+      }
+      return {
+        winner: 'draw',
+        reason: 'stalemate',
+        headline: 'Draw by Stalemate',
+        detail: `${activeTurn === 'w' ? 'White' : 'Black'} has no legal moves or drops.`,
+      };
+    }
+
+    if (chState.repetitionKeyCount) {
+      for (const count of chState.repetitionKeyCount.values()) {
+        if (count >= 3) {
+          return {
+            winner: 'draw',
+            reason: 'threefold',
+            headline: 'Draw by Threefold Repetition',
+            detail: 'The same board position and reserve pockets occurred three times.',
+          };
+        }
+      }
+    }
+
+    const pocketsEmpty =
+      DROPPABLE_PIECES.every((p) => chState.w[p] === 0 && chState.b[p] === 0);
+    if (pocketsEmpty && chess.isInsufficientMaterial()) {
+      return {
+        winner: 'draw',
+        reason: 'insufficient',
+        headline: 'Draw by Insufficient Material',
+        detail: 'Neither side has enough material or reserve pieces to mate.',
+      };
+    }
+
+    if (chess.isDrawByFiftyMoves()) {
+      return {
+        winner: 'draw',
+        reason: 'fifty-move',
+        headline: 'Draw by Fifty-Move Rule',
+        detail: '50 consecutive moves occurred without a pawn move or capture.',
+      };
+    }
+
+    return null;
   }
 
   if (chess.isCheckmate()) {

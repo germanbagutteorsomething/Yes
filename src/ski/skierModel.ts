@@ -1739,8 +1739,8 @@ export function buildMountainEnvironment(
           map,
           sp.x * 0.25,
           range?.omitFinish ? sp.z : Math.min(map.lengthMeters + 40, sp.z)
-        ) - 14;
-      dummy.position.set(sp.x, baseY + sp.sy * 0.46, sp.z);
+        ) - 8;
+      dummy.position.set(sp.x, baseY + sp.sy * 0.44, sp.z);
       dummy.rotation.set(0, sp.rot, 0);
       dummy.scale.set(sp.sx, sp.sy, sp.sx * 0.92);
       dummy.updateMatrix();
@@ -1970,7 +1970,7 @@ export function buildMountainEnvironment(
     stakeInst.computeBoundingSphere();
     group.add(stakeInst);
 
-    // Periodic safety fence panels along outer chute curves
+    // Periodic safety fence panels along outer chute curves (with grounded end-posts)
     const netPanelGeo = track(new THREE.PlaneGeometry(14, 1.15));
     netPanelGeo.rotateY(Math.PI / 2);
     for (let z = stakeStart + 22; z < stakeEnd - 16; z += 120) {
@@ -1980,9 +1980,13 @@ export function buildMountainEnvironment(
         const nNextY = getBaseTerrainHeight(map, nx, z + 14);
         const slopeAng = Math.atan2(nNextY - ny, 14);
         const netMesh = new THREE.Mesh(netPanelGeo, netMat);
-        netMesh.position.set(nx, (ny + nNextY) * 0.5 + 0.65, z + 7);
+        netMesh.position.set(nx, (ny + nNextY) * 0.5 + 0.56, z + 7);
         netMesh.rotation.x = -slopeAng;
-        group.add(netMesh);
+        const postA = new THREE.Mesh(stakeGeo, stakeMat);
+        postA.position.set(nx, ny + 0.62, z);
+        const postB = new THREE.Mesh(stakeGeo, stakeMat);
+        postB.position.set(nx, nNextY + 0.62, z + 14);
+        group.add(netMesh, postA, postB);
       });
     }
   }
@@ -2524,8 +2528,8 @@ export function buildMountainEnvironment(
   if (layout.trees.length > 0) {
     const count = layout.trees.length;
     const barkTex = track(createBarkTexture(maxAnisotropy));
-    const trunkGeo = track(new THREE.CylinderGeometry(0.16, 0.32, 1.8, 7));
-    trunkGeo.translate(0, 0.8, 0);
+    const trunkGeo = track(new THREE.CylinderGeometry(0.16, 0.34, 2.3, 7));
+    trunkGeo.translate(0, 0.55, 0);
     const trunkMat = track(
       new THREE.MeshStandardMaterial({ map: barkTex, roughness: 0.92, metalness: 0 })
     );
@@ -2574,7 +2578,7 @@ export function buildMountainEnvironment(
     for (let i = 0; i < count; i++) {
       const t = layout.trees[i];
       const y = getBaseTerrainHeight(map, t.x, t.z);
-      dummy.position.set(t.x, y - 0.16, t.z);
+      dummy.position.set(t.x, y - 0.34 * t.scale, t.z);
       dummy.rotation.set((t.tint - 0.5) * 0.06, t.tint * Math.PI * 2, (t.tint - 0.5) * 0.05);
       dummy.scale.setScalar(t.scale);
       dummy.updateMatrix();

@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import { ArchiveWorkspace } from './components/ArchiveWorkspace';
 import { ChessBoard } from './components/ChessBoard';
+import { CrazyhousePocketBar } from './components/CrazyhousePocketBar';
 import { EndgamesWorkspace } from './components/EndgamesWorkspace';
 import { EvalBar } from './components/EvalBar';
 import { GamesHub } from './components/GamesHub';
@@ -56,6 +57,8 @@ import {
   type BoardHighlight,
   type BoardTheme,
   type BotId,
+  type CrazyhouseSetupMode,
+  type DroppablePiece,
   type GameMode,
   type GameResult,
   type GameVariant,
@@ -80,6 +83,13 @@ import {
   recordDailyProgress,
   unlockArcadeItem,
 } from './utils/arcadeProgress';
+import {
+  computeCrazyhouseState,
+  executeCrazyhouseDropOnChess,
+  getCrazyhouseLegalDropSquares,
+  parseCrazyhouseDropNotation,
+  replayCrazyhouseChess,
+} from './utils/crazyhouse';
 import { playChessSound } from './utils/sound';
 import {
   clearSavedMatches,
@@ -122,7 +132,7 @@ const CAPTURE_ORDER: Exclude<PieceSymbol, 'k'>[] = ['q', 'r', 'b', 'n', 'p'];
 function countPiecesOnBoard(fen: string): Record<PlayerColor, Record<PieceSymbol, number>> {
   const temp = new Chess();
   try {
-    temp.load(fen);
+    temp.load(fen, { skipValidation: true });
   } catch {
     // fallback to default board if FEN invalid
   }
@@ -175,7 +185,7 @@ function computeMaterialAndCaptures(fen: string, startFen: string) {
 function findCheckedKingSquare(fen: string): Square | null {
   const temp = new Chess();
   try {
-    temp.load(fen);
+    temp.load(fen, { skipValidation: true });
   } catch {
     return null;
   }
@@ -194,9 +204,11 @@ function findCheckedKingSquare(fen: string): Square | null {
 function evaluateGameEnd(
   chess: Chess,
   variant: GameVariant = 'standard',
-  moves: MoveRecord[] = []
+  moves: MoveRecord[] = [],
+  startFen: string = INITIAL_FEN,
+  crazyhouseSetup: CrazyhouseSetupMode = 'classic'
 ): GameResult | null {
-  return evaluateVariantGameEnd(chess, variant, moves);
+  return evaluateVariantGameEnd(chess, variant, moves, undefined, startFen, crazyhouseSetup);
 }
 
 function hasSufficientMaterialForTimeout(
@@ -204,7 +216,11 @@ function hasSufficientMaterialForTimeout(
   color: PlayerColor,
   variant: GameVariant = 'standard'
 ): boolean {
-  if (variant === 'king-of-the-hill' || variant === 'racing-kings') {
+  if (
+    variant === 'king-of-the-hill' ||
+    variant === 'racing-kings' ||
+    variant === 'crazyhouse'
+  ) {
     return true;
   }
   let knights = 0;
@@ -273,6 +289,8 @@ export default function App() {
   const [sideChoice, setSideChoice] = useState<SideChoice>('w');
   const [humanColor, setHumanColor] = useState<PlayerColor>('w');
   const [variant, setVariant] = useState<GameVariant>('standard');
+  const [crazyhouseSetup, setCrazyhouseSetup] = useState<CrazyhouseSetupMode>('classic');
+  const [selectedDropPiece, setSelectedDropPiece] = useState<DroppablePiece | null>(null);
   const [startFen, setStartFen] = useState<string>(INITIAL_FEN);
   const [variantNote, setVariantNote] = useState<string | null>(null);
   const [timeControlId, setTimeControlId] = useState<TimeControlId>('blitz-5');
@@ -295,6 +313,7 @@ export default function App() {
   const [arrows, setArrows] = useState<BoardArrow[]>([]);
   const [highlights, setHighlights] = useState<BoardHighlight[]>([]);
   const [hintArrow, setHintArrow] = useState<{ from: string; to: string } | null>(null);
+  const [hintDrop, setHintDrop] = useState<{ piece: DroppablePiece; to: Square } | null>(null);
   const [isFetchingHint, setIsFetchingHint] = useState<boolean>(false);
   const [hintsUsed, setHintsUsed] = useState<number>(0);
 
@@ -395,6 +414,7 @@ export default function App() {
           : undefined,
       botId: gameMode === 'stockfish' && opponentKind === 'bot' ? currentBot.id : undefined,
       variant,
+      crazyhouseSetup: variant === 'crazyhouse' ? crazyhouseSetup : undefined,
       openingEco: openingInfo?.eco,
       openingName: openingInfo?.name,
       winner: gameResult.winner,
@@ -418,6 +438,7 @@ export default function App() {
       setArcadeState(recordDailyProgress({ addChessWins: 1, bonusXp: 40 }));
     }
   }, [
+    crazyhouseSetup,
     currentBot.eloLabel,
     currentBot.id,
     currentBot.name,
@@ -500,6 +521,7 @@ export default function App() {
       botId?: BotId;
       timeControl?: TimeControlId;
       variant?: GameVariant;
+      crazyhouseSetup?: CrazyhouseSetupMode;
     }) => {
       engineAbortRef.current?.abort();
       analysisAbortRef.current?.abort();
@@ -510,10 +532,15 @@ export default function App() {
       const nextSide = overrides?.side ?? sideChoice;
       const nextTcId = overrides?.timeControl ?? timeControlId;
       const nextVariant = overrides?.variant ?? variant;
+      const nextCrazyhouseSetup = overrides?.crazyhouseSetup ?? crazyhouseSetup;
       const nextTc = TIME_CONTROLS.find((t) => t.id === nextTcId) ?? TIME_CONTROLS[4];
       const resolvedHuman = nextMode === 'stockfish' ? resolveSideChoice(nextSide) : 'w';
 
-      const { fen: generatedFen, note } = generateVariantStartFen(nextVariant, resolvedHuman);
+      const { fen: generatedFen, note } = generateVariantStartFen(
+        nextVariant,
+        resolvedHuman,
+        nextCrazyhouseSetup
+      );
 
       if (overrides?.mode !== undefined) setGameMode(overrides.mode);
       if (overrides?.opponentKind !== undefined) setOpponentKind(overrides.opponentKind);
@@ -522,21 +549,25 @@ export default function App() {
       if (overrides?.botId !== undefined) setSelectedBotId(overrides.botId);
       if (overrides?.timeControl !== undefined) setTimeControlId(overrides.timeControl);
       if (overrides?.variant !== undefined) setVariant(overrides.variant);
+      if (overrides?.crazyhouseSetup !== undefined) setCrazyhouseSetup(overrides.crazyhouseSetup);
 
       currentMatchIdRef.current = null;
       isLoadedArchiveRef.current = false;
 
-      chessRef.current = new Chess(generatedFen);
+      const fresh = new Chess();
+      fresh.load(generatedFen, { skipValidation: true });
+      chessRef.current = fresh;
       setStartFen(generatedFen);
       setVariantNote(note ?? null);
       setHumanColor(resolvedHuman);
       setFlipped(nextMode === 'stockfish' ? resolvedHuman === 'b' : false);
       setFen(generatedFen);
       setMoves([]);
-      setTurn(chessRef.current.turn());
+      setTurn(fresh.turn());
       setIsCheck(false);
       setGameResult(null);
       setPendingPromotion(null);
+      setSelectedDropPiece(null);
       setViewIndex(null);
       setIsEngineThinking(false);
       setEngineError(null);
@@ -544,6 +575,7 @@ export default function App() {
       setArrows([]);
       setHighlights([]);
       setHintArrow(null);
+      setHintDrop(null);
       setIsFetchingHint(false);
       setHintsUsed(0);
       setAnalysisResult(null);
@@ -556,7 +588,7 @@ export default function App() {
       });
       setActiveView('play');
     },
-    [gameMode, sideChoice, timeControlId, variant]
+    [crazyhouseSetup, gameMode, sideChoice, timeControlId, variant]
   );
 
   const syncFromChess = useCallback(
@@ -567,14 +599,16 @@ export default function App() {
       const nextCheck = chess.isCheck();
       const nextMoves =
         overrideMoves ?? (newMoveRecord ? [...moves, newMoveRecord] : moves);
-      const result = evaluateGameEnd(chess, variant, nextMoves);
+      const result = evaluateGameEnd(chess, variant, nextMoves, startFen, crazyhouseSetup);
 
       setFen(nextFen);
       setTurn(nextTurn);
       setIsCheck(nextCheck);
       setGameResult(result);
+      setSelectedDropPiece(null);
       setViewIndex(null);
       setHintArrow(null);
+      setHintDrop(null);
       setArrows([]);
       setHighlights([]);
 
@@ -621,7 +655,16 @@ export default function App() {
         setFlipped(nextTurn === 'b');
       }
     },
-    [autoFlipTwoPlayer, currentTimeControl, gameMode, moves, soundEnabled, variant]
+    [
+      autoFlipTwoPlayer,
+      crazyhouseSetup,
+      currentTimeControl,
+      gameMode,
+      moves,
+      soundEnabled,
+      startFen,
+      variant,
+    ]
   );
 
   const executeMove = useCallback(
@@ -640,7 +683,7 @@ export default function App() {
         }
         const move = chess.move({ from, to, promotion });
         const record: MoveRecord = {
-          ply: chess.history().length,
+          ply: moves.length + 1,
           san: move.san,
           lan: move.lan,
           from: move.from,
@@ -662,7 +705,45 @@ export default function App() {
         return false;
       }
     },
-    [soundEnabled, syncFromChess, variant]
+    [moves.length, soundEnabled, syncFromChess, variant]
+  );
+
+  const executeCrazyhouseDrop = useCallback(
+    (piece: DroppablePiece, to: Square, silentOnIllegal = false): boolean => {
+      if (variant !== 'crazyhouse') return false;
+      const chess = chessRef.current;
+      const active = chess.turn();
+      const chState = computeCrazyhouseState(startFen, moves, crazyhouseSetup);
+      if ((chState[active]?.[piece] ?? 0) <= 0) {
+        if (!silentOnIllegal) playChessSound('illegal', soundEnabled);
+        return false;
+      }
+
+      const opp: PlayerColor = active === 'w' ? 'b' : 'w';
+      const dropped = executeCrazyhouseDropOnChess(chess, piece, to, chState[opp]);
+      if (!dropped) {
+        if (!silentOnIllegal) playChessSound('illegal', soundEnabled);
+        return false;
+      }
+
+      const record: MoveRecord = {
+        ply: moves.length + 1,
+        san: dropped.san,
+        lan: dropped.lan,
+        from: to,
+        to,
+        fen: dropped.fen,
+        color: dropped.color,
+        isCheck: dropped.isCheck,
+        isCheckmate: dropped.isCheckmate,
+        isCapture: false,
+        isCastle: false,
+        isPromotion: false,
+      };
+      syncFromChess(record);
+      return true;
+    },
+    [crazyhouseSetup, moves, soundEnabled, startFen, syncFromChess, variant]
   );
 
   const handleSubmitSanMove = useCallback(
@@ -673,6 +754,13 @@ export default function App() {
       const trimmed = sanText.trim();
       if (!trimmed) return false;
 
+      if (variant === 'crazyhouse') {
+        const parsedDrop = parseCrazyhouseDropNotation(trimmed);
+        if (parsedDrop) {
+          return executeCrazyhouseDrop(parsedDrop.piece, parsedDrop.to);
+        }
+      }
+
       const chess = chessRef.current;
       try {
         const move = chess.move(trimmed);
@@ -682,7 +770,7 @@ export default function App() {
           return false;
         }
         const record: MoveRecord = {
-          ply: chess.history().length,
+          ply: moves.length + 1,
           san: move.san,
           lan: move.lan,
           from: move.from,
@@ -703,10 +791,12 @@ export default function App() {
       }
     },
     [
+      executeCrazyhouseDrop,
       gameMode,
       gameResult,
       humanColor,
       isAnalyzing,
+      moves.length,
       soundEnabled,
       syncFromChess,
       turn,
@@ -781,7 +871,16 @@ export default function App() {
 
     const movePromise =
       opponentKind === 'bot'
-        ? getBotMove(fen, lanHistory, currentBot, controller.signal, startFen, variant, moves)
+        ? getBotMove(
+            fen,
+            lanHistory,
+            currentBot,
+            controller.signal,
+            startFen,
+            variant,
+            moves,
+            crazyhouseSetup
+          )
         : getVariantEngineMove(
             variant,
             fen,
@@ -789,7 +888,8 @@ export default function App() {
             currentLevelConfig,
             moves,
             controller.signal,
-            startFen
+            startFen,
+            crazyhouseSetup
           ).then(async (best) => {
             const elapsed = performance.now() - startTime;
             if (elapsed < 320) {
@@ -802,7 +902,11 @@ export default function App() {
       .then((best) => {
         if (controller.signal.aborted) return;
         setIsEngineThinking(false);
-        executeMove(best.from as Square, best.to as Square, best.promotion);
+        if (best.dropPiece) {
+          executeCrazyhouseDrop(best.dropPiece, best.to as Square);
+        } else {
+          executeMove(best.from as Square, best.to as Square, best.promotion);
+        }
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
@@ -820,6 +924,7 @@ export default function App() {
   }, [
     activeGame,
     activeView,
+    crazyhouseSetup,
     gameMode,
     opponentKind,
     gameResult,
@@ -832,6 +937,7 @@ export default function App() {
     variant,
     currentBot,
     currentLevelConfig,
+    executeCrazyhouseDrop,
     executeMove,
   ]);
 
@@ -923,10 +1029,10 @@ export default function App() {
   );
 
   const handleStartAnalysis = useCallback(() => {
-    if (moves.length === 0 || isAnalyzing) return;
+    if (moves.length === 0 || isAnalyzing || variant === 'crazyhouse') return;
     const bookPlies = startFen === INITIAL_FEN ? (openingInfo?.matchedPlies ?? 0) : 0;
     runMatchAnalysis(moves, startFen, bookPlies, currentMatchIdRef.current);
-  }, [isAnalyzing, moves, openingInfo?.matchedPlies, runMatchAnalysis, startFen]);
+  }, [isAnalyzing, moves, openingInfo?.matchedPlies, runMatchAnalysis, startFen, variant]);
 
   const handleCancelAnalysis = useCallback(() => {
     analysisAbortRef.current?.abort();
@@ -944,10 +1050,25 @@ export default function App() {
     setIsFetchingHint(true);
 
     const lanHistory = moves.map((m) => m.lan);
-    getVariantHintMove(variant, fen, lanHistory, moves, startFen, controller.signal)
+    getVariantHintMove(
+      variant,
+      fen,
+      lanHistory,
+      moves,
+      startFen,
+      controller.signal,
+      crazyhouseSetup
+    )
       .then((best) => {
         if (controller.signal.aborted) return;
-        setHintArrow({ from: best.from, to: best.to });
+        if (best.dropPiece) {
+          setHintDrop({ piece: best.dropPiece, to: best.to as Square });
+          setHintArrow(null);
+          setSelectedDropPiece(best.dropPiece);
+        } else {
+          setHintArrow({ from: best.from, to: best.to });
+          setHintDrop(null);
+        }
         setHintsUsed((c) => c + 1);
         setIsFetchingHint(false);
         playChessSound('select', soundEnabled);
@@ -959,6 +1080,7 @@ export default function App() {
       });
   }, [
     canInteractWithBoard,
+    crazyhouseSetup,
     fen,
     gameMode,
     hintsUsed,
@@ -981,8 +1103,28 @@ export default function App() {
     setIsAnalyzing(false);
     setAnalysisResult(null);
     setPendingPromotion(null);
+    setSelectedDropPiece(null);
     setPremove(null);
     setHintArrow(null);
+    setHintDrop(null);
+
+    if (variant === 'crazyhouse') {
+      const popCount =
+        gameMode === 'two-player'
+          ? 1
+          : turn !== humanColor
+            ? 1
+            : moves.length >= 2
+              ? 2
+              : 0;
+      if (popCount <= 0) return;
+      const nextMoves = moves.slice(0, moves.length - popCount);
+      chessRef.current = replayCrazyhouseChess(startFen, nextMoves);
+      setMoves(nextMoves);
+      syncFromChess(undefined, nextMoves);
+      playChessSound('move', soundEnabled);
+      return;
+    }
 
     const chess = chessRef.current;
 
@@ -1014,7 +1156,7 @@ export default function App() {
       syncFromChess(undefined, nextMoves);
       playChessSound('move', soundEnabled);
     }
-  }, [gameMode, gameResult, humanColor, moves, soundEnabled, syncFromChess, turn]);
+  }, [gameMode, gameResult, humanColor, moves, soundEnabled, startFen, syncFromChess, turn, variant]);
 
   const handleResign = useCallback(() => {
     if (gameResult) return;
@@ -1024,6 +1166,7 @@ export default function App() {
     setIsEngineThinking(false);
     setIsFetchingHint(false);
     setPendingPromotion(null);
+    setSelectedDropPiece(null);
     setPremove(null);
 
     const losingSide: PlayerColor = gameMode === 'stockfish' ? humanColor : turn;
@@ -1043,6 +1186,7 @@ export default function App() {
   const handleMutualDraw = useCallback(() => {
     if (gameResult || gameMode !== 'two-player') return;
     setPendingPromotion(null);
+    setSelectedDropPiece(null);
     setPremove(null);
     setGameResult({
       winner: 'draw',
@@ -1057,6 +1201,8 @@ export default function App() {
     (plyIndex: number | null) => {
       setViewIndex(plyIndex);
       setHintArrow(null);
+      setHintDrop(null);
+      setSelectedDropPiece(null);
       const targetIdx = plyIndex === null ? moves.length - 1 : plyIndex;
       const move = targetIdx >= 0 ? moves[targetIdx] : undefined;
       if (move) {
@@ -1105,18 +1251,27 @@ export default function App() {
       hintAbortRef.current?.abort();
       stockfishService.cancelPending();
 
-      const replay = new Chess(match.startFen || INITIAL_FEN);
-      for (const m of match.moves) {
-        try {
-          replay.move(m.lan);
-        } catch {
-          try {
-            replay.move(m.san);
-          } catch {
-            break;
-          }
-        }
-      }
+      const loadedVariant = match.variant ?? 'standard';
+      const loadedSetup = match.crazyhouseSetup ?? 'classic';
+
+      const replay =
+        loadedVariant === 'crazyhouse'
+          ? replayCrazyhouseChess(match.startFen || INITIAL_FEN, match.moves)
+          : (() => {
+              const r = new Chess(match.startFen || INITIAL_FEN);
+              for (const m of match.moves) {
+                try {
+                  r.move(m.lan);
+                } catch {
+                  try {
+                    r.move(m.san);
+                  } catch {
+                    break;
+                  }
+                }
+              }
+              return r;
+            })();
 
       currentMatchIdRef.current = match.id;
       isLoadedArchiveRef.current = true;
@@ -1126,15 +1281,17 @@ export default function App() {
       if (match.opponentKind) setOpponentKind(match.opponentKind);
       if (match.stockfishLevel) setStockfishLevel(match.stockfishLevel);
       if (match.botId) setSelectedBotId(match.botId);
-      const loadedVariant = match.variant ?? 'standard';
       setVariant(loadedVariant);
+      setCrazyhouseSetup(loadedSetup);
       setStartFen(match.startFen || INITIAL_FEN);
       setVariantNote(
-        loadedVariant === 'shuffle960'
-          ? 'Saved 960 Match'
-          : loadedVariant !== 'standard'
-          ? 'Saved Variant Match'
-          : null
+        loadedVariant === 'crazyhouse'
+          ? 'Saved Crazyhouse Match'
+          : loadedVariant === 'shuffle960'
+            ? 'Saved 960 Match'
+            : loadedVariant !== 'standard'
+              ? 'Saved Variant Match'
+              : null
       );
       setHumanColor(match.humanColor);
       setFlipped(match.humanColor === 'b');
@@ -1149,6 +1306,7 @@ export default function App() {
         detail: `Loaded from Archive · ${match.opponentLabel}`,
       });
       setPendingPromotion(null);
+      setSelectedDropPiece(null);
       setViewIndex(match.moves.length > 0 ? 0 : null);
       setIsEngineThinking(false);
       setEngineError(null);
@@ -1156,15 +1314,16 @@ export default function App() {
       setArrows([]);
       setHighlights([]);
       setHintArrow(null);
+      setHintDrop(null);
       setIsFetchingHint(false);
       setAnalysisResult(null);
       setIsAnalyzing(false);
       setAnalysisError(null);
       setAnalysisProgress({ completed: 0, total: 0 });
       setActiveView('play');
-      setSidebarTab(autoAnalyze ? 'analysis' : 'moves');
+      setSidebarTab(autoAnalyze && loadedVariant !== 'crazyhouse' ? 'analysis' : 'moves');
 
-      if (autoAnalyze && match.moves.length > 0) {
+      if (autoAnalyze && loadedVariant !== 'crazyhouse' && match.moves.length > 0) {
         const opening = match.startFen === INITIAL_FEN ? detectOpening(match.moves) : null;
         runMatchAnalysis(
           match.moves,
@@ -1391,8 +1550,48 @@ export default function App() {
     !(gameMode === 'stockfish' && humanColor === 'b' && moves.length === 1);
 
   const pgnString = useMemo(() => {
+    if (variant === 'crazyhouse') {
+      const pairs: string[] = [];
+      for (let i = 0; i < moves.length; i += 2) {
+        const moveNum = Math.floor(i / 2) + 1;
+        const wSan = moves[i]?.san ?? '';
+        const bSan = moves[i + 1]?.san;
+        pairs.push(bSan ? `${moveNum}. ${wSan} ${bSan}` : `${moveNum}. ${wSan}`);
+      }
+      return `[Variant "Crazyhouse"]\n${pairs.join(' ')}`;
+    }
     return chessRef.current.pgn();
-  }, [fen]);
+  }, [fen, moves, variant]);
+
+  const displayMoves = useMemo(() => {
+    if (viewIndex === null) return moves;
+    if (viewIndex < 0) return [];
+    return moves.slice(0, viewIndex + 1);
+  }, [moves, viewIndex]);
+
+  const crazyhouseState = useMemo(() => {
+    if (variant !== 'crazyhouse') return null;
+    return computeCrazyhouseState(startFen, displayMoves, crazyhouseSetup);
+  }, [crazyhouseSetup, displayMoves, startFen, variant]);
+
+  const legalDropSquares = useMemo(() => {
+    if (
+      variant !== 'crazyhouse' ||
+      !canInteractWithBoard ||
+      !selectedDropPiece ||
+      !crazyhouseState
+    ) {
+      return null;
+    }
+    if ((crazyhouseState[turn]?.[selectedDropPiece] ?? 0) <= 0) return null;
+    const temp = new Chess();
+    try {
+      temp.load(displayFen, { skipValidation: true });
+    } catch {
+      return null;
+    }
+    return new Set<Square>(getCrazyhouseLegalDropSquares(temp, turn, selectedDropPiece));
+  }, [canInteractWithBoard, crazyhouseState, displayFen, selectedDropPiece, turn, variant]);
 
   const currentDisplayedEval = useMemo(() => {
     if (!analysisResult) return null;
@@ -1837,6 +2036,22 @@ export default function App() {
                   variantBadge={getVariantPlayerBadge(topColor)}
                 />
 
+                {variant === 'crazyhouse' && crazyhouseState && (
+                  <CrazyhousePocketBar
+                    color={topColor}
+                    pocket={crazyhouseState[topColor]}
+                    pieceSet={pieceSet}
+                    canInteract={canInteractWithBoard}
+                    isTurn={turn === topColor}
+                    selectedDropPiece={turn === topColor ? selectedDropPiece : null}
+                    hintDropPiece={turn === topColor ? hintDrop?.piece ?? null : null}
+                    onSelectDropPiece={(piece) => {
+                      setSelectedDropPiece(piece);
+                      if (piece) playChessSound('select', soundEnabled);
+                    }}
+                  />
+                )}
+
                 {/* Board + Optional Analysis Eval Bar */}
                 <div className="flex items-stretch gap-2">
                   {currentDisplayedEval && (
@@ -1873,9 +2088,30 @@ export default function App() {
                       onClearAnnotations={handleClearAnnotations}
                       variant={variant}
                       fogVisibleSquares={fogVisibleSquares}
+                      selectedDropPiece={selectedDropPiece}
+                      legalDropSquares={legalDropSquares}
+                      onDropPiece={(piece, to) => executeCrazyhouseDrop(piece, to)}
+                      onCancelDrop={() => setSelectedDropPiece(null)}
+                      hintDropSquare={hintDrop?.to ?? null}
                     />
                   </div>
                 </div>
+
+                {variant === 'crazyhouse' && crazyhouseState && (
+                  <CrazyhousePocketBar
+                    color={bottomColor}
+                    pocket={crazyhouseState[bottomColor]}
+                    pieceSet={pieceSet}
+                    canInteract={canInteractWithBoard}
+                    isTurn={turn === bottomColor}
+                    selectedDropPiece={turn === bottomColor ? selectedDropPiece : null}
+                    hintDropPiece={turn === bottomColor ? hintDrop?.piece ?? null : null}
+                    onSelectDropPiece={(piece) => {
+                      setSelectedDropPiece(piece);
+                      if (piece) playChessSound('select', soundEnabled);
+                    }}
+                  />
+                )}
 
                 {/* Bottom Player Bar */}
                 <PlayerBar
@@ -2035,21 +2271,27 @@ export default function App() {
 
                   <div
                     className={`grid gap-2 ${
-                      moves.length > 0 && !analysisResult && !isAnalyzing
+                      moves.length > 0 &&
+                      variant !== 'crazyhouse' &&
+                      !analysisResult &&
+                      !isAnalyzing
                         ? 'grid-cols-2'
                         : 'grid-cols-1'
                     }`}
                   >
-                    {moves.length > 0 && !analysisResult && !isAnalyzing && (
-                      <button
-                        type="button"
-                        onClick={handleStartAnalysis}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-700/40 dark:border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-950/40 py-2 px-3 text-xs font-semibold text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100/70 dark:hover:bg-emerald-950/70 transition-colors whitespace-nowrap"
-                      >
-                        <BarChart3 className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>Analyze Match</span>
-                      </button>
-                    )}
+                    {moves.length > 0 &&
+                      variant !== 'crazyhouse' &&
+                      !analysisResult &&
+                      !isAnalyzing && (
+                        <button
+                          type="button"
+                          onClick={handleStartAnalysis}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-700/40 dark:border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-950/40 py-2 px-3 text-xs font-semibold text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100/70 dark:hover:bg-emerald-950/70 transition-colors whitespace-nowrap"
+                        >
+                          <BarChart3 className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Analyze Match</span>
+                        </button>
+                      )}
                     <button
                       type="button"
                       onClick={() => startNewGame()}
@@ -2189,16 +2431,19 @@ export default function App() {
                     onSubmitSanMove={handleSubmitSanMove}
                   />
 
-                  {moves.length > 0 && !analysisResult && !isAnalyzing && (
-                    <button
-                      type="button"
-                      onClick={handleStartAnalysis}
-                      className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 py-2.5 px-3 text-xs font-semibold text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50/70 dark:hover:bg-emerald-950/40 transition-colors"
-                    >
-                      <BarChart3 className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Run Stockfish Match Analysis</span>
-                    </button>
-                  )}
+                  {moves.length > 0 &&
+                    variant !== 'crazyhouse' &&
+                    !analysisResult &&
+                    !isAnalyzing && (
+                      <button
+                        type="button"
+                        onClick={handleStartAnalysis}
+                        className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 py-2.5 px-3 text-xs font-semibold text-emerald-800 dark:text-emerald-300 hover:bg-emerald-50/70 dark:hover:bg-emerald-950/40 transition-colors"
+                      >
+                        <BarChart3 className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Run Stockfish Match Analysis</span>
+                      </button>
+                    )}
                 </div>
               )}
 
@@ -2291,12 +2536,54 @@ export default function App() {
                       </div>
                     ))}
 
-                    <div className="rounded-lg border border-stone-200/80 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 px-2.5 py-2 text-[11px] text-stone-600 dark:text-stone-300 leading-relaxed">
-                      {GAME_VARIANTS.find((v) => v.id === variant)?.description}
-                      {(variant === 'shuffle960' || variant === 'double-960') && (
-                        <span className="block mt-0.5 text-[10px] text-stone-400 dark:text-stone-500">
-                          Castling is active when a side’s King begins on the e-file.
-                        </span>
+                    <div className="rounded-lg border border-stone-200/80 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 px-2.5 py-2 text-[11px] text-stone-600 dark:text-stone-300 leading-relaxed space-y-2">
+                      <div>
+                        {GAME_VARIANTS.find((v) => v.id === variant)?.description}
+                        {(variant === 'shuffle960' ||
+                          variant === 'double-960' ||
+                          (variant === 'crazyhouse' && crazyhouseSetup === '960')) && (
+                          <span className="block mt-0.5 text-[10px] text-stone-400 dark:text-stone-500">
+                            Castling is active when a side’s King begins on the e-file.
+                          </span>
+                        )}
+                      </div>
+
+                      {variant === 'crazyhouse' && (
+                        <div className="pt-1.5 border-t border-stone-200/70 dark:border-stone-700/70 space-y-1.5">
+                          <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
+                            Crazyhouse Setup
+                          </div>
+                          <div className="grid grid-cols-3 gap-1">
+                            {(
+                              [
+                                { id: 'classic', label: 'Classic' },
+                                { id: '960', label: '960 Setup' },
+                                { id: 'starter', label: '+B·N·P Drop' },
+                              ] as { id: CrazyhouseSetupMode; label: string }[]
+                            ).map((modeOpt) => {
+                              const active = crazyhouseSetup === modeOpt.id;
+                              return (
+                                <button
+                                  key={modeOpt.id}
+                                  type="button"
+                                  onClick={() =>
+                                    startNewGame({
+                                      variant: 'crazyhouse',
+                                      crazyhouseSetup: modeOpt.id,
+                                    })
+                                  }
+                                  className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition-colors whitespace-nowrap ${
+                                    active
+                                      ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-600 text-white'
+                                      : 'border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700'
+                                  }`}
+                                >
+                                  {modeOpt.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
                       )}
                     </div>
                   </div>

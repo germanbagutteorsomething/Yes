@@ -1,5 +1,6 @@
 import { Chess, type PieceSymbol, type Square } from 'chess.js';
 import type {
+  DroppablePiece,
   MatchAnalysisResult,
   MoveAnalysis,
   MoveClassification,
@@ -14,6 +15,7 @@ export interface EngineBestMove {
   from: string;
   to: string;
   promotion?: PromotionPiece;
+  dropPiece?: DroppablePiece;
 }
 
 export interface CandidateMove {

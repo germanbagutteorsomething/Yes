@@ -18,6 +18,7 @@ export type GameVariant =
   | 'three-check'
   | 'fog-of-war'
   | 'racing-kings'
+  | 'crazyhouse'
   | 'shuffle960'
   | 'double-960'
   | 'no-pawns'
@@ -28,6 +29,10 @@ export type GameVariant =
   | 'odds-knight'
   | 'odds-rook'
   | 'odds-queen';
+
+export type CrazyhouseSetupMode = 'classic' | '960' | 'starter';
+export type DroppablePiece = 'p' | 'n' | 'b' | 'r' | 'q';
+export type CrazyhousePocket = Record<DroppablePiece, number>;
 
 export type VariantCategory = 'rules' | 'setups' | 'odds';
 
@@ -74,6 +79,13 @@ export const GAME_VARIANTS: VariantConfig[] = [
     label: 'Racing Kings',
     shortLabel: 'Race Kings',
     description: 'Checks are illegal. First King to reach rank 8 wins the race!',
+  },
+  {
+    id: 'crazyhouse',
+    category: 'rules',
+    label: 'Crazyhouse',
+    shortLabel: 'Crazyhouse',
+    description: 'Captured enemy pieces switch sides into your reserve pocket and can be dropped onto empty squares.',
   },
   {
     id: 'shuffle960',
@@ -417,6 +429,7 @@ export interface SavedMatch {
   stockfishLevel?: StockfishLevelNumber;
   botId?: BotId;
   variant: GameVariant;
+  crazyhouseSetup?: CrazyhouseSetupMode;
   openingEco?: string;
   openingName?: string;
   winner: PlayerColor | 'draw';

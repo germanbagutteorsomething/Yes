@@ -5,6 +5,7 @@ import type {
   BoardArrow,
   BoardHighlight,
   BoardTheme,
+  DroppablePiece,
   GameVariant,
   MoveClassification,
   PendingPromotion,
@@ -50,6 +51,12 @@ interface ChessBoardProps {
   // Variant mechanics
   variant?: GameVariant;
   fogVisibleSquares?: Set<Square> | null;
+  // Crazyhouse pocket drops
+  selectedDropPiece?: DroppablePiece | null;
+  legalDropSquares?: Set<Square> | null;
+  onDropPiece?: (piece: DroppablePiece, to: Square) => void;
+  onCancelDrop?: () => void;
+  hintDropSquare?: Square | null;
 }
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const;
@@ -299,6 +306,11 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
   onClearAnnotations,
   variant = 'standard',
   fogVisibleSquares = null,
+  selectedDropPiece = null,
+  legalDropSquares = null,
+  onDropPiece,
+  onCancelDrop,
+  hintDropSquare = null,
 }) => {
   const boardRef = useRef<HTMLDivElement>(null);
   const lastDraggedMoveRef = useRef<string | null>(null);
@@ -332,7 +344,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
   const gameAtFen = useMemo(() => {
     const instance = new Chess();
     try {
-      instance.load(fen);
+      instance.load(fen, { skipValidation: true });
     } catch {
       // Fallback to default position if malformed
     }
@@ -690,6 +702,22 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
 
     if (!canInteract) return;
 
+    // Crazyhouse reserve drop flow
+    if (selectedDropPiece) {
+      if (legalDropSquares?.has(sq)) {
+        e.preventDefault();
+        onDropPiece?.(selectedDropPiece, sq);
+        return;
+      }
+      onCancelDrop?.();
+      if (!(piece && piece.color === activeTurn)) {
+        if (!piece) {
+          playChessSound('illegal', soundEnabled);
+        }
+        return;
+      }
+    }
+
     if (selectedSquare && legalTargets.has(sq)) {
       e.preventDefault();
       onAttemptMove(selectedSquare, sq);
@@ -812,9 +840,13 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                 lastMove?.to === sq &&
                 Boolean(lastMove.isCapture);
               const isKingInCheck = isSquareVisible && checkedKingSquare === sq;
-              const isLegalTarget = legalTargets.has(sq);
+              const isDropTarget =
+                Boolean(selectedDropPiece) && Boolean(legalDropSquares?.has(sq));
+              const isHintDropTarget = hintDropSquare === sq;
+              const isLegalTarget = legalTargets.has(sq) || isDropTarget;
               const isPremoveTarget = premoveTargets.has(sq);
-              const isCaptureTarget = isSquareVisible && legalTargets.get(sq) === true;
+              const isCaptureTarget =
+                isSquareVisible && !isDropTarget && legalTargets.get(sq) === true;
               const isDragOrigin = dragState?.isDragging && dragState.from === sq;
               const isDragHover =
                 dragState?.isDragging &&
@@ -981,13 +1013,25 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                     </div>
                   )}
 
-                  {/* Legal move / premove dot */}
+                  {/* Legal move / premove / drop dot */}
                   {((isLegalTarget && !isCaptureTarget) || isPremoveTarget) && (
                     <span
                       aria-hidden="true"
                       className={`pointer-events-none absolute z-20 h-[28%] w-[28%] rounded-full animate-chess-dot ${
-                        isPremoveTarget ? 'bg-sky-500/40' : 'bg-stone-900/22'
+                        isPremoveTarget
+                          ? 'bg-sky-500/40'
+                          : isDropTarget
+                            ? 'bg-emerald-700/45'
+                            : 'bg-stone-900/22'
                       }`}
+                    />
+                  )}
+
+                  {/* Crazyhouse hint drop square ring */}
+                  {isHintDropTarget && (
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-[8%] z-20 rounded-lg border-[3px] border-amber-500 bg-amber-400/20"
                     />
                   )}
 

@@ -27,13 +27,13 @@ export const SKI_MAPS: SkiMapConfig[] = [
     rockDensity: 0.4,
     skyColor: '#5BA4E5',
     horizonColor: '#D6ECFA',
-    fogDensity: 0.0048,
+    fogDensity: 0.0025,
     sunColor: '#FFF5E1',
     sunIntensity: 2.1,
     ambientSky: '#BDE0FE',
     ambientGround: '#94A3B8',
     snowBaseColor: '#F5F9FF',
-    snowRidgeColor: '#DBE8F6',
+    snowRidgeColor: '#C8DCED',
     accentColor: '#0EA5E9',
     targetScore: 8000,
   },
@@ -50,13 +50,13 @@ export const SKI_MAPS: SkiMapConfig[] = [
     rockDensity: 1.5,
     skyColor: '#4B8CC8',
     horizonColor: '#CFE4F5',
-    fogDensity: 0.0056,
+    fogDensity: 0.0029,
     sunColor: '#FFF0D4',
     sunIntensity: 1.9,
     ambientSky: '#A5C9EC',
     ambientGround: '#7A8C9E',
     snowBaseColor: '#F1F6FC',
-    snowRidgeColor: '#CFDCEB',
+    snowRidgeColor: '#C3D6EB',
     accentColor: '#10B981',
     targetScore: 14000,
   },
@@ -73,13 +73,13 @@ export const SKI_MAPS: SkiMapConfig[] = [
     rockDensity: 0.5,
     skyColor: '#5B6FA3',
     horizonColor: '#F6BA8E',
-    fogDensity: 0.0046,
+    fogDensity: 0.0024,
     sunColor: '#FFB370',
     sunIntensity: 2.25,
     ambientSky: '#F3B699',
     ambientGround: '#6B7794',
     snowBaseColor: '#F7F3F7',
-    snowRidgeColor: '#D9D3E6',
+    snowRidgeColor: '#D0C8E0',
     accentColor: '#F59E0B',
     targetScore: 20000,
   },
@@ -96,7 +96,7 @@ export const SKI_MAPS: SkiMapConfig[] = [
     rockDensity: 2.1,
     skyColor: '#0F1B33',
     horizonColor: '#1E3356',
-    fogDensity: 0.0062,
+    fogDensity: 0.0044,
     sunColor: '#C4DAFF',
     sunIntensity: 1.35,
     ambientSky: '#4B6B9E',
@@ -120,13 +120,13 @@ export const SKI_MAPS: SkiMapConfig[] = [
     rockDensity: 1.8,
     skyColor: '#3675B5',
     horizonColor: '#C5E1F8',
-    fogDensity: 0.0052,
+    fogDensity: 0.0027,
     sunColor: '#FFE8C2',
     sunIntensity: 2.05,
     ambientSky: '#9DC9F0',
     ambientGround: '#6B7E91',
     snowBaseColor: '#F3F8FE',
-    snowRidgeColor: '#C9D9EC',
+    snowRidgeColor: '#BDCEE6',
     accentColor: '#EC4899',
     targetScore: 18000,
     isEndless: true,
@@ -360,12 +360,14 @@ export function getBaseTerrainHeight(map: SkiMapConfig, x: number, z: number): n
       y += bank * 2.2;
     }
   } else {
-    // Sweeping natural alpine chute walls outside main groomer edge (uncapped vertical ridge climb)
-    const edgeStart = map.halfWidth - 4;
+    // Sweeping natural alpine powder shoulders outside main groomer edge (uncapped, open sky panorama)
+    const edgeStart = map.halfWidth - 3.5;
     const absX = Math.abs(x);
     if (absX > edgeStart) {
       const overflow = absX - edgeStart;
-      y += overflow * overflow * 0.125;
+      const shoulder = 10.5 * Math.tanh(overflow / 16) + overflow * 0.16;
+      const ridgeWave = Math.sin(z * 0.022 + absX * 0.08) * Math.min(2.4, overflow * 0.07);
+      y += shoulder + ridgeWave;
     }
   }
 

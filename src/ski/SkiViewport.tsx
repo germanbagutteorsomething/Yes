@@ -2055,7 +2055,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       flurryMesh.instanceMatrix.needsUpdate = true;
 
       // Move directional shadow frustum cleanly with skier & snowpack across any altitude
-      sunLight.position.set(state.x + 22, Math.max(state.y, shadowTerrainY) + 42, state.z + 10);
+      sunLight.position.set(state.x + 28, Math.max(state.y, shadowTerrainY) + 34, state.z + 6);
       sunLight.target.position.set(state.x, shadowTerrainY, state.z + 14);
       sunLight.target.updateMatrixWorld();
 

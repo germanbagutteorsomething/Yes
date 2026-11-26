@@ -1,11 +1,21 @@
-import { Chess, type Move, type PieceSymbol } from 'chess.js';
+import { Chess, type Move, type PieceSymbol, type Square } from 'chess.js';
 import type {
+  CrazyhousePocket,
+  CrazyhouseSetupMode,
+  DroppablePiece,
   GameVariant,
   MoveRecord,
   PlayerColor,
   PromotionPiece,
   StockfishLevelConfig,
 } from '../types/chess';
+import {
+  computeCrazyhouseState,
+  DROPPABLE_PIECES,
+  executeCrazyhouseDropOnChess,
+  formatCrazyhouseDropLan,
+  getAllCrazyhouseDropMoves,
+} from '../utils/crazyhouse';
 import {
   findKingSquare,
   getThreeCheckCounts,
@@ -345,6 +355,245 @@ export function pickRacingKingsMove(
   return moveToEngineBest(scored[0].move);
 }
 
+const CRAZY_BOARD_VAL: Record<PieceSymbol, number> = {
+  p: 100,
+  n: 330,
+  b: 345,
+  r: 500,
+  q: 920,
+  k: 0,
+};
+
+const CRAZY_POCKET_VAL: Record<DroppablePiece, number> = {
+  p: 115,
+  n: 365,
+  b: 375,
+  r: 530,
+  q: 980,
+};
+
+function evaluateCrazyhouseBoard(
+  chess: Chess,
+  pockets: { w: CrazyhousePocket; b: CrazyhousePocket },
+  perspective: PlayerColor
+): number {
+  let score = 0;
+  const opp: PlayerColor = perspective === 'w' ? 'b' : 'w';
+  const oppKingSq = findKingSquare(chess, opp);
+  const myKingSq = findKingSquare(chess, perspective);
+  const oppKingF = oppKingSq ? oppKingSq.charCodeAt(0) - 97 : 4;
+  const oppKingR = oppKingSq ? Number(oppKingSq[1]) - 1 : 7;
+
+  const board = chess.board();
+  for (let r = 0; r < 8; r++) {
+    for (let f = 0; f < 8; f++) {
+      const cell = board[r][f];
+      if (!cell || cell.type === 'k') continue;
+      const rankFromWhite = 7 - r;
+      const centerBonus =
+        (f >= 2 && f <= 5 && rankFromWhite >= 2 && rankFromWhite <= 5 ? 24 : 0) +
+        (f >= 3 && f <= 4 && rankFromWhite >= 3 && rankFromWhite <= 4 ? 18 : 0);
+      const distToOppKing = Math.max(Math.abs(f - oppKingF), Math.abs(rankFromWhite - oppKingR));
+      const kingPressure = cell.color === perspective && distToOppKing <= 2 ? 22 : 0;
+
+      const pawnAdvance =
+        cell.type === 'p'
+          ? (cell.color === 'w' ? rankFromWhite : 7 - rankFromWhite) * 10
+          : 0;
+
+      const pieceVal = CRAZY_BOARD_VAL[cell.type] + centerBonus + kingPressure + pawnAdvance;
+      score += cell.color === perspective ? pieceVal : -pieceVal;
+    }
+  }
+
+  for (const p of DROPPABLE_PIECES) {
+    score += (pockets[perspective][p] ?? 0) * CRAZY_POCKET_VAL[p];
+    score -= (pockets[opp][p] ?? 0) * CRAZY_POCKET_VAL[p];
+  }
+
+  if (chess.isCheck()) {
+    score += chess.turn() === opp ? 55 : -55;
+  }
+
+  if (myKingSq) {
+    // Encourage king safety on castled edge files
+    const kf = myKingSq.charCodeAt(0) - 97;
+    if (kf <= 2 || kf >= 6) score += 18;
+  }
+
+  return score;
+}
+
+export function pickCrazyhouseMove(
+  fen: string,
+  moves: MoveRecord[],
+  skillLevel: number,
+  startFen?: string,
+  crazyhouseSetup: CrazyhouseSetupMode = 'classic',
+  botStyle?: 'random' | 'greedy' | 'aggressive' | 'solid' | 'blitz'
+): EngineBestMove {
+  const chess = new Chess();
+  chess.load(fen, { skipValidation: true });
+  const mover = chess.turn();
+  const opp: PlayerColor = mover === 'w' ? 'b' : 'w';
+
+  const chState = computeCrazyhouseState(
+    startFen ?? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+    moves,
+    crazyhouseSetup
+  );
+  const myPocket = { ...chState[mover] };
+  const oppPocket = { ...chState[opp] };
+
+  const boardMoves = chess.moves({ verbose: true });
+  const dropMoves = getAllCrazyhouseDropMoves(chess, myPocket);
+
+  type CandidateAction =
+    | { kind: 'move'; move: Move; engine: EngineBestMove; quickScore: number }
+    | { kind: 'drop'; piece: DroppablePiece; to: Square; engine: EngineBestMove; quickScore: number };
+
+  const actions: CandidateAction[] = [];
+
+  for (const m of boardMoves) {
+    let quick = 0;
+    if (m.captured) quick += CRAZY_BOARD_VAL[m.captured] * 1.45;
+    if (m.promotion) quick += CRAZY_BOARD_VAL[m.promotion] - 100;
+    if (m.san.includes('#')) {
+      return moveToEngineBest(m);
+    }
+    if (m.san.includes('+')) quick += botStyle === 'aggressive' ? 140 : 80;
+    if (m.isKingsideCastle() || m.isQueensideCastle()) quick += 70;
+    actions.push({
+      kind: 'move',
+      move: m,
+      engine: moveToEngineBest(m),
+      quickScore: quick,
+    });
+  }
+
+  for (const d of dropMoves) {
+    let quick = CRAZY_POCKET_VAL[d.piece] * 0.08;
+    const f = d.to.charCodeAt(0) - 97;
+    const r = Number(d.to[1]) - 1;
+    if (f >= 2 && f <= 5 && r >= 2 && r <= 5) quick += 36;
+    if (d.piece === 'p' && ((mover === 'w' && r >= 5) || (mover === 'b' && r <= 2))) {
+      quick += 48;
+    }
+    actions.push({
+      kind: 'drop',
+      piece: d.piece,
+      to: d.to,
+      engine: {
+        from: `@${d.piece}`,
+        to: d.to,
+        dropPiece: d.piece,
+      },
+      quickScore: quick,
+    });
+  }
+
+  if (actions.length === 0) {
+    throw new Error('No legal Crazyhouse moves or drops available.');
+  }
+
+  if (botStyle === 'random') {
+    return actions[Math.floor(Math.random() * actions.length)].engine;
+  }
+
+  // Prune drop list to strongest positional/tactical candidates for crisp <25ms latency
+  actions.sort((a, b) => b.quickScore - a.quickScore);
+  const maxEvalCount = skillLevel >= 12 ? 42 : 28;
+
+  const evaluated: { engine: EngineBestMove; score: number }[] = [];
+
+  for (const act of actions.slice(0, maxEvalCount)) {
+    const sim = new Chess();
+    sim.load(fen, { skipValidation: true });
+    const simMyPocket = { ...myPocket };
+    const simOppPocket = { ...oppPocket };
+
+    if (act.kind === 'move') {
+      const ex = sim.move({
+        from: act.move.from,
+        to: act.move.to,
+        promotion: act.move.promotion,
+      });
+      if (ex.captured) {
+        const capType = (chState.promotedSquares.has(ex.to) ? 'p' : ex.captured) as DroppablePiece;
+        simMyPocket[capType] += 1;
+      }
+      if (sim.isCheckmate()) {
+        return act.engine;
+      }
+    } else {
+      simMyPocket[act.piece] -= 1;
+      const dropRes = executeCrazyhouseDropOnChess(sim, act.piece, act.to, simOppPocket);
+      if (!dropRes) continue;
+      if (dropRes.isCheckmate) {
+        return act.engine;
+      }
+    }
+
+    const simPockets = mover === 'w' ? { w: simMyPocket, b: simOppPocket } : { w: simOppPocket, b: simMyPocket };
+    let score = evaluateCrazyhouseBoard(sim, simPockets, mover);
+
+    if (botStyle === 'greedy' && act.kind === 'move' && act.move.captured) {
+      score += 110;
+    } else if (botStyle === 'aggressive' && sim.isCheck()) {
+      score += 95;
+    } else if (botStyle === 'solid' && act.kind === 'move' && (act.move.isKingsideCastle() || act.move.isQueensideCastle())) {
+      score += 90;
+    }
+
+    // Check immediate opponent captures & drop-checkmate threats for higher skills
+    if (skillLevel >= 4) {
+      const oppBoardMoves = sim.moves({ verbose: true });
+      let maxThreatLoss = 0;
+      for (const om of oppBoardMoves) {
+        if (om.san.includes('#')) {
+          score -= 32000;
+          break;
+        }
+        if (om.captured) {
+          const loss = CRAZY_BOARD_VAL[om.captured] * 0.92;
+          if (loss > maxThreatLoss) maxThreatLoss = loss;
+        }
+      }
+      // Also test high-value opponent drops giving checkmate
+      if (skillLevel >= 8) {
+        const oppDrops = getAllCrazyhouseDropMoves(sim, simOppPocket);
+        for (const od of oppDrops.slice(0, 16)) {
+          if (od.piece !== 'q' && od.piece !== 'n' && od.piece !== 'r') continue;
+          const sim2 = new Chess();
+          sim2.load(sim.fen(), { skipValidation: true });
+          const nextOppP = { ...simOppPocket, [od.piece]: simOppPocket[od.piece] - 1 };
+          const dr2 = executeCrazyhouseDropOnChess(sim2, od.piece, od.to, simMyPocket);
+          if (dr2?.isCheckmate) {
+            score -= 32000;
+            break;
+          }
+          void nextOppP;
+        }
+      }
+      score -= maxThreatLoss * (skillLevel >= 10 ? 0.88 : 0.6);
+    }
+
+    if (skillLevel <= 5) {
+      score += (Math.random() - 0.5) * (6 - skillLevel) * 55;
+    }
+
+    evaluated.push({ engine: act.engine, score });
+  }
+
+  // Fallback if all drops filtered
+  if (evaluated.length === 0) {
+    return actions[0].engine;
+  }
+
+  evaluated.sort((a, b) => b.score - a.score);
+  return evaluated[0].engine;
+}
+
 export async function getVariantEngineMove(
   variant: GameVariant,
   fen: string,
@@ -352,7 +601,8 @@ export async function getVariantEngineMove(
   levelConfig: Pick<StockfishLevelConfig, 'skillLevel' | 'depth' | 'movetime'>,
   moves: MoveRecord[],
   signal?: AbortSignal,
-  startFen?: string
+  startFen?: string,
+  crazyhouseSetup: CrazyhouseSetupMode = 'classic'
 ): Promise<EngineBestMove> {
   if (variant === 'king-of-the-hill') {
     return pickKingOfTheHillMove(fen, lanHistory, levelConfig, signal, startFen);
@@ -365,6 +615,11 @@ export async function getVariantEngineMove(
     if (signal?.aborted) throw new Error('Search cancelled');
     return pickRacingKingsMove(fen, levelConfig.skillLevel);
   }
+  if (variant === 'crazyhouse') {
+    await new Promise((r) => setTimeout(r, 220));
+    if (signal?.aborted) throw new Error('Search cancelled');
+    return pickCrazyhouseMove(fen, moves, levelConfig.skillLevel, startFen, crazyhouseSetup);
+  }
   return stockfishService.getBestMove(lanHistory, levelConfig, signal, startFen);
 }
 
@@ -374,9 +629,15 @@ export async function getVariantHintMove(
   lanHistory: string[],
   moves: MoveRecord[],
   startFen?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  crazyhouseSetup: CrazyhouseSetupMode = 'classic'
 ): Promise<EngineBestMove> {
-  if (variant === 'king-of-the-hill' || variant === 'three-check' || variant === 'racing-kings') {
+  if (
+    variant === 'king-of-the-hill' ||
+    variant === 'three-check' ||
+    variant === 'racing-kings' ||
+    variant === 'crazyhouse'
+  ) {
     return getVariantEngineMove(
       variant,
       fen,
@@ -384,8 +645,11 @@ export async function getVariantHintMove(
       { skillLevel: 20, depth: 12, movetime: 320 },
       moves,
       signal,
-      startFen
+      startFen,
+      crazyhouseSetup
     );
   }
   return stockfishService.getHintMove(lanHistory, startFen, signal);
 }
+
+export { formatCrazyhouseDropLan };

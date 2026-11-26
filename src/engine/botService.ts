@@ -1,8 +1,14 @@
 import { Chess, type Move, type PieceSymbol, type Square } from 'chess.js';
-import type { BotProfile, GameVariant, MoveRecord, PromotionPiece } from '../types/chess';
+import type {
+  BotProfile,
+  CrazyhouseSetupMode,
+  GameVariant,
+  MoveRecord,
+  PromotionPiece,
+} from '../types/chess';
 import { getThreeCheckCounts, getVariantLegalMoves, HILL_SQUARES } from '../utils/variants';
 import { stockfishService, type CandidateMove, type EngineBestMove } from './stockfishService';
-import { getVariantEngineMove, pickRacingKingsMove } from './variantAi';
+import { getVariantEngineMove, pickCrazyhouseMove, pickRacingKingsMove } from './variantAi';
 
 const PIECE_CP: Record<PieceSymbol, number> = {
   p: 100,
@@ -274,7 +280,8 @@ export async function getBotMove(
   signal?: AbortSignal,
   startFen?: string,
   variant: GameVariant = 'standard',
-  moves: MoveRecord[] = []
+  moves: MoveRecord[] = [],
+  crazyhouseSetup: CrazyhouseSetupMode = 'classic'
 ): Promise<EngineBestMove> {
   const startedAt = performance.now();
   const chess = new Chess(fen);
@@ -282,7 +289,16 @@ export async function getBotMove(
 
   let chosenMove: EngineBestMove | null = null;
 
-  if (variant === 'racing-kings') {
+  if (variant === 'crazyhouse') {
+    chosenMove = pickCrazyhouseMove(
+      fen,
+      moves,
+      bot.skillLevel,
+      startFen,
+      crazyhouseSetup,
+      bot.style
+    );
+  } else if (variant === 'racing-kings') {
     if (bot.style === 'random') {
       const legal = getVariantLegalMoves(chess, 'racing-kings');
       if (legal.length === 0) throw new Error('No legal Racing Kings moves available.');
