@@ -89,6 +89,24 @@ const THEME_PALETTES: Record<
     lastDark: '#5A9EC2',
     selected: '#9CD2EE',
   },
+  midnight: {
+    light: '#CBD5E1',
+    dark: '#334155',
+    lightCoord: '#334155',
+    darkCoord: '#CBD5E1',
+    lastLight: '#93C5FD',
+    lastDark: '#2563EB',
+    selected: '#60A5FA',
+  },
+  royal: {
+    light: '#F3EFE0',
+    dark: '#1D5C4B',
+    lightCoord: '#1D5C4B',
+    darkCoord: '#F3EFE0',
+    lastLight: '#FDE68A',
+    lastDark: '#B48A2C',
+    selected: '#FCD34D',
+  },
 };
 
 const ANNOTATION_COLORS: Record<

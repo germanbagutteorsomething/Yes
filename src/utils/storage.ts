@@ -5,7 +5,7 @@ import type {
   SavedMatch,
   StockfishLevelNumber,
 } from '../types/chess';
-import type { SkiMapId, StoredSkiProgress } from '../types/ski';
+import type { SkiGhostSample, SkiMapId, StoredSkiProgress } from '../types/ski';
 
 const MATCHES_KEY = 'squareeight_matches_v1';
 const DEFEATED_BOTS_KEY = 'squareeight_defeated_bots_v1';
@@ -147,20 +147,34 @@ export function savePreferences(prefs: StoredPreferences) {
 const SKI_PROGRESS_KEY = 'squareeight_ski_progress_v1';
 
 export function loadSkiProgress(): StoredSkiProgress {
-  return safeReadJson<StoredSkiProgress>(SKI_PROGRESS_KEY, {
-    selectedMapId: 'the-yard',
-    selectedGearId: 'alpine-orange',
-    records: {},
-  });
+  const raw = safeReadJson<Partial<StoredSkiProgress>>(SKI_PROGRESS_KEY, {});
+  return {
+    selectedMapId: raw.selectedMapId ?? 'the-yard',
+    selectedGearId: raw.selectedGearId ?? 'alpine-orange',
+    ghostEnabled: raw.ghostEnabled ?? true,
+    records: raw.records ?? {},
+  };
 }
 
-export function saveSkiSelection(selectedMapId: SkiMapId, selectedGearId: string): StoredSkiProgress {
+export function saveSkiSelection(
+  selectedMapId: SkiMapId,
+  selectedGearId: string,
+  ghostEnabled?: boolean
+): StoredSkiProgress {
   const cur = loadSkiProgress();
   const next: StoredSkiProgress = {
     ...cur,
     selectedMapId,
     selectedGearId,
+    ghostEnabled: ghostEnabled ?? cur.ghostEnabled,
   };
+  safeWriteJson(SKI_PROGRESS_KEY, next);
+  return next;
+}
+
+export function setSkiGhostEnabled(ghostEnabled: boolean): StoredSkiProgress {
+  const cur = loadSkiProgress();
+  const next: StoredSkiProgress = { ...cur, ghostEnabled };
   safeWriteJson(SKI_PROGRESS_KEY, next);
   return next;
 }
@@ -175,18 +189,23 @@ const MEDAL_RANK: Record<'none' | 'bronze' | 'silver' | 'gold', number> = {
 export function recordSkiRunResult(params: {
   mapId: SkiMapId;
   score: number;
+  distanceMeters?: number;
   bestTrickName: string;
   bestTrickPoints: number;
   medal?: 'none' | 'bronze' | 'silver' | 'gold';
   completed: boolean;
-}): { progress: StoredSkiProgress; isNewBest: boolean } {
+  ghostSamples?: SkiGhostSample[];
+  completedObjectiveIds?: string[];
+}): { progress: StoredSkiProgress; isNewBest: boolean; newlyCompletedObjectives: string[] } {
   const cur = loadSkiProgress();
   const prevMap = cur.records[params.mapId] ?? {
     bestScore: 0,
+    bestDistanceMeters: 0,
     bestTrickName: '',
     bestTrickPoints: 0,
     runsCompleted: 0,
     bestMedal: 'none' as const,
+    completedObjectives: [],
   };
 
   const isNewBest = params.score > prevMap.bestScore;
@@ -196,21 +215,40 @@ export function recordSkiRunResult(params: {
   const bestMedal =
     MEDAL_RANK[incomingMedal] > MEDAL_RANK[prevMedal] ? incomingMedal : prevMedal;
 
+  const prevObjectives = prevMap.completedObjectives ?? [];
+  const incomingObjectives = params.completedObjectiveIds ?? [];
+  const newlyCompletedObjectives = incomingObjectives.filter(
+    (id) => !prevObjectives.includes(id)
+  );
+  const mergedObjectives = Array.from(new Set([...prevObjectives, ...incomingObjectives]));
+
+  const nextGhost =
+    isNewBest && params.ghostSamples && params.ghostSamples.length > 4
+      ? params.ghostSamples
+      : prevMap.bestGhost;
+
   const next: StoredSkiProgress = {
     ...cur,
     records: {
       ...cur.records,
       [params.mapId]: {
         bestScore: Math.max(prevMap.bestScore, params.score),
+        bestDistanceMeters: Math.max(
+          prevMap.bestDistanceMeters ?? 0,
+          params.distanceMeters ?? 0
+        ),
         bestTrickName: beatTrick ? params.bestTrickName : prevMap.bestTrickName,
         bestTrickPoints: Math.max(prevMap.bestTrickPoints, params.bestTrickPoints),
         runsCompleted: prevMap.runsCompleted + (params.completed ? 1 : 0),
         bestMedal,
+        bestGhost: nextGhost,
+        completedObjectives: mergedObjectives,
       },
     },
   };
 
   safeWriteJson(SKI_PROGRESS_KEY, next);
-  return { progress: next, isNewBest };
+  return { progress: next, isNewBest, newlyCompletedObjectives };
 }
+
 

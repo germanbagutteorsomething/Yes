@@ -1,10 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Award,
+  BookOpen,
   Camera,
+  CheckCircle2,
   ChevronLeft,
+  Circle,
   Flag,
   Gamepad2,
+  Ghost,
+  Lock,
   Medal,
   Mountain,
   Pause,
@@ -19,8 +24,11 @@ import {
   getSkiMapById,
   SKI_GEAR_STYLES,
   SKI_MAPS,
+  SKI_PARK_OBJECTIVES,
+  SKI_TRICK_BOOK,
 } from '../data/skiMaps';
 import { SkiViewport } from '../ski/SkiViewport';
+import { ARCADE_UNLOCKABLES } from '../types/arcade';
 import type {
   SkiCameraMode,
   SkiGrabType,
@@ -28,12 +36,20 @@ import type {
   SkiInputState,
   SkiMapId,
   SkiPhase,
+  SkiRunCompletionPayload,
   StoredSkiProgress,
 } from '../types/ski';
+import {
+  isItemUnlocked,
+  loadArcadeState,
+  recordDailyProgress,
+  unlockArcadeItem,
+} from '../utils/arcadeProgress';
 import {
   loadSkiProgress,
   recordSkiRunResult,
   saveSkiSelection,
+  setSkiGhostEnabled,
 } from '../utils/storage';
 
 interface SkiGameWorkspaceProps {
@@ -53,6 +69,7 @@ const INITIAL_HUD: SkiHudSnapshot = {
   distanceMeters: 0,
   lengthMeters: 1100,
   progressPct: 0,
+  isEndless: false,
   isAirborne: false,
   isGrinding: false,
   isBailing: false,
@@ -73,14 +90,21 @@ const INITIAL_HUD: SkiHudSnapshot = {
   railsHit: 0,
   cleanLandings: 0,
   bails: 0,
+  corksLanded: 0,
+  switchLandings: 0,
   trickScoreTotal: 0,
   railScoreTotal: 0,
   flowScoreTotal: 0,
   gatesCleared: 0,
   totalGates: 0,
+  boostCharge: 50,
+  isBoosting: false,
+  ringsCollected: 0,
+  closeCalls: 0,
   medalEarned: 'none',
   nextMedalLabel: 'Bronze',
   nextMedalTarget: 2500,
+  ghostDeltaMeters: null,
   cameraMode: 'chase',
 };
 
@@ -139,6 +163,11 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
   const [cameraMode, setCameraMode] = useState<SkiCameraMode>('chase');
   const [hud, setHud] = useState<SkiHudSnapshot>(INITIAL_HUD);
   const [isNewBest, setIsNewBest] = useState<boolean>(false);
+  const [newObjectivesThisRun, setNewObjectivesThisRun] = useState<string[]>([]);
+  const [runEndedByWipeout, setRunEndedByWipeout] = useState<boolean>(false);
+  const [lodgeGuideTab, setLodgeGuideTab] = useState<'controls' | 'tricks'>('tricks');
+  const [arcadeState, setArcadeState] = useState(() => loadArcadeState());
+  const [unlockNotice, setUnlockNotice] = useState<string | null>(null);
   const [touchHudOverride, setTouchHudOverride] = useState<boolean | null>(null);
   const [isTouchViewport, setIsTouchViewport] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
@@ -166,6 +195,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
     analogY: 0,
     jumpPressed: false,
     jumpHeld: false,
+    boostHeld: false,
     grab: 'none',
   });
 
@@ -176,6 +206,9 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
 
   const olliePointerIdRef = useRef<number | null>(null);
   const [olliePressedUi, setOlliePressedUi] = useState(false);
+
+  const boostPointerIdRef = useRef<number | null>(null);
+  const [boostPressedUi, setBoostPressedUi] = useState(false);
 
   const grabPointerIdRef = useRef<number | null>(null);
   const [activeGrabUi, setActiveGrabUi] = useState<SkiGrabType>('none');
@@ -224,25 +257,32 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
       analogY: 0,
       jumpPressed: false,
       jumpHeld: false,
+      boostHeld: false,
       grab: 'none',
     };
     resetStickVisual();
     olliePointerIdRef.current = null;
+    boostPointerIdRef.current = null;
     grabPointerIdRef.current = null;
     setOlliePressedUi(false);
+    setBoostPressedUi(false);
     setActiveGrabUi('none');
   }, [resetStickVisual]);
 
   const handleDropIn = useCallback(
     (targetMapId: SkiMapId = mapId) => {
       clearInputs();
+      const targetMap = getSkiMapById(targetMapId);
       setMapId(targetMapId);
       setProgress(saveSkiSelection(targetMapId, gearId));
       setHud({
         ...INITIAL_HUD,
-        lengthMeters: getSkiMapById(targetMapId).lengthMeters,
+        lengthMeters: targetMap.lengthMeters,
+        isEndless: Boolean(targetMap.isEndless),
       });
       setIsNewBest(false);
+      setNewObjectivesThisRun([]);
+      setRunEndedByWipeout(false);
       setRunSeed((n) => n + 1);
       setPhase('playing');
     },
@@ -251,11 +291,33 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
 
   const handleSelectGear = useCallback(
     (nextGearId: string) => {
+      const unlocked = isItemUnlocked(arcadeState, 'ski-gear', nextGearId);
+      if (!unlocked) {
+        const unlockDef = ARCADE_UNLOCKABLES.find(
+          (u) => u.category === 'ski-gear' && u.targetId === nextGearId
+        );
+        if (unlockDef) {
+          const res = unlockArcadeItem(unlockDef.id);
+          setArcadeState(res.state);
+          if (!res.ok) {
+            setUnlockNotice(res.error ?? 'Earn more Arcade XP from Daily Challenges or runs.');
+            return;
+          }
+          setUnlockNotice(`Unlocked ${unlockDef.name}!`);
+          onStatsChange?.();
+        }
+      } else {
+        setUnlockNotice(null);
+      }
       setGearId(nextGearId);
       setProgress(saveSkiSelection(mapId, nextGearId));
     },
-    [mapId]
+    [arcadeState, mapId, onStatsChange]
   );
+
+  const handleToggleGhost = useCallback(() => {
+    setProgress((prev) => setSkiGhostEnabled(!prev.ghostEnabled));
+  }, []);
 
   const handleTogglePause = useCallback(() => {
     clearInputs();
@@ -273,19 +335,32 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
   }, []);
 
   const handleFinishRun = useCallback(
-    (finalSnapshot: SkiHudSnapshot) => {
+    (payload: SkiRunCompletionPayload) => {
       clearInputs();
+      const finalSnapshot = payload.hud;
       setHud(finalSnapshot);
+      setRunEndedByWipeout(Boolean(payload.finishedByWipeout));
       const res = recordSkiRunResult({
         mapId,
         score: finalSnapshot.score,
+        distanceMeters: finalSnapshot.distanceMeters,
         bestTrickName: finalSnapshot.bestTrickName,
         bestTrickPoints: finalSnapshot.bestTrickPoints,
         medal: finalSnapshot.medalEarned,
         completed: true,
+        ghostSamples: payload.ghostSamples,
+        completedObjectiveIds: payload.completedObjectiveIds,
       });
       setProgress(res.progress);
       setIsNewBest(res.isNewBest);
+      setNewObjectivesThisRun(res.newlyCompletedObjectives);
+
+      const nextArcade = recordDailyProgress({
+        addSkiRuns: 1,
+        skiScore: finalSnapshot.score,
+        bonusXp: 25 + res.newlyCompletedObjectives.length * 35,
+      });
+      setArcadeState(nextArcade);
       setPhase('finished');
       onStatsChange?.();
     },
@@ -403,6 +478,29 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
     setActiveGrabUi('none');
   }, []);
 
+  const handleBoostDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    boostPointerIdRef.current = e.pointerId;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    inputRef.current.boostHeld = true;
+    setBoostPressedUi(true);
+    triggerHaptic(10);
+  }, []);
+
+  const handleBoostUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    if (boostPointerIdRef.current !== e.pointerId) return;
+    e.preventDefault();
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // Ignore
+    }
+    boostPointerIdRef.current = null;
+    inputRef.current.boostHeld = false;
+    setBoostPressedUi(false);
+  }, []);
+
   if (phase === 'menu') {
     const selectedRecord = progress.records[mapId];
 
@@ -428,18 +526,31 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                 )}
                 <span>3D Freestyle Skiing</span>
                 <span aria-hidden="true">·</span>
-                <span>4 Mountain Parks</span>
+                <span>5 Runs & Endless Mode</span>
               </div>
               <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-stone-900 dark:text-stone-100">
                 Cork7 Alpine Lodge
               </h1>
               <p className="text-sm text-stone-600 dark:text-stone-400 max-w-2xl">
-                Pick a mountain park, dial in your rider gear, and stomp Cork 720s, rails, and
-                superpipe airs down four distinct 3D runs.
+                Pick a mountain park or drop into Endless Backcountry, race your Personal Best
+                Ghost, clear park objectives, and unlock pro rider gear with Arcade XP.
               </p>
             </div>
 
-            <div className="flex items-center gap-3 shrink-0">
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={handleToggleGhost}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                  progress.ghostEnabled
+                    ? 'border-sky-600/50 dark:border-sky-500/50 bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-200'
+                    : 'border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-600 dark:text-stone-400'
+                }`}
+              >
+                <Ghost className="w-4 h-4" aria-hidden="true" />
+                <span>Ghost: {progress.ghostEnabled ? 'On' : 'Off'}</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => handleDropIn(mapId)}
@@ -452,21 +563,26 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
           </div>
         </section>
 
-        {/* 4 Mountain Park Map Selector */}
+        {/* Mountain Park & Endless Mode Selector */}
         <section className="space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="font-display text-base font-bold text-stone-900 dark:text-stone-100">
               Select Mountain Park
             </h2>
             <span className="text-xs text-stone-500 dark:text-stone-400 font-mono tabular-nums">
-              Selected: {activeMap.name} ({activeMap.lengthMeters.toLocaleString()}m)
+              {activeMap.isEndless
+                ? `${activeMap.name} · Infinite Descent`
+                : `Selected: ${activeMap.name} (${activeMap.lengthMeters.toLocaleString()}m)`}
             </span>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {SKI_MAPS.map((m) => {
               const selected = m.id === mapId;
               const rec = progress.records[m.id];
+              const parkObjectives = SKI_PARK_OBJECTIVES[m.id] ?? [];
+              const completedSet = new Set(rec?.completedObjectives ?? []);
+              const hasGhost = Boolean(rec?.bestGhost && rec.bestGhost.length > 1);
 
               return (
                 <div
@@ -484,93 +600,129 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                       setProgress(saveSkiSelection(m.id, gearId));
                     }
                   }}
-                  className={`group cursor-pointer rounded-xl border p-4 transition-colors ${
+                  className={`group flex flex-col justify-between cursor-pointer rounded-xl border p-4 transition-colors ${
                     selected
                       ? 'border-emerald-700 dark:border-emerald-500 bg-white dark:bg-stone-900 ring-1 ring-emerald-700/25 dark:ring-emerald-500/25'
                       : 'border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 hover:border-stone-300 dark:hover:border-stone-700'
-                  }`}
+                  } ${m.isEndless ? 'md:col-span-2 lg:col-span-1' : ''}`}
                 >
-                  {/* Procedural Alpine Sky & Slope Preview */}
-                  <div
-                    className="relative h-28 w-full overflow-hidden rounded-lg mb-3.5 border border-stone-200/70 dark:border-stone-800"
-                    style={{
-                      background: `linear-gradient(180deg, ${m.skyColor} 0%, ${m.horizonColor} 100%)`,
-                    }}
-                  >
-                    <svg
-                      viewBox="0 0 400 112"
-                      className="h-full w-full"
-                      preserveAspectRatio="none"
-                      aria-hidden="true"
+                  <div>
+                    {/* Procedural Alpine Sky & Slope Preview */}
+                    <div
+                      className="relative h-24 w-full overflow-hidden rounded-lg mb-3 border border-stone-200/70 dark:border-stone-800"
+                      style={{
+                        background: `linear-gradient(180deg, ${m.skyColor} 0%, ${m.horizonColor} 100%)`,
+                      }}
                     >
-                      {/* Distant mountain silhouettes */}
-                      <polygon
-                        points="0,112 0,68 75,34 155,70 235,28 320,62 400,36 400,112"
-                        fill={m.snowRidgeColor}
-                        opacity="0.72"
-                      />
-                      {/* Foreground slope profile */}
-                      {m.hasSuperpipe ? (
-                        <path
-                          d="M0,62 Q85,104 200,98 Q315,104 400,62 L400,112 L0,112 Z"
-                          fill={m.snowBaseColor}
+                      <svg
+                        viewBox="0 0 400 112"
+                        className="h-full w-full"
+                        preserveAspectRatio="none"
+                        aria-hidden="true"
+                      >
+                        <polygon
+                          points="0,112 0,68 75,34 155,70 235,28 320,62 400,36 400,112"
+                          fill={m.snowRidgeColor}
+                          opacity="0.72"
                         />
-                      ) : (
-                        <path
-                          d="M0,58 Q120,74 220,86 T400,104 L400,112 L0,112 Z"
-                          fill={m.snowBaseColor}
+                        {m.hasSuperpipe ? (
+                          <path
+                            d="M0,62 Q85,104 200,98 Q315,104 400,62 L400,112 L0,112 Z"
+                            fill={m.snowBaseColor}
+                          />
+                        ) : (
+                          <path
+                            d="M0,58 Q120,74 220,86 T400,104 L400,112 L0,112 Z"
+                            fill={m.snowBaseColor}
+                          />
+                        )}
+                        <polygon
+                          points="160,92 195,78 195,94"
+                          fill={m.accentColor}
+                          opacity="0.9"
                         />
+                        <line
+                          x1="235"
+                          y1="88"
+                          x2="288"
+                          y2="93"
+                          stroke={m.isNight ? '#FACC15' : '#334155'}
+                          strokeWidth="3.5"
+                          strokeLinecap="round"
+                        />
+                      </svg>
+
+                      <div className="absolute top-2 right-2 flex items-center gap-1.5 text-[11px] font-mono font-semibold text-white bg-stone-950/70 px-2 py-0.5 rounded tabular-nums">
+                        <span>{m.difficulty}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{m.isEndless ? '∞ m' : `${m.lengthMeters}m`}</span>
+                      </div>
+
+                      {hasGhost && !m.isEndless && (
+                        <div className="absolute bottom-2 left-2 inline-flex items-center gap-1 text-[10px] font-mono font-semibold text-sky-200 bg-stone-950/75 px-1.5 py-0.5 rounded">
+                          <Ghost className="w-3 h-3" />
+                          <span>Ghost PB</span>
+                        </div>
                       )}
-                      {/* Stylized kicker / rail icon cue */}
-                      <polygon
-                        points="160,92 195,78 195,94"
-                        fill={m.accentColor}
-                        opacity="0.9"
-                      />
-                      <line
-                        x1="235"
-                        y1="88"
-                        x2="288"
-                        y2="93"
-                        stroke={m.isNight ? '#FACC15' : '#334155'}
-                        strokeWidth="3.5"
-                        strokeLinecap="round"
-                      />
-                    </svg>
+                    </div>
 
-                    <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 text-[11px] font-mono font-semibold text-white bg-stone-950/70 px-2 py-0.5 rounded tabular-nums">
-                      <span>{m.difficulty}</span>
-                      <span aria-hidden="true">·</span>
-                      <span>{m.lengthMeters}m</span>
+                    <h3 className="font-display text-base font-bold text-stone-900 dark:text-stone-100">
+                      {m.name}
+                    </h3>
+                    <p className="mt-1 text-xs text-stone-600 dark:text-stone-400 leading-relaxed">
+                      {m.subtitle}
+                    </p>
+
+                    {/* 3 Park Objectives Checklist */}
+                    <div className="mt-3 space-y-1 border-t border-stone-100 dark:border-stone-800/80 pt-2.5">
+                      <div className="flex items-center justify-between text-[11px] font-semibold text-stone-600 dark:text-stone-400">
+                        <span>Park Objectives</span>
+                        <span className="font-mono tabular-nums">
+                          {completedSet.size}/{parkObjectives.length}
+                        </span>
+                      </div>
+                      {parkObjectives.map((obj) => {
+                        const done = completedSet.has(obj.id);
+                        return (
+                          <div
+                            key={obj.id}
+                            title={obj.detail}
+                            className={`flex items-center gap-1.5 text-[11px] ${
+                              done
+                                ? 'text-emerald-700 dark:text-emerald-400 font-medium'
+                                : 'text-stone-500 dark:text-stone-400'
+                            }`}
+                          >
+                            {done ? (
+                              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                            ) : (
+                              <Circle className="w-3.5 h-3.5 shrink-0 opacity-60" />
+                            )}
+                            <span className="truncate">{obj.label}</span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <h3 className="font-display text-base font-bold text-stone-900 dark:text-stone-100">
-                        {m.name}
-                      </h3>
-                      <p className="mt-1 text-xs text-stone-600 dark:text-stone-400 leading-relaxed">
-                        {m.subtitle}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="mt-3.5 pt-3 border-t border-stone-200/80 dark:border-stone-800/80 flex items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2 text-stone-500 dark:text-stone-400 font-mono tabular-nums">
+                  <div className="mt-3 pt-2.5 border-t border-stone-200/80 dark:border-stone-800/80 flex items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2 text-stone-500 dark:text-stone-400 font-mono tabular-nums truncate">
                       <span>
                         Best: {rec?.bestScore ? rec.bestScore.toLocaleString() : '—'}
                       </span>
-                      <span aria-hidden="true">·</span>
-                      <span>Target: {m.targetScore.toLocaleString()}</span>
-                      {rec?.bestMedal && rec.bestMedal !== 'none' && (
+                      {m.isEndless && rec?.bestDistanceMeters ? (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>{rec.bestDistanceMeters.toLocaleString()}m</span>
+                        </>
+                      ) : rec?.bestMedal && rec.bestMedal !== 'none' ? (
                         <>
                           <span aria-hidden="true">·</span>
                           <span className="font-semibold text-amber-600 dark:text-amber-400 capitalize">
                             {rec.bestMedal}
                           </span>
                         </>
-                      )}
+                      ) : null}
                     </div>
 
                     <button
@@ -586,7 +738,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                       }`}
                     >
                       <Play className="w-3 h-3" />
-                      <span>Ski {m.name}</span>
+                      <span>Ski</span>
                     </button>
                   </div>
                 </div>
@@ -595,41 +747,62 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
           </div>
         </section>
 
-        {/* Bottom Split: Rider Gear Locker + Controls Reference */}
+        {/* Bottom Split: Rider Gear Locker + Interactive Trick Book / Controls */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {/* Gear Locker */}
+          {/* Gear Locker (with XP unlockable pro suits) */}
           <section className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4 space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <h2 className="font-display text-sm font-bold text-stone-900 dark:text-stone-100">
                 Rider Gear Locker
               </h2>
-              <span className="text-xs font-medium text-stone-500 dark:text-stone-400">
-                {activeGear.name}
-              </span>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="font-mono font-semibold text-amber-600 dark:text-amber-400 tabular-nums">
+                  {arcadeState.xp} XP
+                </span>
+                <span aria-hidden="true" className="text-stone-300 dark:text-stone-700">·</span>
+                <span className="font-medium text-stone-500 dark:text-stone-400">
+                  {activeGear.name}
+                </span>
+              </div>
             </div>
+
+            {unlockNotice && (
+              <div className="rounded-lg border border-amber-300/70 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-950/30 px-3 py-1.5 text-xs text-amber-900 dark:text-amber-200">
+                {unlockNotice}
+              </div>
+            )}
 
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {SKI_GEAR_STYLES.map((g) => {
                 const active = g.id === gearId;
+                const unlocked = isItemUnlocked(arcadeState, 'ski-gear', g.id);
                 return (
                   <button
                     key={g.id}
                     type="button"
                     onClick={() => handleSelectGear(g.id)}
-                    className={`flex items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left text-xs font-medium transition-colors ${
+                    className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-left text-xs font-medium transition-colors ${
                       active
                         ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/70 dark:bg-emerald-950/40 text-stone-900 dark:text-stone-100'
                         : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/50 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
                     }`}
                   >
-                    <span
-                      aria-hidden="true"
-                      className="h-4 w-4 rounded-sm border border-black/15 shrink-0"
-                      style={{
-                        background: `linear-gradient(135deg, ${g.jacketColor} 55%, ${g.skiAccentColor} 55%)`,
-                      }}
-                    />
-                    <span className="truncate">{g.name}</span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        aria-hidden="true"
+                        className="h-4 w-4 rounded-sm border border-black/15 shrink-0"
+                        style={{
+                          background: `linear-gradient(135deg, ${g.jacketColor} 55%, ${g.skiAccentColor} 55%)`,
+                        }}
+                      />
+                      <span className="truncate">{g.name}</span>
+                    </div>
+                    {!unlocked && g.unlockCostXp && (
+                      <span className="inline-flex items-center gap-0.5 font-mono text-[10px] text-amber-600 dark:text-amber-400 shrink-0">
+                        <Lock className="w-2.5 h-2.5" />
+                        {g.unlockCostXp}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -650,43 +823,109 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
             )}
           </section>
 
-          {/* Freestyle Controls */}
+          {/* Trick Book & Controls Switcher */}
           <section className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4 space-y-3">
-            <h2 className="font-display text-sm font-bold text-stone-900 dark:text-stone-100">
-              Cork7 Trick & Carve Controls
-            </h2>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-              <div className="flex items-center justify-between border-b border-stone-100 dark:border-stone-800 pb-1.5">
-                <span className="text-stone-600 dark:text-stone-400">Carve / Air Spin</span>
-                <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
-                  A / D or ← / →
-                </span>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <BookOpen className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
+                <h2 className="font-display text-sm font-bold text-stone-900 dark:text-stone-100">
+                  {lodgeGuideTab === 'tricks' ? 'Cork7 Trick Book' : 'Controls Reference'}
+                </h2>
               </div>
-              <div className="flex items-center justify-between border-b border-stone-100 dark:border-stone-800 pb-1.5">
-                <span className="text-stone-600 dark:text-stone-400">Tuck / Air Flip</span>
-                <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
-                  W / S or ↑ / ↓
-                </span>
-              </div>
-              <div className="flex items-center justify-between border-b border-stone-100 dark:border-stone-800 pb-1.5">
-                <span className="text-stone-600 dark:text-stone-400">Ollie / Lip Pop</span>
-                <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
-                  Space
-                </span>
-              </div>
-              <div className="flex items-center justify-between border-b border-stone-100 dark:border-stone-800 pb-1.5">
-                <span className="text-stone-600 dark:text-stone-400">Grabs (+Spin Speed)</span>
-                <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
-                  J · K · L
-                </span>
-              </div>
-              <div className="flex items-center justify-between col-span-2 pt-0.5 text-[11px] text-stone-500 dark:text-stone-400">
-                <span>
-                  Tip: Hold Spin + Flip together off any kicker to throw a <strong>Cork 720</strong>!
-                </span>
-                <span className="font-mono">C: Camera</span>
+
+              <div className="grid grid-cols-2 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-0.5 text-[11px] font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setLodgeGuideTab('tricks')}
+                  className={`rounded-md px-2.5 py-1 transition-colors ${
+                    lodgeGuideTab === 'tricks'
+                      ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                      : 'text-stone-600 dark:text-stone-400'
+                  }`}
+                >
+                  Trick Book
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLodgeGuideTab('controls')}
+                  className={`rounded-md px-2.5 py-1 transition-colors ${
+                    lodgeGuideTab === 'controls'
+                      ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                      : 'text-stone-600 dark:text-stone-400'
+                  }`}
+                >
+                  Controls
+                </button>
               </div>
             </div>
+
+            {lodgeGuideTab === 'tricks' ? (
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                {SKI_TRICK_BOOK.map((entry) => (
+                  <div
+                    key={entry.name}
+                    className="rounded-lg border border-stone-200/80 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 px-3 py-2 space-y-0.5 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-stone-900 dark:text-stone-100">
+                        {entry.name}
+                      </span>
+                      <span className="font-mono text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 shrink-0">
+                        {entry.points}
+                      </span>
+                    </div>
+                    <div className="font-mono text-[11px] text-sky-700 dark:text-sky-300">
+                      {entry.controls}
+                    </div>
+                    <p className="text-[11px] text-stone-600 dark:text-stone-400 leading-snug">
+                      {entry.tip}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                <div className="flex items-center justify-between border-b border-stone-100 dark:border-stone-800 pb-1.5">
+                  <span className="text-stone-600 dark:text-stone-400">Carve / Air Spin</span>
+                  <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
+                    A / D or ← / →
+                  </span>
+                </div>
+                <div className="flex items-center justify-between border-b border-stone-100 dark:border-stone-800 pb-1.5">
+                  <span className="text-stone-600 dark:text-stone-400">Tuck / Air Flip</span>
+                  <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
+                    W / S or ↑ / ↓
+                  </span>
+                </div>
+                <div className="flex items-center justify-between border-b border-stone-100 dark:border-stone-800 pb-1.5">
+                  <span className="text-stone-600 dark:text-stone-400">Ollie / Lip Pop</span>
+                  <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
+                    Space
+                  </span>
+                </div>
+                <div className="flex items-center justify-between border-b border-stone-100 dark:border-stone-800 pb-1.5">
+                  <span className="text-stone-600 dark:text-stone-400">Grabs (+Spin Speed)</span>
+                  <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
+                    J · K · L
+                  </span>
+                </div>
+                <div className="flex items-center justify-between border-b border-stone-100 dark:border-stone-800 pb-1.5">
+                  <span className="text-stone-600 dark:text-stone-400">Turbo Boost</span>
+                  <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
+                    B / F
+                  </span>
+                </div>
+                <div className="flex items-center justify-between border-b border-stone-100 dark:border-stone-800 pb-1.5">
+                  <span className="text-stone-600 dark:text-stone-400">Camera Angle</span>
+                  <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
+                    C
+                  </span>
+                </div>
+                <div className="col-span-2 pt-0.5 text-[11px] text-stone-500 dark:text-stone-400">
+                  Tip: Hold Spin + Flip diagonally off any kicker to throw a <strong>Cork / Rodeo</strong>, and skim trees or fly through Air Rings to charge Boost!
+                </div>
+              </div>
+            )}
           </section>
         </div>
       </div>
@@ -708,6 +947,8 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
         runSeed={runSeed}
         soundEnabled={soundEnabled}
         cameraMode={cameraMode}
+        ghostEnabled={progress.ghostEnabled}
+        ghostSamples={progress.records[mapId]?.bestGhost}
         inputRef={inputRef}
         onHudUpdate={setHud}
         onFinishRun={handleFinishRun}
@@ -717,13 +958,17 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
 
       {/* Top HUD Bar (No backdrop-blur over WebGL; solid rgba surfaces) */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 sm:gap-3 p-2.5 sm:p-4">
-        {/* Top-Left Telemetry: Map + Distance + Speed */}
-        <div className="pointer-events-auto rounded-lg border border-white/15 bg-stone-950/82 px-2.5 py-2 sm:px-3 text-white space-y-1 min-w-[144px] sm:min-w-[190px]">
+        {/* Top-Left Telemetry: Map + Distance + Speed + Turbo Boost + Ghost Split */}
+        <div className="pointer-events-auto rounded-lg border border-white/15 bg-stone-950/85 px-2.5 py-2 sm:px-3 text-white space-y-1.5 min-w-[148px] sm:min-w-[206px]">
           <div className="flex items-center justify-between gap-2 text-[11px] sm:text-xs">
             <span className="font-display font-bold tracking-tight truncate">
               {activeMap.name}
             </span>
-            <span className="font-mono text-[11px] text-sky-300 tabular-nums shrink-0">
+            <span
+              className={`font-mono text-[11px] tabular-nums shrink-0 font-semibold ${
+                hud.isBoosting ? 'text-cyan-300' : 'text-sky-300'
+              }`}
+            >
               {hud.speedKmh} km/h
             </span>
           </div>
@@ -733,9 +978,39 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
               style={{ width: `${hud.progressPct}%` }}
             />
           </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-cyan-300 shrink-0">
+              Boost
+            </span>
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/15">
+              <div
+                className={`h-full transition-[width] duration-75 ${
+                  hud.isBoosting
+                    ? 'bg-cyan-300'
+                    : hud.boostCharge >= 20
+                      ? 'bg-sky-400'
+                      : 'bg-stone-500'
+                }`}
+                style={{ width: `${hud.boostCharge}%` }}
+              />
+            </div>
+            <span className="font-mono text-[10px] text-cyan-200 tabular-nums w-7 text-right">
+              {hud.boostCharge}%
+            </span>
+          </div>
           <div className="flex items-center justify-between text-[10px] font-mono text-stone-300 tabular-nums">
             <span>{hud.distanceMeters.toLocaleString()}m</span>
-            <span>{hud.lengthMeters.toLocaleString()}m</span>
+            {hud.ghostDeltaMeters !== null ? (
+              <span
+                className={
+                  hud.ghostDeltaMeters >= 0 ? 'text-emerald-400 font-semibold' : 'text-sky-300 font-semibold'
+                }
+              >
+                Ghost {hud.ghostDeltaMeters >= 0 ? `+${hud.ghostDeltaMeters}m` : `${hud.ghostDeltaMeters}m`}
+              </span>
+            ) : (
+              <span>{hud.isEndless ? 'Endless Run' : `${hud.lengthMeters.toLocaleString()}m`}</span>
+            )}
           </div>
         </div>
 
@@ -859,12 +1134,16 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
             key={hud.calloutNonce}
             className={`rounded-lg border px-3.5 py-1.5 text-center shadow-md animate-chess-modal ${
               hud.calloutTone === 'bail'
-                ? 'border-red-400/60 bg-red-950/85 text-red-100'
+                ? 'border-red-400/60 bg-red-950/88 text-red-100'
                 : hud.calloutTone === 'sketchy'
-                  ? 'border-amber-400/60 bg-amber-950/85 text-amber-100'
-                  : hud.calloutTone === 'gate'
-                    ? 'border-sky-400/60 bg-sky-950/85 text-sky-100'
-                    : 'border-emerald-400/60 bg-emerald-950/85 text-emerald-100'
+                  ? 'border-amber-400/60 bg-amber-950/88 text-amber-100'
+                  : hud.calloutTone === 'boost'
+                    ? 'border-cyan-400/70 bg-cyan-950/90 text-cyan-100'
+                    : hud.calloutTone === 'ring'
+                      ? 'border-yellow-400/70 bg-amber-950/90 text-yellow-100'
+                      : hud.calloutTone === 'gate'
+                        ? 'border-sky-400/60 bg-sky-950/88 text-sky-100'
+                        : 'border-emerald-400/60 bg-emerald-950/88 text-emerald-100'
             }`}
           >
             <div className="font-display text-xs sm:text-sm font-bold">
@@ -938,9 +1217,11 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                 <span>Space: Ollie</span>
                 <span aria-hidden="true">·</span>
                 <span>J / K / L: Grabs</span>
+                <span aria-hidden="true">·</span>
+                <span>B / F: Boost</span>
               </div>
 
-              {/* Right Thumb: Grab Arc + Large Primary Ollie Trigger */}
+              {/* Right Thumb: Grab Arc + BOOST & Primary OLLIE Triggers */}
               <div className="pointer-events-auto flex flex-col items-end gap-2 touch-none">
                 {/* 3 Grab Triggers */}
                 <div className="flex items-center gap-1.5">
@@ -985,11 +1266,24 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                   </button>
                 </div>
 
-                {/* Large Primary Ollie Button + Swipe Hint */}
-                <div className="flex items-center gap-2.5">
-                  <span className="hidden sm:inline text-[10px] font-mono text-white/70 bg-stone-950/60 px-2 py-1 rounded">
-                    Swipe Snow ↑ = Ollie
-                  </span>
+                {/* BOOST + Primary OLLIE Triggers */}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onPointerDown={handleBoostDown}
+                    onPointerUp={handleBoostUp}
+                    onPointerCancel={handleBoostUp}
+                    disabled={hud.boostCharge < 12 && !hud.isBoosting}
+                    className={`h-16 w-[74px] sm:h-[70px] sm:w-20 rounded-2xl border-2 text-xs font-extrabold tracking-wide shadow-lg transition-transform touch-none select-none ${
+                      boostPressedUi || hud.isBoosting
+                        ? 'scale-95 border-cyan-200 bg-cyan-500 text-stone-950'
+                        : hud.boostCharge >= 12
+                          ? 'border-cyan-400/60 bg-cyan-700/90 text-white hover:bg-cyan-600'
+                          : 'border-white/15 bg-stone-900/75 text-stone-500'
+                    }`}
+                  >
+                    BOOST
+                  </button>
                   <button
                     type="button"
                     onPointerDown={handleOllieDown}
@@ -1013,6 +1307,8 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
               <span>Space: Ollie</span>
               <span aria-hidden="true">·</span>
               <span>J / K / L: Mute · Tail · Japan</span>
+              <span aria-hidden="true">·</span>
+              <span>B / F: Boost</span>
               <span aria-hidden="true">·</span>
               <span>C: Camera</span>
             </div>
@@ -1085,7 +1381,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Finish Run Summary Modal with Full Score Breakdown */}
+      {/* Finish Run Summary Modal with Full Score Breakdown & Objectives */}
       {phase === 'finished' && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-stone-950/78 p-4">
           <div className="w-full max-w-md rounded-xl border border-emerald-500/40 bg-stone-900 p-5 text-white space-y-4 animate-chess-modal max-h-full overflow-y-auto">
@@ -1093,7 +1389,11 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
               <div>
                 <div className="flex items-center gap-2 text-xs font-semibold">
                   <span className="text-emerald-400">
-                    {isNewBest ? 'New Mountain Record!' : 'Finish Arch Cleared'}
+                    {isNewBest
+                      ? 'New Mountain Record!'
+                      : runEndedByWipeout
+                        ? `Survived ${hud.distanceMeters.toLocaleString()}m`
+                        : 'Finish Arch Cleared'}
                   </span>
                   {hud.medalEarned !== 'none' && (
                     <>
@@ -1107,8 +1407,9 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                 </div>
                 <h2 className="mt-0.5 font-display text-xl font-bold">{activeMap.name}</h2>
                 <p className="mt-0.5 text-xs text-stone-400 font-mono tabular-nums">
-                  Silver Target: {activeMap.targetScore.toLocaleString()} · Gold:{' '}
-                  {Math.round(activeMap.targetScore * 1.6).toLocaleString()}
+                  {hud.isEndless
+                    ? `Distance: ${hud.distanceMeters.toLocaleString()}m · +25 XP Earned`
+                    : `Silver: ${activeMap.targetScore.toLocaleString()} · Gold: ${Math.round(activeMap.targetScore * 1.6).toLocaleString()}`}
                 </p>
               </div>
               <div className="text-right">
@@ -1118,6 +1419,22 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                 </div>
               </div>
             </div>
+
+            {newObjectivesThisRun.length > 0 && (
+              <div className="rounded-lg border border-emerald-500/40 bg-emerald-950/50 px-3 py-2 space-y-1 text-xs">
+                <div className="font-semibold text-emerald-300">
+                  Objectives Cleared (+{newObjectivesThisRun.length * 35} XP)
+                </div>
+                {(SKI_PARK_OBJECTIVES[mapId] ?? [])
+                  .filter((o) => newObjectivesThisRun.includes(o.id))
+                  .map((o) => (
+                    <div key={o.id} className="flex items-center gap-1.5 text-emerald-100">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span>{o.label}</span>
+                    </div>
+                  ))}
+              </div>
+            )}
 
             {/* Score Breakdown */}
             <div className="rounded-lg border border-stone-800 bg-stone-950/70 p-3 space-y-1.5 text-xs">
@@ -1135,7 +1452,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
               </div>
               <div className="flex items-center justify-between text-stone-300">
                 <span>
-                  Carve Flow, Gates ({hud.gatesCleared}/{hud.totalGates}) & Finish
+                  Flow, Rings ({hud.ringsCollected}), Close Calls ({hud.closeCalls}) & Gates ({hud.gatesCleared}/{hud.totalGates})
                 </span>
                 <span className="font-mono font-semibold tabular-nums text-white">
                   +{hud.flowScoreTotal.toLocaleString()}

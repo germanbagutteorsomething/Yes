@@ -17,10 +17,13 @@ export interface SkierRig {
   torsoGroup: THREE.Group;
   leftLeg: THREE.Group;
   rightLeg: THREE.Group;
+  leftKnee: THREE.Group;
+  rightKnee: THREE.Group;
   leftArm: THREE.Group;
   rightArm: THREE.Group;
   skisGroup: THREE.Group;
-  scarfTail: THREE.Mesh;
+  scarfSegments: THREE.Mesh[];
+  boostWakeGroup: THREE.Group;
   shadowMesh: THREE.Mesh;
   dispose: () => void;
 }
@@ -38,23 +41,23 @@ export function createSnowTexture(
   ctx.fillStyle = baseHex;
   ctx.fillRect(0, 0, 512, 512);
 
-  // Groomed corduroy stripes running downhill (vertical in UV)
+  // Groomed corduroy stripes running downhill
   for (let x = 0; x < 512; x += 16) {
-    ctx.globalAlpha = 0.2;
+    ctx.globalAlpha = 0.22;
     ctx.fillStyle = ridgeHex;
     ctx.fillRect(x, 0, 5, 512);
-    ctx.globalAlpha = 0.16;
+    ctx.globalAlpha = 0.18;
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(x + 5, 0, 3, 512);
   }
 
-  // Wind-swept snow drifts & micro-crystal variation
-  for (let i = 0; i < 3200; i++) {
+  // Wind-carved sastrugi drifts & micro-crystal grain
+  for (let i = 0; i < 4200; i++) {
     const x = Math.random() * 512;
     const y = Math.random() * 512;
-    const w = 1 + Math.random() * 2.2;
-    const h = 2 + Math.random() * 6;
-    ctx.globalAlpha = 0.06 + Math.random() * 0.14;
+    const w = 1 + Math.random() * 2.8;
+    const h = 2 + Math.random() * 7;
+    ctx.globalAlpha = 0.05 + Math.random() * 0.14;
     ctx.fillStyle = i % 3 === 0 ? '#FFFFFF' : ridgeHex;
     ctx.fillRect(x, y, w, h);
   }
@@ -75,11 +78,11 @@ export function createSnowNormalTexture(maxAnisotropy: number): THREE.DataTextur
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      // Groomed corduroy wave along X + subtle crystal grain along Y
       const rib = Math.cos((x / size) * Math.PI * 32);
+      const drift = Math.sin(x * 0.14 + Math.sin(y * 0.08) * 1.6);
       const grain = Math.sin(x * 0.43 + y * 0.31) * Math.cos(x * 0.19 - y * 0.57);
-      const nx = THREE.MathUtils.clamp(rib * 0.42 + grain * 0.14, -1, 1);
-      const ny = THREE.MathUtils.clamp(grain * 0.18, -1, 1);
+      const nx = THREE.MathUtils.clamp(rib * 0.38 + drift * 0.16 + grain * 0.14, -1, 1);
+      const ny = THREE.MathUtils.clamp(grain * 0.2 + drift * 0.08, -1, 1);
       const nz = Math.sqrt(Math.max(0.1, 1 - nx * nx - ny * ny));
 
       const idx = (y * size + x) * 4;
@@ -112,9 +115,8 @@ function createParkGraphicTexture(
   ctx.fillStyle = primaryHex;
   ctx.fillRect(0, 0, 256, 512);
 
-  // Diagonal chevron racing stripes for park boxes & kicker lip mats
   ctx.fillStyle = secondaryHex;
-  ctx.globalAlpha = 0.85;
+  ctx.globalAlpha = 0.88;
   for (let y = -256; y < 768; y += 64) {
     ctx.beginPath();
     ctx.moveTo(0, y);
@@ -128,9 +130,9 @@ function createParkGraphicTexture(
   }
 
   ctx.globalAlpha = 1;
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.35)';
-  ctx.fillRect(0, 0, 14, 512);
-  ctx.fillRect(242, 0, 14, 512);
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.4)';
+  ctx.fillRect(0, 0, 16, 512);
+  ctx.fillRect(240, 0, 16, 512);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
@@ -138,6 +140,145 @@ function createParkGraphicTexture(
   tex.repeat.set(1, 3);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = Math.min(8, maxAnisotropy || 1);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function createSkiTopsheetTexture(
+  baseHex: string,
+  accentHex: string
+): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = baseHex;
+  ctx.fillRect(0, 0, 128, 512);
+
+  // Subtle racing carbon weave bands at tip and tail
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.24)';
+  for (let y = 0; y < 512; y += 16) {
+    ctx.fillRect(0, y, 64, 8);
+    ctx.fillRect(64, y + 8, 64, 8);
+  }
+
+  // Bold diagonal racing chevrons
+  ctx.fillStyle = accentHex;
+  for (let y = 40; y < 460; y += 84) {
+    ctx.beginPath();
+    ctx.moveTo(10, y);
+    ctx.lineTo(64, y + 36);
+    ctx.lineTo(118, y);
+    ctx.lineTo(118, y + 22);
+    ctx.lineTo(64, y + 58);
+    ctx.lineTo(10, y + 22);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Edge pin-stripes
+  ctx.fillStyle = '#FFFFFF';
+  ctx.globalAlpha = 0.65;
+  ctx.fillRect(6, 0, 4, 512);
+  ctx.fillRect(118, 0, 4, 512);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function createBarkTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#4A3327';
+  ctx.fillRect(0, 0, 128, 256);
+
+  for (let i = 0; i < 240; i++) {
+    const x = Math.random() * 128;
+    const y = Math.random() * 256;
+    const h = 12 + Math.random() * 34;
+    ctx.fillStyle = i % 2 === 0 ? '#312018' : '#634636';
+    ctx.globalAlpha = 0.4 + Math.random() * 0.4;
+    ctx.fillRect(x, y, 2 + Math.random() * 3, h);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = Math.min(4, maxAnisotropy || 1);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function createWoodWallTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#6E472B';
+  ctx.fillRect(0, 0, 256, 256);
+
+  for (let y = 0; y < 256; y += 32) {
+    ctx.fillStyle = y % 64 === 0 ? '#7C5234' : '#633F26';
+    ctx.fillRect(0, y, 256, 29);
+    ctx.fillStyle = '#3B2314';
+    ctx.fillRect(0, y + 29, 256, 3);
+  }
+
+  ctx.globalAlpha = 0.14;
+  for (let i = 0; i < 200; i++) {
+    ctx.fillStyle = i % 2 === 0 ? '#9A6B49' : '#2C190D';
+    ctx.fillRect(Math.random() * 240, Math.random() * 256, 16 + Math.random() * 44, 2);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(2, 2);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = Math.min(8, maxAnisotropy || 1);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function createDiamondNetTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, 128, 128);
+
+  ctx.strokeStyle = '#FB923C';
+  ctx.lineWidth = 4;
+  for (let i = -128; i < 256; i += 24) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i + 128, 128);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(i + 128, 0);
+    ctx.lineTo(i, 128);
+    ctx.stroke();
+  }
+  // Top and bottom border tape
+  ctx.fillStyle = '#F97316';
+  ctx.fillRect(0, 0, 128, 10);
+  ctx.fillRect(0, 118, 128, 10);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.repeat.set(6, 1);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = Math.min(4, maxAnisotropy || 1);
   tex.needsUpdate = true;
   return tex;
 }
@@ -154,7 +295,6 @@ function createFinishBannerTexture(
   ctx.fillStyle = '#0F172A';
   ctx.fillRect(0, 0, 1024, 256);
 
-  // Checkered side blocks
   const cell = 32;
   for (let side = 0; side < 2; side++) {
     const startX = side === 0 ? 0 : 1024 - cell * 4;
@@ -166,10 +306,9 @@ function createFinishBannerTexture(
     }
   }
 
-  // Center banner text
   ctx.fillStyle = accentHex;
-  ctx.fillRect(128, 0, 768, 16);
-  ctx.fillRect(128, 240, 768, 16);
+  ctx.fillRect(128, 0, 768, 18);
+  ctx.fillRect(128, 238, 768, 18);
 
   ctx.fillStyle = '#F8FAFC';
   ctx.font = 'bold 92px sans-serif';
@@ -184,14 +323,36 @@ function createFinishBannerTexture(
   return tex;
 }
 
+function createBibNumberTexture(accentHex: string): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#F8FAFC';
+  ctx.fillRect(0, 0, 128, 128);
+  ctx.fillStyle = accentHex;
+  ctx.fillRect(0, 0, 128, 22);
+  ctx.fillStyle = '#0F172A';
+  ctx.font = 'bold 74px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('07', 64, 78);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 export function createContactShadowTexture(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 128;
   canvas.height = 128;
   const ctx = canvas.getContext('2d')!;
   const grad = ctx.createRadialGradient(64, 64, 8, 64, 64, 60);
-  grad.addColorStop(0, 'rgba(15, 23, 42, 0.58)');
-  grad.addColorStop(0.55, 'rgba(15, 23, 42, 0.22)');
+  grad.addColorStop(0, 'rgba(15, 23, 42, 0.62)');
+  grad.addColorStop(0.55, 'rgba(15, 23, 42, 0.24)');
   grad.addColorStop(1, 'rgba(15, 23, 42, 0)');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, 128, 128);
@@ -203,9 +364,10 @@ export function createContactShadowTexture(): THREE.CanvasTexture {
 
 export function createSkyDome(map: SkiMapConfig): {
   mesh: THREE.Mesh;
+  update: (elapsedSec: number) => void;
   dispose: () => void;
 } {
-  const geo = new THREE.SphereGeometry(320, 32, 20);
+  const geo = new THREE.SphereGeometry(340, 36, 24);
   const topCol = new THREE.Color(map.skyColor);
   const horCol = new THREE.Color(map.horizonColor);
   const sunCol = new THREE.Color(map.sunColor);
@@ -224,6 +386,7 @@ export function createSkyDome(map: SkiMapConfig): {
       uSunColor: { value: sunCol },
       uSunDir: { value: sunDir },
       uIsNight: { value: map.isNight ? 1.0 : 0.0 },
+      uTime: { value: 0 },
     },
     vertexShader: `
       varying vec3 vWorldDir;
@@ -238,37 +401,81 @@ export function createSkyDome(map: SkiMapConfig): {
       uniform vec3 uSunColor;
       uniform vec3 uSunDir;
       uniform float uIsNight;
+      uniform float uTime;
       varying vec3 vWorldDir;
 
-      float hash(vec3 p) {
+      float hash3(vec3 p) {
         p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
         p *= 17.0;
         return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
       }
 
+      float hash2(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+      }
+
+      float valueNoise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(
+          mix(hash2(i), hash2(i + vec2(1.0, 0.0)), u.x),
+          mix(hash2(i + vec2(0.0, 1.0)), hash2(i + vec2(1.0, 1.0)), u.x),
+          u.y
+        );
+      }
+
+      float fbm(vec2 p) {
+        float v = 0.0;
+        float a = 0.5;
+        for (int i = 0; i < 4; i++) {
+          v += a * valueNoise(p);
+          p = p * 2.04 + vec2(1.7, 9.2);
+          a *= 0.5;
+        }
+        return v;
+      }
+
       void main() {
         vec3 dir = normalize(vWorldDir);
         float h = clamp(dir.y * 1.35 + 0.06, 0.0, 1.0);
-        vec3 sky = mix(uHorizonColor, uTopColor, pow(h, 0.65));
+        vec3 sky = mix(uHorizonColor, uTopColor, pow(h, 0.62));
 
         float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
-        // Atmospheric sun/moon glow halo
-        float halo = pow(sunDot, mix(14.0, 28.0, uIsNight));
-        float disc = smoothstep(mix(0.9965, 0.998, uIsNight), mix(0.9988, 0.9994, uIsNight), sunDot);
-        sky += uSunColor * halo * mix(0.48, 0.26, uIsNight);
-        sky += mix(uSunColor, vec3(1.0), 0.7) * disc * mix(1.4, 0.95, uIsNight);
+        float halo = pow(sunDot, mix(12.0, 26.0, uIsNight));
+        float corona = pow(sunDot, 4.5) * 0.2;
+        float disc = smoothstep(mix(0.9962, 0.998, uIsNight), mix(0.9988, 0.9994, uIsNight), sunDot);
+        sky += uSunColor * (halo * mix(0.55, 0.28, uIsNight) + corona * (1.0 - uIsNight));
+        sky += mix(uSunColor, vec3(1.0), 0.72) * disc * mix(1.45, 0.95, uIsNight);
 
-        if (uIsNight > 0.5 && dir.y > 0.08) {
-          vec3 grid = floor(dir * 190.0);
-          float s = hash(grid);
-          if (s > 0.9945) {
-            float b = (s - 0.9945) / 0.0055;
-            sky += vec3(0.75, 0.88, 1.0) * b * smoothstep(0.08, 0.35, dir.y) * 0.9;
+        // Drifting alpine cirrus cloud bands across upper sky
+        if (dir.y > 0.04) {
+          vec2 cloudUv = dir.xz / (dir.y + 0.22);
+          cloudUv += vec2(uTime * 0.008, uTime * 0.004);
+          float cNoise = fbm(cloudUv * 1.45);
+          float cloudMask = smoothstep(0.52, 0.78, cNoise) * smoothstep(0.04, 0.22, dir.y) * (1.0 - smoothstep(0.55, 0.92, dir.y));
+          vec3 cloudCol = mix(vec3(0.98, 0.99, 1.0), uSunColor, 0.35 * pow(sunDot, 2.0));
+          cloudCol = mix(cloudCol, vec3(0.14, 0.24, 0.42), uIsNight * 0.82);
+          sky = mix(sky, cloudCol, cloudMask * mix(0.48, 0.22, uIsNight));
+        }
+
+        // Crisp starfield + waving multi-band Aurora Borealis on night runs
+        if (uIsNight > 0.5 && dir.y > 0.06) {
+          vec3 grid = floor(dir * 205.0);
+          float s = hash3(grid);
+          if (s > 0.9942) {
+            float b = (s - 0.9942) / 0.0058;
+            float twinkle = 0.72 + 0.28 * sin(uTime * 2.5 + s * 90.0);
+            sky += vec3(0.78, 0.9, 1.0) * b * twinkle * smoothstep(0.06, 0.32, dir.y) * 0.95;
           }
-          // Subtle alpine aurora ribbon
-          float aurora = sin(dir.x * 6.0 + dir.z * 3.0) * 0.5 + 0.5;
-          float band = smoothstep(0.14, 0.32, dir.y) * (1.0 - smoothstep(0.32, 0.62, dir.y));
-          sky += vec3(0.08, 0.36, 0.42) * aurora * band * 0.35;
+          float wave1 = sin(dir.x * 5.2 + dir.z * 3.1 + uTime * 0.35);
+          float wave2 = cos(dir.x * 8.4 - dir.z * 4.5 + uTime * 0.5);
+          float auroraCurtain = smoothstep(0.12, 0.88, (wave1 * 0.5 + wave2 * 0.5) * 0.5 + 0.5);
+          float band = smoothstep(0.10, 0.28, dir.y) * (1.0 - smoothstep(0.34, 0.68, dir.y));
+          vec3 auroraGreen = vec3(0.12, 0.85, 0.62);
+          vec3 auroraViolet = vec3(0.38, 0.45, 0.95);
+          vec3 auroraCol = mix(auroraGreen, auroraViolet, smoothstep(0.24, 0.54, dir.y));
+          sky += auroraCol * auroraCurtain * band * 0.46;
         }
 
         gl_FragColor = vec4(sky, 1.0);
@@ -282,6 +489,9 @@ export function createSkyDome(map: SkiMapConfig): {
 
   return {
     mesh,
+    update: (elapsedSec: number) => {
+      mat.uniforms.uTime.value = elapsedSec;
+    },
     dispose: () => {
       geo.dispose();
       mat.dispose();
@@ -291,25 +501,25 @@ export function createSkyDome(map: SkiMapConfig): {
 
 function createTwinTipSkiGeometry(): THREE.BufferGeometry {
   const shape = new THREE.Shape();
-  shape.moveTo(-0.92, 0.08);
-  shape.quadraticCurveTo(-0.78, 0.0, -0.62, 0.0);
+  shape.moveTo(-0.94, 0.085);
+  shape.quadraticCurveTo(-0.79, 0.0, -0.62, 0.0);
   shape.lineTo(0.62, 0.0);
-  shape.quadraticCurveTo(0.82, 0.0, 0.96, 0.1);
-  shape.lineTo(0.93, 0.13);
-  shape.quadraticCurveTo(0.78, 0.035, 0.62, 0.035);
-  shape.lineTo(-0.62, 0.035);
-  shape.quadraticCurveTo(-0.78, 0.035, -0.9, 0.11);
+  shape.quadraticCurveTo(0.82, 0.0, 0.98, 0.11);
+  shape.lineTo(0.95, 0.14);
+  shape.quadraticCurveTo(0.79, 0.036, 0.62, 0.034);
+  shape.lineTo(-0.62, 0.034);
+  shape.quadraticCurveTo(-0.78, 0.036, -0.91, 0.115);
   shape.closePath();
 
   const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: 0.12,
+    depth: 0.125,
     bevelEnabled: true,
     bevelThickness: 0.008,
     bevelSize: 0.008,
     bevelSegments: 2,
   });
   geo.rotateY(Math.PI / 2);
-  geo.translate(-0.06, 0, 0);
+  geo.translate(-0.0625, 0, 0);
   geo.computeVertexNormals();
   return geo;
 }
@@ -333,228 +543,365 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
   skisGroup.position.set(0, -0.88, 0);
   trickPivot.add(skisGroup);
 
-  // PBR Materials with clear roughness/metalness/iridescence contrast
+  // Graphic Racing Topsheet + PBR Contrasts
+  const topsheetTex = track(createSkiTopsheetTexture(gear.skiBaseColor, gear.skiAccentColor));
+  const bibTex = track(createBibNumberTexture(gear.skiAccentColor));
+
   const skiBaseMat = track(
     new THREE.MeshPhysicalMaterial({
-      color: gear.skiBaseColor,
-      roughness: 0.2,
-      metalness: 0.35,
-      clearcoat: 0.75,
-      clearcoatRoughness: 0.18,
+      map: topsheetTex,
+      roughness: 0.18,
+      metalness: 0.3,
+      clearcoat: 0.85,
+      clearcoatRoughness: 0.14,
     })
   );
   const skiEdgeMat = track(
     new THREE.MeshPhysicalMaterial({
       color: gear.skiAccentColor,
-      roughness: 0.18,
-      metalness: 0.84,
-      clearcoat: 0.5,
+      roughness: 0.16,
+      metalness: 0.88,
+      clearcoat: 0.6,
+    })
+  );
+  const steelEdgeMat = track(
+    new THREE.MeshPhysicalMaterial({
+      color: '#E2E8F0',
+      roughness: 0.14,
+      metalness: 0.94,
+      anisotropy: 0.8,
     })
   );
   const bootMat = track(
     new THREE.MeshStandardMaterial({
       color: '#1E293B',
-      roughness: 0.4,
-      metalness: 0.22,
+      roughness: 0.34,
+      metalness: 0.25,
     })
   );
   const pantsMat = track(
     new THREE.MeshStandardMaterial({
       color: gear.pantsColor,
-      roughness: 0.8,
+      roughness: 0.82,
       metalness: 0.03,
     })
   );
   const jacketMat = track(
     new THREE.MeshStandardMaterial({
       color: gear.jacketColor,
-      roughness: 0.72,
+      roughness: 0.7,
       metalness: 0.05,
     })
   );
   const helmetMat = track(
     new THREE.MeshPhysicalMaterial({
       color: gear.helmetColor,
-      roughness: 0.2,
-      metalness: 0.15,
-      clearcoat: 0.8,
-      clearcoatRoughness: 0.16,
+      roughness: 0.18,
+      metalness: 0.18,
+      clearcoat: 0.88,
+      clearcoatRoughness: 0.12,
     })
   );
   const visorMat = track(
     new THREE.MeshPhysicalMaterial({
       color: gear.visorColor,
-      roughness: 0.06,
+      roughness: 0.05,
       metalness: 0.92,
       clearcoat: 1.0,
-      iridescence: 0.85,
-      iridescenceIOR: 1.38,
-      envMapIntensity: 1.6,
+      iridescence: 0.95,
+      iridescenceIOR: 1.4,
+      envMapIntensity: 1.75,
     })
   );
   const poleMat = track(
     new THREE.MeshStandardMaterial({
-      color: '#E2E8F0',
-      roughness: 0.24,
-      metalness: 0.86,
+      color: '#CBD5E1',
+      roughness: 0.22,
+      metalness: 0.88,
     })
   );
-  const gloveMat = track(
+  const darkTrimMat = track(
     new THREE.MeshStandardMaterial({
       color: '#0F172A',
-      roughness: 0.68,
-      metalness: 0.05,
+      roughness: 0.62,
+      metalness: 0.08,
+    })
+  );
+  const bibMat = track(
+    new THREE.MeshStandardMaterial({
+      map: bibTex,
+      roughness: 0.72,
+      metalness: 0.02,
     })
   );
 
-  // Twin-tip Skis + Bright Underside Base Graphic + Bindings
+  // Cambered Twin-Tip Skis + Brushed Steel Edge Rails + Pro Bindings
   const skiGeo = track(createTwinTipSkiGeometry());
-  const bindingGeo = track(new THREE.BoxGeometry(0.11, 0.06, 0.34));
-  const stripeGeo = track(new THREE.BoxGeometry(0.085, 0.012, 1.32));
-  const underBaseGeo = track(new THREE.BoxGeometry(0.1, 0.008, 1.24));
+  const railEdgeGeo = track(new THREE.BoxGeometry(0.138, 0.012, 1.38));
+  const bindingToeGeo = track(new THREE.BoxGeometry(0.1, 0.05, 0.13));
+  const bindingHeelGeo = track(new THREE.BoxGeometry(0.105, 0.075, 0.16));
+  const underBaseGeo = track(new THREE.BoxGeometry(0.105, 0.008, 1.28));
 
-  [-0.2, 0.2].forEach((xOffset) => {
+  [-0.21, 0.21].forEach((xOffset) => {
     const ski = new THREE.Mesh(skiGeo, skiBaseMat);
     ski.position.set(xOffset, 0, 0);
     ski.castShadow = true;
     skisGroup.add(ski);
 
-    const stripe = new THREE.Mesh(stripeGeo, skiEdgeMat);
-    stripe.position.set(xOffset, 0.042, 0.02);
-    skisGroup.add(stripe);
+    const steelRail = new THREE.Mesh(railEdgeGeo, steelEdgeMat);
+    steelRail.position.set(xOffset, 0.014, 0.01);
+    skisGroup.add(steelRail);
 
     const underBase = new THREE.Mesh(underBaseGeo, skiEdgeMat);
-    underBase.position.set(xOffset, -0.003, 0);
+    underBase.position.set(xOffset, -0.004, 0);
     skisGroup.add(underBase);
 
-    const binding = new THREE.Mesh(bindingGeo, skiEdgeMat);
-    binding.position.set(xOffset, 0.06, -0.02);
-    binding.castShadow = true;
-    skisGroup.add(binding);
+    const toePiece = new THREE.Mesh(bindingToeGeo, darkTrimMat);
+    toePiece.position.set(xOffset, 0.056, 0.12);
+    skisGroup.add(toePiece);
+
+    const heelPiece = new THREE.Mesh(bindingHeelGeo, skiEdgeMat);
+    heelPiece.position.set(xOffset, 0.068, -0.14);
+    heelPiece.castShadow = true;
+    skisGroup.add(heelPiece);
   });
 
-  // Articulated Legs + Ski Boots
-  const bootGeo = track(new THREE.BoxGeometry(0.13, 0.18, 0.28));
-  const buckleGeo = track(new THREE.BoxGeometry(0.145, 0.03, 0.06));
-  const calfGeo = track(new THREE.CapsuleGeometry(0.085, 0.26, 4, 8));
-  const thighGeo = track(new THREE.CapsuleGeometry(0.1, 0.26, 4, 8));
+  // Turbo Boost Icy-Cyan Jet-Wake Blades (hidden at idle, flare up when boosting)
+  const boostWakeGroup = new THREE.Group();
+  const wakeBladeGeo = track(new THREE.ConeGeometry(0.085, 1.6, 8));
+  wakeBladeGeo.rotateX(Math.PI / 2);
+  wakeBladeGeo.translate(0, 0, -0.8);
+  const wakeMat = track(
+    new THREE.MeshBasicMaterial({
+      color: '#38BDF8',
+      transparent: true,
+      opacity: 0.72,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+  );
+  [-0.21, 0.21].forEach((xOffset) => {
+    const blade = new THREE.Mesh(wakeBladeGeo, wakeMat);
+    blade.position.set(xOffset, 0.04, -0.92);
+    boostWakeGroup.add(blade);
+  });
+  boostWakeGroup.scale.set(0.001, 0.001, 0.001);
+  boostWakeGroup.visible = false;
+  skisGroup.add(boostWakeGroup);
+
+  // Articulated Anatomical Legs + Sculpted Multi-Buckle Ski Boots + Knees
+  const bootLowerGeo = track(new THREE.BoxGeometry(0.135, 0.11, 0.29));
+  const bootCuffGeo = track(new THREE.CylinderGeometry(0.072, 0.082, 0.18, 10));
+  const buckleGeo = track(new THREE.BoxGeometry(0.15, 0.022, 0.04));
+  const calfGeo = track(new THREE.CylinderGeometry(0.088, 0.075, 0.28, 10));
+  const kneeGeo = track(new THREE.SphereGeometry(0.088, 10, 8));
+  const thighGeo = track(new THREE.CylinderGeometry(0.105, 0.088, 0.3, 10));
 
   const buildLeg = (xOffset: number) => {
     const leg = new THREE.Group();
-    leg.position.set(xOffset, -0.82, 0);
-
-    const boot = new THREE.Mesh(bootGeo, bootMat);
-    boot.position.set(0, 0.09, 0.02);
-    boot.castShadow = true;
-    leg.add(boot);
-
-    const buckle = new THREE.Mesh(buckleGeo, skiEdgeMat);
-    buckle.position.set(0, 0.14, 0.05);
-    leg.add(buckle);
-
-    const calf = new THREE.Mesh(calfGeo, pantsMat);
-    calf.position.set(0, 0.3, 0.02);
-    calf.rotation.x = 0.18;
-    calf.castShadow = true;
-    leg.add(calf);
+    leg.position.set(xOffset, -0.24, -0.02);
 
     const thigh = new THREE.Mesh(thighGeo, pantsMat);
-    thigh.position.set(0, 0.56, -0.04);
-    thigh.rotation.x = -0.24;
+    thigh.position.set(0, -0.14, 0.04);
+    thigh.rotation.x = -0.26;
     thigh.castShadow = true;
     leg.add(thigh);
 
+    const knee = new THREE.Group();
+    knee.position.set(0, -0.29, 0.08);
+    leg.add(knee);
+
+    const kneeCap = new THREE.Mesh(kneeGeo, pantsMat);
+    kneeCap.castShadow = true;
+    knee.add(kneeCap);
+
+    const calf = new THREE.Mesh(calfGeo, pantsMat);
+    calf.position.set(0, -0.14, -0.04);
+    calf.rotation.x = 0.22;
+    calf.castShadow = true;
+    knee.add(calf);
+
+    const bootCuff = new THREE.Mesh(bootCuffGeo, bootMat);
+    bootCuff.position.set(0, -0.34, -0.05);
+    bootCuff.rotation.x = 0.18;
+    bootCuff.castShadow = true;
+    knee.add(bootCuff);
+
+    const bootLower = new THREE.Mesh(bootLowerGeo, bootMat);
+    bootLower.position.set(0, -0.45, -0.02);
+    bootLower.castShadow = true;
+    knee.add(bootLower);
+
+    // 3 metallic micro-buckles on ski boot
+    [0, 1, 2].forEach((bIdx) => {
+      const buckle = new THREE.Mesh(buckleGeo, skiEdgeMat);
+      buckle.position.set(0, -0.42 + bIdx * 0.052, 0.01 - bIdx * 0.015);
+      knee.add(buckle);
+    });
+
     trickPivot.add(leg);
-    return leg;
+    return { leg, knee };
   };
 
-  const leftLeg = buildLeg(-0.18);
-  const rightLeg = buildLeg(0.18);
+  const leftLegBuild = buildLeg(-0.19);
+  const rightLegBuild = buildLeg(0.19);
 
-  // Upper Body Torso + Accent Stripe + Backpack + Flowing Scarf + Helmet + Iridescent Goggles
+  // Sculpted Quilted Ski Jacket + Storm Collar + Racing Bib + Backpack + Articulated Scarf
   const torsoGroup = new THREE.Group();
-  torsoGroup.position.set(0, -0.14, -0.04);
+  torsoGroup.position.set(0, -0.16, -0.04);
   trickPivot.add(torsoGroup);
 
-  const jacketGeo = track(new THREE.CapsuleGeometry(0.2, 0.34, 6, 12));
+  const jacketGeo = track(new THREE.CapsuleGeometry(0.205, 0.34, 8, 14));
   const jacket = new THREE.Mesh(jacketGeo, jacketMat);
   jacket.position.set(0, 0.25, 0);
-  jacket.scale.set(1.1, 1, 0.76);
+  jacket.scale.set(1.14, 1, 0.78);
   jacket.castShadow = true;
   torsoGroup.add(jacket);
 
-  const chestStripeGeo = track(new THREE.BoxGeometry(0.42, 0.08, 0.32));
-  const chestStripe = new THREE.Mesh(chestStripeGeo, skiEdgeMat);
-  chestStripe.position.set(0, 0.3, 0.01);
-  torsoGroup.add(chestStripe);
+  // Horizontal quilted jacket baffles
+  const baffleGeo = track(new THREE.TorusGeometry(0.185, 0.022, 6, 16));
+  baffleGeo.rotateX(Math.PI / 2);
+  [0.14, 0.24, 0.34].forEach((by, idx) => {
+    const baffle = new THREE.Mesh(baffleGeo, idx === 1 ? skiEdgeMat : jacketMat);
+    baffle.position.set(0, by, 0);
+    baffle.scale.set(1.18, 0.82, 1);
+    torsoGroup.add(baffle);
+  });
 
-  const collarGeo = track(new THREE.CylinderGeometry(0.13, 0.16, 0.12, 10));
-  const collar = new THREE.Mesh(collarGeo, gloveMat);
-  collar.position.set(0, 0.49, 0.02);
+  // Front waterproof zipper + Racing Bib
+  const zipperGeo = track(new THREE.BoxGeometry(0.025, 0.38, 0.03));
+  const zipper = new THREE.Mesh(zipperGeo, darkTrimMat);
+  zipper.position.set(0, 0.25, 0.16);
+  torsoGroup.add(zipper);
+
+  const bibGeo = track(new THREE.PlaneGeometry(0.22, 0.2));
+  const bib = new THREE.Mesh(bibGeo, bibMat);
+  bib.position.set(0, 0.27, 0.172);
+  torsoGroup.add(bib);
+
+  // Storm collar + hood ridge
+  const collarGeo = track(new THREE.CylinderGeometry(0.135, 0.17, 0.13, 12));
+  const collar = new THREE.Mesh(collarGeo, darkTrimMat);
+  collar.position.set(0, 0.49, 0.01);
   torsoGroup.add(collar);
 
-  const scarfGeo = track(new THREE.BoxGeometry(0.14, 0.04, 0.48));
-  scarfGeo.translate(0, 0, -0.24);
-  const scarfTail = new THREE.Mesh(scarfGeo, skiEdgeMat);
-  scarfTail.position.set(0.05, 0.48, -0.08);
-  scarfTail.castShadow = true;
-  torsoGroup.add(scarfTail);
+  // 3-Segment Articulated Flowing Scarf
+  const scarfSegments: THREE.Mesh[] = [];
+  const scarfSegGeo = track(new THREE.BoxGeometry(0.13, 0.035, 0.2));
+  scarfSegGeo.translate(0, 0, -0.1);
+  let scarfParent: THREE.Object3D = torsoGroup;
+  for (let s = 0; s < 3; s++) {
+    const seg = new THREE.Mesh(scarfSegGeo, s === 1 ? steelEdgeMat : skiEdgeMat);
+    if (s === 0) {
+      seg.position.set(0.05, 0.48, -0.09);
+    } else {
+      seg.position.set(0, 0, -0.18);
+    }
+    seg.castShadow = true;
+    scarfParent.add(seg);
+    scarfSegments.push(seg);
+    scarfParent = seg;
+  }
 
-  const packGeo = track(new THREE.BoxGeometry(0.26, 0.32, 0.12));
+  // Alpine Hydration Backpack + Shovel Handle Accent
+  const packGeo = track(new THREE.BoxGeometry(0.25, 0.34, 0.13));
   const backpack = new THREE.Mesh(packGeo, bootMat);
-  backpack.position.set(0, 0.28, -0.16);
+  backpack.position.set(0, 0.27, -0.175);
   backpack.castShadow = true;
   torsoGroup.add(backpack);
 
+  const packStrapGeo = track(new THREE.BoxGeometry(0.26, 0.04, 0.145));
+  const packAccent = new THREE.Mesh(packStrapGeo, skiEdgeMat);
+  packAccent.position.set(0, 0.35, -0.175);
+  torsoGroup.add(packAccent);
+
+  const shovelPoleGeo = track(new THREE.CylinderGeometry(0.012, 0.012, 0.36, 6));
+  const shovelShaft = new THREE.Mesh(shovelPoleGeo, steelEdgeMat);
+  shovelShaft.position.set(0.08, 0.38, -0.23);
+  shovelShaft.rotation.z = -0.15;
+  torsoGroup.add(shovelShaft);
+
+  // Aerodynamic Racing Helmet + Vent Ridge + Curved Toric Iridescent Goggles
   const headGroup = new THREE.Group();
   headGroup.position.set(0, 0.65, 0.03);
   torsoGroup.add(headGroup);
 
-  const helmetGeo = track(new THREE.SphereGeometry(0.175, 18, 14));
+  const helmetGeo = track(new THREE.SphereGeometry(0.178, 20, 16));
   const helmet = new THREE.Mesh(helmetGeo, helmetMat);
-  helmet.scale.set(0.95, 1.0, 1.06);
+  helmet.scale.set(0.95, 1.0, 1.09);
   helmet.castShadow = true;
   headGroup.add(helmet);
 
-  const strapGeo = track(new THREE.TorusGeometry(0.17, 0.018, 6, 18));
+  // Helmet crown aero fin + rear goggle clip
+  const finGeo = track(new THREE.BoxGeometry(0.045, 0.035, 0.2));
+  const aeroFin = new THREE.Mesh(finGeo, skiEdgeMat);
+  aeroFin.position.set(0, 0.165, -0.04);
+  aeroFin.rotation.x = -0.16;
+  headGroup.add(aeroFin);
+
+  const strapGeo = track(new THREE.TorusGeometry(0.172, 0.019, 8, 20));
   strapGeo.rotateX(Math.PI / 2);
-  const goggleStrap = new THREE.Mesh(strapGeo, gloveMat);
-  goggleStrap.position.set(0, -0.015, 0.01);
+  const goggleStrap = new THREE.Mesh(strapGeo, darkTrimMat);
+  goggleStrap.position.set(0, -0.01, 0.01);
   headGroup.add(goggleStrap);
 
-  const visorGeo = track(new THREE.BoxGeometry(0.25, 0.095, 0.12));
+  // Curved Toric Wrap-Around Goggle Lens
+  const visorGeo = track(
+    new THREE.CylinderGeometry(0.184, 0.184, 0.095, 18, 1, true, -Math.PI * 0.28, Math.PI * 0.56)
+  );
   const visor = new THREE.Mesh(visorGeo, visorMat);
-  visor.position.set(0, -0.015, 0.125);
+  visor.position.set(0, -0.012, 0.024);
   headGroup.add(visor);
 
-  // Arms + Gloves + Ski Poles
-  const sleeveGeo = track(new THREE.CapsuleGeometry(0.068, 0.36, 4, 8));
+  const visorFrameGeo = track(
+    new THREE.CylinderGeometry(0.178, 0.178, 0.108, 18, 1, true, -Math.PI * 0.3, Math.PI * 0.6)
+  );
+  const visorFrame = new THREE.Mesh(visorFrameGeo, darkTrimMat);
+  visorFrame.position.set(0, -0.012, 0.018);
+  headGroup.add(visorFrame);
+
+  // Articulated Arms + Gloves + Ergonomic Grips + Carbon Racing Poles + Baskets
+  const upperArmGeo = track(new THREE.CapsuleGeometry(0.068, 0.18, 4, 8));
+  const forearmGeo = track(new THREE.CapsuleGeometry(0.062, 0.18, 4, 8));
   const gloveGeo = track(new THREE.SphereGeometry(0.065, 10, 8));
-  const poleGeo = track(new THREE.CylinderGeometry(0.011, 0.008, 1.02, 6));
-  const basketGeo = track(new THREE.RingGeometry(0.015, 0.045, 10));
+  const poleGeo = track(new THREE.CylinderGeometry(0.012, 0.008, 1.04, 8));
+  const gripGeo = track(new THREE.CylinderGeometry(0.02, 0.018, 0.13, 8));
+  const basketGeo = track(new THREE.RingGeometry(0.015, 0.048, 12));
 
   const buildArm = (side: -1 | 1) => {
     const arm = new THREE.Group();
     arm.position.set(side * 0.27, 0.42, 0.02);
 
-    const sleeve = new THREE.Mesh(sleeveGeo, jacketMat);
-    sleeve.position.set(side * 0.05, -0.18, 0.1);
-    sleeve.rotation.x = -0.55;
-    sleeve.rotation.z = side * 0.22;
-    sleeve.castShadow = true;
-    arm.add(sleeve);
+    const upperArm = new THREE.Mesh(upperArmGeo, jacketMat);
+    upperArm.position.set(side * 0.03, -0.1, 0.04);
+    upperArm.rotation.x = -0.35;
+    upperArm.rotation.z = side * 0.22;
+    upperArm.castShadow = true;
+    arm.add(upperArm);
 
-    const glove = new THREE.Mesh(gloveGeo, gloveMat);
-    glove.position.set(side * 0.1, -0.34, 0.22);
+    const forearm = new THREE.Mesh(forearmGeo, jacketMat);
+    forearm.position.set(side * 0.08, -0.25, 0.15);
+    forearm.rotation.x = -0.82;
+    forearm.rotation.z = side * 0.12;
+    forearm.castShadow = true;
+    arm.add(forearm);
+
+    const glove = new THREE.Mesh(gloveGeo, darkTrimMat);
+    glove.position.set(side * 0.1, -0.34, 0.24);
     arm.add(glove);
 
+    const grip = new THREE.Mesh(gripGeo, skiEdgeMat);
+    grip.position.set(side * 0.11, -0.34, 0.22);
+    grip.rotation.x = 0.85;
+    arm.add(grip);
+
     const pole = new THREE.Mesh(poleGeo, poleMat);
-    pole.position.set(side * 0.12, -0.52, -0.18);
-    pole.rotation.x = 0.85;
+    pole.position.set(side * 0.11, -0.54, -0.18);
+    pole.rotation.x = 0.88;
     arm.add(pole);
 
     const basket = new THREE.Mesh(basketGeo, skiEdgeMat);
-    basket.position.set(side * 0.12, -0.82, -0.52);
+    basket.position.set(side * 0.11, -0.85, -0.54);
     basket.rotation.x = Math.PI / 2;
     arm.add(basket);
 
@@ -567,13 +914,13 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
 
   // Soft Ground Contact Shadow
   const shadowTex = track(createContactShadowTexture());
-  const shadowGeo = track(new THREE.PlaneGeometry(2.0, 2.4));
+  const shadowGeo = track(new THREE.PlaneGeometry(2.1, 2.5));
   const shadowMat = track(
     new THREE.MeshBasicMaterial({
       map: shadowTex,
       transparent: true,
       depthWrite: false,
-      opacity: 0.44,
+      opacity: 0.46,
     })
   );
   const shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
@@ -585,13 +932,99 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
     carveGroup,
     trickPivot,
     torsoGroup,
-    leftLeg,
-    rightLeg,
+    leftLeg: leftLegBuild.leg,
+    rightLeg: rightLegBuild.leg,
+    leftKnee: leftLegBuild.knee,
+    rightKnee: rightLegBuild.knee,
     leftArm,
     rightArm,
     skisGroup,
-    scarfTail,
+    scarfSegments,
+    boostWakeGroup,
     shadowMesh,
+    dispose: () => {
+      disposables.forEach((d) => d.dispose());
+    },
+  };
+}
+
+export interface GhostSkierRig {
+  root: THREE.Group;
+  bodyGroup: THREE.Group;
+  dispose: () => void;
+}
+
+export function createGhostSkierRig(): GhostSkierRig {
+  const disposables: { dispose: () => void }[] = [];
+  const track = <T extends { dispose: () => void }>(item: T): T => {
+    disposables.push(item);
+    return item;
+  };
+
+  const root = new THREE.Group();
+  const bodyGroup = new THREE.Group();
+  root.add(bodyGroup);
+
+  const ghostMat = track(
+    new THREE.MeshBasicMaterial({
+      color: '#38BDF8',
+      transparent: true,
+      opacity: 0.36,
+      depthWrite: false,
+    })
+  );
+  const edgeMat = track(
+    new THREE.MeshBasicMaterial({
+      color: '#BAE6FD',
+      transparent: true,
+      opacity: 0.65,
+      depthWrite: false,
+    })
+  );
+
+  const skiGeo = track(createTwinTipSkiGeometry());
+  [-0.21, 0.21].forEach((x) => {
+    const s = new THREE.Mesh(skiGeo, edgeMat);
+    s.position.set(x, 0.01, 0);
+    bodyGroup.add(s);
+  });
+
+  const legGeo = track(new THREE.CapsuleGeometry(0.085, 0.48, 4, 8));
+  [-0.18, 0.18].forEach((x) => {
+    const leg = new THREE.Mesh(legGeo, ghostMat);
+    leg.position.set(x, 0.42, 0);
+    bodyGroup.add(leg);
+  });
+
+  const torsoGeo = track(new THREE.CapsuleGeometry(0.195, 0.38, 4, 10));
+  const torso = new THREE.Mesh(torsoGeo, ghostMat);
+  torso.position.set(0, 0.96, -0.03);
+  torso.rotation.x = 0.26;
+  torso.scale.set(1.12, 1, 0.78);
+  bodyGroup.add(torso);
+
+  const headGeo = track(new THREE.SphereGeometry(0.175, 14, 10));
+  const head = new THREE.Mesh(headGeo, edgeMat);
+  head.position.set(0, 1.38, 0.05);
+  head.scale.set(0.95, 1, 1.08);
+  bodyGroup.add(head);
+
+  const visorGeo = track(
+    new THREE.CylinderGeometry(0.182, 0.182, 0.085, 12, 1, true, -Math.PI * 0.28, Math.PI * 0.56)
+  );
+  const visor = new THREE.Mesh(visorGeo, edgeMat);
+  visor.position.set(0, 1.37, 0.07);
+  bodyGroup.add(visor);
+
+  const ringGeo = track(new THREE.RingGeometry(0.45, 0.6, 24));
+  ringGeo.rotateX(-Math.PI / 2);
+  const beaconRing = new THREE.Mesh(ringGeo, edgeMat);
+  beaconRing.position.set(0, 0.04, 0);
+  root.add(beaconRing);
+
+  return {
+    root,
+    bodyGroup,
     dispose: () => {
       disposables.forEach((d) => d.dispose());
     },
@@ -605,6 +1038,7 @@ export function updateSkierPose(
     grab: SkiGrabType;
     isAirborne: boolean;
     isGrinding: boolean;
+    isBoosting?: boolean;
     speedRatio?: number;
     elapsedSec?: number;
     dt: number;
@@ -615,6 +1049,7 @@ export function updateSkierPose(
     grab,
     isAirborne,
     isGrinding,
+    isBoosting = false,
     speedRatio = 0.5,
     elapsedSec = 0,
     dt,
@@ -622,7 +1057,7 @@ export function updateSkierPose(
   const lambda = 12;
 
   let targetTorsoPitch = 0.22;
-  let targetTorsoY = -0.14;
+  let targetTorsoY = -0.16;
   let targetSkisY = -0.88;
   let targetLeftArmX = 0;
   let targetRightArmX = 0;
@@ -631,12 +1066,14 @@ export function updateSkierPose(
   let targetSkisRoll = 0;
   let targetSkisYaw = 0;
   let targetLegBend = 0;
+  let targetKneeFlex = 0;
 
   if (isAirborne && grab !== 'none') {
-    targetTorsoPitch = 0.72;
+    targetTorsoPitch = 0.74;
     targetTorsoY = -0.28;
     targetSkisY = -0.62;
-    targetLegBend = 0.35;
+    targetLegBend = 0.42;
+    targetKneeFlex = 0.62;
     if (grab === 'mute') {
       targetRightArmX = -0.95;
       targetRightArmZ = 0.45;
@@ -658,17 +1095,19 @@ export function updateSkierPose(
   } else if (isGrinding) {
     targetTorsoPitch = 0.16;
     targetTorsoY = -0.18;
-    targetSkisYaw = Math.PI / 2 - 0.15;
-    targetLeftArmZ = -0.65;
-    targetRightArmZ = 0.65;
-    targetLegBend = 0.2;
-  } else if (tuck) {
-    targetTorsoPitch = 0.68;
+    targetSkisYaw = Math.PI / 2 - 0.14;
+    targetLeftArmZ = -0.68;
+    targetRightArmZ = 0.68;
+    targetLegBend = 0.24;
+    targetKneeFlex = 0.36;
+  } else if (tuck || isBoosting) {
+    targetTorsoPitch = isBoosting ? 0.78 : 0.68;
     targetTorsoY = -0.28;
     targetSkisY = -0.78;
-    targetLeftArmX = -0.45;
-    targetRightArmX = -0.45;
-    targetLegBend = 0.28;
+    targetLeftArmX = -0.48;
+    targetRightArmX = -0.48;
+    targetLegBend = 0.32;
+    targetKneeFlex = 0.46;
   }
 
   rig.torsoGroup.rotation.x = THREE.MathUtils.damp(
@@ -737,22 +1176,101 @@ export function updateSkierPose(
     lambda,
     dt
   );
+  rig.leftKnee.rotation.x = THREE.MathUtils.damp(
+    rig.leftKnee.rotation.x,
+    targetKneeFlex,
+    lambda,
+    dt
+  );
+  rig.rightKnee.rotation.x = THREE.MathUtils.damp(
+    rig.rightKnee.rotation.x,
+    targetKneeFlex,
+    lambda,
+    dt
+  );
 
-  // Flowing scarf flutter driven by speed
-  const flutter = Math.sin(elapsedSec * (9 + speedRatio * 14)) * (0.08 + speedRatio * 0.14);
-  rig.scarfTail.rotation.x = 0.12 + speedRatio * 0.22 + flutter;
-  rig.scarfTail.rotation.y = Math.cos(elapsedSec * 7.5) * 0.14;
+  // Flowing 3-link scarf wave driven by downhill wind speed
+  const speedBoost = isBoosting ? 1.4 : 1.0;
+  for (let i = 0; i < rig.scarfSegments.length; i++) {
+    const seg = rig.scarfSegments[i];
+    const phase = elapsedSec * (10 + speedRatio * 15) * speedBoost - i * 0.9;
+    seg.rotation.x = (i === 0 ? 0.14 : 0.04) + speedRatio * 0.16 + Math.sin(phase) * (0.1 + speedRatio * 0.15);
+    seg.rotation.y = Math.cos(phase * 0.72) * (0.12 + i * 0.05);
+  }
+
+  // Turbo Boost Jet-Wake blades behind ski tails
+  const targetWake = isBoosting ? 1.0 : 0.001;
+  const curWake = THREE.MathUtils.damp(rig.boostWakeGroup.scale.z, targetWake, 14, dt);
+  rig.boostWakeGroup.visible = curWake > 0.03;
+  if (rig.boostWakeGroup.visible) {
+    const pulse = 0.88 + Math.sin(elapsedSec * 36) * 0.14;
+    rig.boostWakeGroup.scale.set(curWake, curWake, curWake * pulse);
+  }
 }
 
 export interface BuiltParkScene {
   group: THREE.Group;
+  update: (elapsedSec: number, dt: number) => void;
+  collectRing: (id: string) => void;
   dispose: () => void;
+}
+
+export interface MountainBuildRange {
+  zStart: number;
+  zEnd: number;
+  omitFinish?: boolean;
+  sharedSnowTex?: THREE.CanvasTexture;
+  sharedSnowNormalTex?: THREE.DataTexture;
+}
+
+/** Deterministic irregular jagged foliage cone for organic pine boughs */
+function createOrganicFoliageCone(
+  radius: number,
+  height: number,
+  radialSegments: number,
+  seed: number
+): THREE.BufferGeometry {
+  const geo = new THREE.ConeGeometry(radius, height, radialSegments, 2, false);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const r = Math.hypot(x, z);
+    if (r > 0.05) {
+      const angle = Math.atan2(z, x);
+      const wave = 0.84 + 0.24 * Math.sin(angle * 3.0 + seed) * Math.cos(angle * 5.0 - seed * 0.7);
+      const droop = (y < 0 ? -0.18 : 0) * (r / radius);
+      pos.setXYZ(i, x * wave, y + droop, z * wave);
+    }
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Deterministic faceted granite boulder with natural cliff ridges */
+function createSculptedRockGeometry(radius: number, seed: number): THREE.BufferGeometry {
+  const geo = new THREE.IcosahedronGeometry(radius, 1);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const factor =
+      0.82 +
+      0.28 * Math.sin(x * 3.1 + seed) * Math.cos(z * 2.7 - seed * 0.5) +
+      0.14 * Math.sin(y * 4.3 + x * 2.1);
+    pos.setXYZ(i, x * factor, y * (0.72 + 0.16 * Math.abs(Math.sin(seed + y))), z * factor);
+  }
+  geo.computeVertexNormals();
+  return geo;
 }
 
 export function buildMountainEnvironment(
   map: SkiMapConfig,
   layout: SkiParkLayout,
-  maxAnisotropy: number
+  maxAnisotropy: number,
+  range?: MountainBuildRange
 ): BuiltParkScene {
   const group = new THREE.Group();
   const disposables: { dispose: () => void }[] = [];
@@ -761,15 +1279,16 @@ export function buildMountainEnvironment(
     return item;
   };
 
-  // 1. Sculpted Mountain Terrain Mesh with Physical Snow Sheen & Normal Map
+  const zMin = range ? range.zStart - (range.zStart === 0 ? 35 : 0) : -35;
+  const zMax = range ? range.zEnd : map.lengthMeters + 125;
   const totalWidth = (map.halfWidth + 46) * 2;
-  const totalLength = map.lengthMeters + 160;
+  const totalLength = zMax - zMin;
   const segX = 72;
-  const segZ = Math.min(460, Math.round(totalLength / 3.5));
+  const segZ = Math.min(460, Math.max(48, Math.round(totalLength / 3.5)));
 
   const terrainGeo = track(new THREE.PlaneGeometry(totalWidth, totalLength, segX, segZ));
   terrainGeo.rotateX(-Math.PI / 2);
-  terrainGeo.translate(0, 0, totalLength * 0.5 - 35);
+  terrainGeo.translate(0, 0, zMin + totalLength * 0.5);
 
   const posAttr = terrainGeo.attributes.position;
   const colors = new Float32Array(posAttr.count * 3);
@@ -788,7 +1307,6 @@ export function buildMountainEnvironment(
       ? THREE.MathUtils.clamp((Math.abs(vx) - 5.5) / 8, 0, 1)
       : THREE.MathUtils.clamp((Math.abs(vx) - (map.halfWidth - 3)) / 10, 0, 1);
 
-    // Slight crisp brighten along center run + blue-grey shadow tint on side banks
     tmpColor.copy(snowColor).lerp(pisteTint, (1 - bankBlend) * 0.16);
     tmpColor.lerp(bankColor, bankBlend * 0.88);
     colors[i * 3] = tmpColor.r;
@@ -798,10 +1316,16 @@ export function buildMountainEnvironment(
   terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   terrainGeo.computeVertexNormals();
 
-  const snowTex = track(
-    createSnowTexture(map.snowBaseColor, map.snowRidgeColor, maxAnisotropy)
-  );
-  const snowNormalTex = track(createSnowNormalTexture(maxAnisotropy));
+  const snowTex =
+    range?.sharedSnowTex ??
+    track(createSnowTexture(map.snowBaseColor, map.snowRidgeColor, maxAnisotropy));
+  const snowNormalTex =
+    range?.sharedSnowNormalTex ?? track(createSnowNormalTexture(maxAnisotropy));
+
+  const snowSparkleUniforms = {
+    uTime: { value: 0 },
+    uSparkleColor: { value: new THREE.Color(map.isNight ? '#BAE6FD' : '#FFFBEB') },
+  };
 
   const terrainMat = track(
     new THREE.MeshPhysicalMaterial({
@@ -809,23 +1333,60 @@ export function buildMountainEnvironment(
       normalMap: snowNormalTex,
       normalScale: new THREE.Vector2(0.45, 0.35),
       vertexColors: true,
-      roughness: 0.72,
+      roughness: 0.68,
       metalness: 0.02,
-      clearcoat: 0.16,
-      clearcoatRoughness: 0.45,
-      sheen: 0.35,
-      sheenRoughness: 0.58,
+      clearcoat: 0.2,
+      clearcoatRoughness: 0.4,
+      sheen: 0.4,
+      sheenRoughness: 0.52,
       sheenColor: new THREE.Color(map.isNight ? '#7DD3FC' : '#E0F2FE'),
     })
   );
+
+  // Inject real-time sparkling crystal snow glints via onBeforeCompile
+  terrainMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = snowSparkleUniforms.uTime;
+    shader.uniforms.uSparkleColor = snowSparkleUniforms.uSparkleColor;
+
+    shader.vertexShader =
+      `varying vec3 vSnowWorldPos;\n` +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `
+        #include <begin_vertex>
+        vSnowWorldPos = transformed;
+        `
+      );
+
+    shader.fragmentShader =
+      `uniform float uTime;\nuniform vec3 uSparkleColor;\nvarying vec3 vSnowWorldPos;\n` +
+      shader.fragmentShader.replace(
+        '#include <opaque_fragment>',
+        `
+        vec3 snowViewDir = normalize(cameraPosition - vSnowWorldPos);
+        vec2 sCell = floor(vSnowWorldPos.xz * 6.5);
+        vec2 sLocal = fract(vSnowWorldPos.xz * 6.5) - 0.5;
+        float sRnd = fract(sin(dot(sCell, vec2(127.1, 311.7))) * 43758.5453);
+        float sRnd2 = fract(sin(dot(sCell, vec2(269.5, 183.3))) * 43758.5453);
+        float sTwinkle = pow(max(0.0, sin(sRnd * 6.2831 + snowViewDir.x * 9.0 + snowViewDir.z * 7.0 + uTime * 2.2)), 14.0);
+        float sDot = smoothstep(0.36, 0.05, length(sLocal));
+        float sFade = 1.0 - smoothstep(14.0, 68.0, length(cameraPosition - vSnowWorldPos));
+        float sparkle = step(0.64, sRnd2) * sTwinkle * sDot * sFade;
+        outgoingLight += uSparkleColor * sparkle * 1.15;
+        #include <opaque_fragment>
+        `
+      );
+  };
+  terrainMat.customProgramCacheKey = () => `ski-crystal-snow-${map.isNight ? 'night' : 'day'}`;
+
   const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
   terrainMesh.receiveShadow = true;
   group.add(terrainMesh);
 
-  // 1b. Distant Snow-Capped Alpine Mountain Backdrop Ridges (Left, Right, & Far Horizon)
-  const ridgeConeGeo = track(new THREE.ConeGeometry(1, 1.3, 6));
-  const ridgeCapGeo = track(new THREE.ConeGeometry(0.46, 0.56, 6));
-  ridgeCapGeo.translate(0, 0.38, 0);
+  // 1b. Distant Snow-Capped Alpine Mountain Peaks & Glacier Ridges
+  const ridgeConeGeo = track(new THREE.ConeGeometry(1, 1.35, 7));
+  const ridgeCapGeo = track(new THREE.ConeGeometry(0.47, 0.58, 7));
+  ridgeCapGeo.translate(0, 0.39, 0);
 
   const ridgeRockMat = track(
     new THREE.MeshStandardMaterial({
@@ -838,14 +1399,16 @@ export function buildMountainEnvironment(
   const ridgeSnowMat = track(
     new THREE.MeshStandardMaterial({
       color: map.snowBaseColor,
-      roughness: 0.75,
+      roughness: 0.74,
       metalness: 0.02,
       flatShading: true,
     })
   );
 
   const ridgeSpots: { x: number; z: number; sx: number; sy: number; rot: number }[] = [];
-  for (let z = 60; z < map.lengthMeters + 160; z += 78) {
+  const ridgeStartZ = range ? Math.max(40, range.zStart + 40) : 60;
+  const ridgeEndZ = range ? range.zEnd : map.lengthMeters + 160;
+  for (let z = ridgeStartZ; z < ridgeEndZ; z += 76) {
     [-1, 1].forEach((side) => {
       ridgeSpots.push({
         x: side * (map.halfWidth + 55 + ((z * 13) % 36)),
@@ -856,15 +1419,16 @@ export function buildMountainEnvironment(
       });
     });
   }
-  // Grand peaks beyond finish arch
-  for (let i = -3; i <= 3; i++) {
-    ridgeSpots.push({
-      x: i * 48,
-      z: map.lengthMeters + 175 + Math.abs(i) * 18,
-      sx: 52 + (Math.abs(i) % 3) * 14,
-      sy: 72 + (3 - Math.abs(i)) * 16,
-      rot: i * 0.7,
-    });
+  if (!range?.omitFinish) {
+    for (let i = -3; i <= 3; i++) {
+      ridgeSpots.push({
+        x: i * 48,
+        z: map.lengthMeters + 175 + Math.abs(i) * 18,
+        sx: 52 + (Math.abs(i) % 3) * 14,
+        sy: 72 + (3 - Math.abs(i)) * 16,
+        rot: i * 0.7,
+      });
+    }
   }
 
   if (ridgeSpots.length > 0) {
@@ -873,7 +1437,12 @@ export function buildMountainEnvironment(
     const dummy = new THREE.Object3D();
     for (let i = 0; i < ridgeSpots.length; i++) {
       const sp = ridgeSpots[i];
-      const baseY = getBaseTerrainHeight(map, sp.x * 0.4, Math.min(map.lengthMeters + 40, sp.z)) - 14;
+      const baseY =
+        getBaseTerrainHeight(
+          map,
+          sp.x * 0.4,
+          range?.omitFinish ? sp.z : Math.min(map.lengthMeters + 40, sp.z)
+        ) - 14;
       dummy.position.set(sp.x, baseY + sp.sy * 0.45, sp.z);
       dummy.rotation.set(0, sp.rot, 0);
       dummy.scale.set(sp.sx, sp.sy, sp.sx * 0.9);
@@ -888,28 +1457,97 @@ export function buildMountainEnvironment(
     group.add(rRockInst, rCapInst);
   }
 
-  // 1c. Piste Edge Boundary Slalom Stakes + Overhead Chairlift Line
-  const stakeGeo = track(new THREE.CylinderGeometry(0.04, 0.04, 1.5, 6));
+  // 1c. Alpine Timber Start Gate Cabin (at Start Corral only)
+  if (!range || range.zStart === 0) {
+    const cabinX = -Math.min(13.5, map.halfWidth - 6);
+    const cabinZ = -7;
+    const cabinY = getBaseTerrainHeight(map, cabinX, cabinZ);
+    const woodTex = track(createWoodWallTexture(maxAnisotropy));
+
+    const cabinGroup = new THREE.Group();
+    cabinGroup.position.set(cabinX, cabinY, cabinZ);
+    cabinGroup.rotation.y = 0.28;
+
+    const wallMat = track(
+      new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.85, metalness: 0.04 })
+    );
+    const roofSnowMat = track(
+      new THREE.MeshStandardMaterial({ color: map.snowBaseColor, roughness: 0.7, metalness: 0.02 })
+    );
+    const windowGlowMat = track(
+      new THREE.MeshStandardMaterial({
+        color: '#FEF3C7',
+        emissive: '#F59E0B',
+        emissiveIntensity: map.isNight ? 1.85 : 0.65,
+        roughness: 0.25,
+      })
+    );
+
+    const bodyMesh = new THREE.Mesh(track(new THREE.BoxGeometry(5.2, 3.2, 4.4)), wallMat);
+    bodyMesh.position.y = 1.6;
+    bodyMesh.castShadow = true;
+    bodyMesh.receiveShadow = true;
+    cabinGroup.add(bodyMesh);
+
+    const roofGeo = track(new THREE.ConeGeometry(4.2, 2.2, 4));
+    roofGeo.rotateY(Math.PI / 4);
+    const roofMesh = new THREE.Mesh(roofGeo, roofSnowMat);
+    roofMesh.position.y = 4.25;
+    roofMesh.castShadow = true;
+    cabinGroup.add(roofMesh);
+
+    const winGeo = track(new THREE.BoxGeometry(1.1, 0.95, 0.12));
+    [-1.25, 1.25].forEach((wx) => {
+      const win = new THREE.Mesh(winGeo, windowGlowMat);
+      win.position.set(wx, 1.85, 2.21);
+      cabinGroup.add(win);
+    });
+
+    const doorMesh = new THREE.Mesh(
+      track(new THREE.BoxGeometry(0.95, 2.0, 0.14)),
+      track(new THREE.MeshStandardMaterial({ color: '#3B2314', roughness: 0.8 }))
+    );
+    doorMesh.position.set(0, 1.0, 2.21);
+    cabinGroup.add(doorMesh);
+
+    group.add(cabinGroup);
+  }
+
+  // 1d. Orange Diamond Safety Netting Fencing along Piste Edges
+  const stakeGeo = track(new THREE.CylinderGeometry(0.045, 0.045, 1.55, 6));
   const stakeMat = track(
     new THREE.MeshStandardMaterial({
       color: '#F97316',
-      roughness: 0.4,
+      roughness: 0.38,
       metalness: 0.2,
       emissive: map.isNight ? '#EA580C' : '#000000',
-      emissiveIntensity: map.isNight ? 0.55 : 0,
+      emissiveIntensity: map.isNight ? 0.5 : 0,
     })
   );
-  const stakeCount = Math.floor(map.lengthMeters / 48) * 2;
+  const netTex = track(createDiamondNetTexture(maxAnisotropy));
+  const netMat = track(
+    new THREE.MeshStandardMaterial({
+      map: netTex,
+      transparent: true,
+      alphaTest: 0.32,
+      side: THREE.DoubleSide,
+      roughness: 0.6,
+    })
+  );
+
+  const stakeStart = range ? Math.max(35, range.zStart + 20) : 35;
+  const stakeEnd = range ? range.zEnd - 12 : map.lengthMeters - 20;
+  const stakeCount = Math.max(0, Math.floor((stakeEnd - stakeStart) / 44) + 1) * 2;
   if (stakeCount > 0) {
     const stakeInst = new THREE.InstancedMesh(stakeGeo, stakeMat, stakeCount);
     const dummy = new THREE.Object3D();
     let idx = 0;
-    for (let z = 35; z < map.lengthMeters - 20 && idx + 1 < stakeCount; z += 48) {
+    for (let z = stakeStart; z < stakeEnd && idx + 1 < stakeCount; z += 44) {
       [-1, 1].forEach((side) => {
-        const sx = side * (map.halfWidth - 0.6);
+        const sx = side * (map.halfWidth - 0.5);
         const sy = getBaseTerrainHeight(map, sx, z);
-        dummy.position.set(sx, sy + 0.65, z);
-        dummy.rotation.set(0, 0, side * -0.08);
+        dummy.position.set(sx, sy + 0.68, z);
+        dummy.rotation.set(0, 0, side * -0.07);
         dummy.scale.setScalar(1);
         dummy.updateMatrix();
         stakeInst.setMatrixAt(idx++, dummy.matrix);
@@ -919,46 +1557,140 @@ export function buildMountainEnvironment(
     stakeInst.instanceMatrix.needsUpdate = true;
     stakeInst.computeBoundingSphere();
     group.add(stakeInst);
+
+    // Periodic safety fence panels along outer chute curves
+    const netPanelGeo = track(new THREE.PlaneGeometry(14, 1.15));
+    netPanelGeo.rotateY(Math.PI / 2);
+    for (let z = stakeStart + 22; z < stakeEnd - 16; z += 120) {
+      [-1, 1].forEach((side) => {
+        const nx = side * (map.halfWidth - 0.35);
+        const ny = getBaseTerrainHeight(map, nx, z);
+        const nNextY = getBaseTerrainHeight(map, nx, z + 14);
+        const slopeAng = Math.atan2(nNextY - ny, 14);
+        const netMesh = new THREE.Mesh(netPanelGeo, netMat);
+        netMesh.position.set(nx, (ny + nNextY) * 0.5 + 0.65, z + 7);
+        netMesh.rotation.x = -slopeAng;
+        group.add(netMesh);
+      });
+    }
   }
 
-  // Ski Lift Pylons along far right flank (or Night Floodlight Towers on Apex Night)
+  // 1e. Animated Moving Chairlift System & Floodlight Towers along Right Flank
   const towerSteelMat = track(
     new THREE.MeshStandardMaterial({
       color: '#475569',
-      roughness: 0.42,
-      metalness: 0.78,
+      roughness: 0.4,
+      metalness: 0.8,
     })
   );
   const floodHeadMat = track(
     new THREE.MeshStandardMaterial({
       color: '#FEF3C7',
       emissive: '#FDE68A',
-      emissiveIntensity: map.isNight ? 2.4 : 0.2,
+      emissiveIntensity: map.isNight ? 2.4 : 0.25,
       roughness: 0.2,
     })
   );
-  const towerPoleGeo = track(new THREE.CylinderGeometry(0.2, 0.32, 10.5, 8));
-  const crossArmGeo = track(new THREE.BoxGeometry(3.8, 0.28, 0.34));
-  const lampPanelGeo = track(new THREE.BoxGeometry(1.5, 0.65, 0.24));
-  const liftX = map.halfWidth + 4.5;
+  const cableMat = track(
+    new THREE.MeshStandardMaterial({ color: '#1E293B', roughness: 0.35, metalness: 0.85 })
+  );
+  const chairAccentMat = track(
+    new THREE.MeshStandardMaterial({ color: map.accentColor, roughness: 0.4, metalness: 0.3 })
+  );
 
-  for (let z = 95; z < map.lengthMeters - 50; z += 140) {
+  const towerPoleGeo = track(new THREE.CylinderGeometry(0.22, 0.36, 11.0, 8));
+  const crossArmGeo = track(new THREE.BoxGeometry(4.2, 0.28, 0.36));
+  const bullwheelGeo = track(new THREE.CylinderGeometry(0.45, 0.45, 0.16, 12));
+  bullwheelGeo.rotateZ(Math.PI / 2);
+  const lampPanelGeo = track(new THREE.BoxGeometry(1.5, 0.65, 0.24));
+  const liftX = map.halfWidth + 4.8;
+
+  const towerStart = range ? Math.max(85, range.zStart + 35) : 85;
+  const towerEnd = range ? range.zEnd - 20 : map.lengthMeters - 45;
+  const towerPositions: { x: number; y: number; z: number }[] = [];
+
+  for (let z = towerStart; z < towerEnd; z += 135) {
     const ty = getBaseTerrainHeight(map, liftX, z);
     const pole = new THREE.Mesh(towerPoleGeo, towerSteelMat);
-    pole.position.set(liftX, ty + 5.0, z);
+    pole.position.set(liftX, ty + 5.2, z);
     pole.castShadow = true;
     group.add(pole);
 
     const arm = new THREE.Mesh(crossArmGeo, towerSteelMat);
-    arm.position.set(liftX - 1.0, ty + 9.9, z);
+    arm.position.set(liftX - 0.8, ty + 10.35, z);
     group.add(arm);
+
+    const wheelL = new THREE.Mesh(bullwheelGeo, towerSteelMat);
+    wheelL.position.set(liftX - 2.6, ty + 10.35, z);
+    const wheelR = new THREE.Mesh(bullwheelGeo, towerSteelMat);
+    wheelR.position.set(liftX + 1.0, ty + 10.35, z);
+    group.add(wheelL, wheelR);
+
+    towerPositions.push({ x: liftX - 2.6, y: ty + 10.35, z });
 
     if (map.isNight) {
       const lamp = new THREE.Mesh(lampPanelGeo, floodHeadMat);
-      lamp.position.set(liftX - 2.3, ty + 9.75, z);
+      lamp.position.set(liftX - 2.8, ty + 9.95, z);
       lamp.rotation.y = Math.PI / 5;
       lamp.rotation.x = 0.45;
       group.add(lamp);
+    }
+  }
+
+  // Span overhead haul cables between lift pylons + spawn animated moving chairlift cabins
+  const animatedChairs: {
+    group: THREE.Group;
+    progress: number;
+    laneOffsetX: number;
+    dir: 1 | -1;
+  }[] = [];
+  const cableMinZ = towerStart;
+  const cableMaxZ = Math.max(cableMinZ + 40, towerEnd);
+
+  if (towerPositions.length >= 2) {
+    for (let i = 0; i < towerPositions.length - 1; i++) {
+      const a = towerPositions[i];
+      const b = towerPositions[i + 1];
+      [-0.1, 3.6].forEach((offsetX) => {
+        const dx = 0;
+        const dy = b.y - a.y;
+        const dz = b.z - a.z;
+        const len = Math.hypot(dx, dy, dz);
+        const cableGeo = track(new THREE.CylinderGeometry(0.035, 0.035, len, 6));
+        cableGeo.rotateX(Math.PI / 2);
+        const cable = new THREE.Mesh(cableGeo, cableMat);
+        cable.position.set(a.x + offsetX, (a.y + b.y) * 0.5, (a.z + b.z) * 0.5);
+        cable.rotation.x = -Math.atan2(dy, dz);
+        group.add(cable);
+      });
+    }
+
+    const hangerGeo = track(new THREE.CylinderGeometry(0.04, 0.04, 2.1, 6));
+    const seatGeo = track(new THREE.BoxGeometry(1.45, 0.14, 0.56));
+    const backGeo = track(new THREE.BoxGeometry(1.45, 0.65, 0.12));
+    const spanLen = cableMaxZ - cableMinZ;
+    const chairCount = Math.max(4, Math.floor(spanLen / 90));
+
+    for (let c = 0; c < chairCount; c++) {
+      const dir: 1 | -1 = c % 2 === 0 ? -1 : 1;
+      const laneOffsetX = dir === -1 ? liftX - 2.6 : liftX + 1.0;
+      const chairGroup = new THREE.Group();
+
+      const hanger = new THREE.Mesh(hangerGeo, towerSteelMat);
+      hanger.position.y = -1.05;
+      const seat = new THREE.Mesh(seatGeo, chairAccentMat);
+      seat.position.set(0, -2.05, 0);
+      const back = new THREE.Mesh(backGeo, chairAccentMat);
+      back.position.set(0, -1.7, dir === -1 ? 0.24 : -0.24);
+      chairGroup.add(hanger, seat, back);
+      group.add(chairGroup);
+
+      animatedChairs.push({
+        group: chairGroup,
+        progress: (c / chairCount) % 1,
+        laneOffsetX,
+        dir,
+      });
     }
   }
 
@@ -968,21 +1700,21 @@ export function buildMountainEnvironment(
       color: map.snowBaseColor,
       normalMap: snowNormalTex,
       normalScale: new THREE.Vector2(0.3, 0.25),
-      roughness: 0.66,
+      roughness: 0.64,
       metalness: 0.04,
-      clearcoat: 0.18,
+      clearcoat: 0.2,
     })
   );
   const lipStripMat = track(
     new THREE.MeshStandardMaterial({
       color: map.accentColor,
-      roughness: 0.45,
-      metalness: 0.1,
+      roughness: 0.42,
+      metalness: 0.12,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
       emissive: map.isNight ? map.accentColor : '#000000',
-      emissiveIntensity: map.isNight ? 0.45 : 0,
+      emissiveIntensity: map.isNight ? 0.5 : 0,
     })
   );
   const flagPoleMat = track(
@@ -1000,8 +1732,8 @@ export function buildMountainEnvironment(
       side: THREE.DoubleSide,
     })
   );
-  const flagPoleGeo = track(new THREE.CylinderGeometry(0.055, 0.055, 1.9, 6));
-  const flagBannerGeo = track(new THREE.PlaneGeometry(0.65, 0.36));
+  const flagPoleGeo = track(new THREE.CylinderGeometry(0.055, 0.055, 1.95, 6));
+  const flagBannerGeo = track(new THREE.PlaneGeometry(0.7, 0.38));
 
   for (const k of layout.kickers) {
     const kGeo = track(new THREE.BoxGeometry(k.width, 1, k.length, 6, 1, 12));
@@ -1025,15 +1757,13 @@ export function buildMountainEnvironment(
     kickerMesh.receiveShadow = true;
     group.add(kickerMesh);
 
-    // Takeoff lip stripe marker right near the kicker top
-    const lipGeo = track(new THREE.BoxGeometry(k.width * 0.94, 0.04, 0.45));
+    const lipGeo = track(new THREE.BoxGeometry(k.width * 0.94, 0.045, 0.48));
     const lipY = getBaseTerrainHeight(map, k.x, k.z - 0.25) + k.height * 0.94;
     const lip = new THREE.Mesh(lipGeo, lipStripMat);
     lip.position.set(k.x, lipY + 0.02, k.z - 0.25);
     lip.rotation.x = -0.32;
     group.add(lip);
 
-    // Lip guide poles on left and right edge
     [-k.width * 0.5 - 0.16, k.width * 0.5 + 0.16].forEach((sideX) => {
       const fx = k.x + sideX;
       const fz = k.z - 0.3;
@@ -1043,20 +1773,20 @@ export function buildMountainEnvironment(
       group.add(pole);
 
       const banner = new THREE.Mesh(flagBannerGeo, flagBannerMat);
-      banner.position.set(fx + (sideX > 0 ? -0.32 : 0.32), fy + 1.56, fz);
+      banner.position.set(fx + (sideX > 0 ? -0.34 : 0.34), fy + 1.58, fz);
       group.add(banner);
     });
   }
 
-  // 3. Rails & Park Boxes (Brushed anisotropic steel + chevron box graphics)
+  // 3. Rails & Park Boxes
   const steelMat = track(
     new THREE.MeshPhysicalMaterial({
       color: '#E2E8F0',
-      roughness: 0.16,
-      metalness: 0.92,
-      clearcoat: 0.65,
-      anisotropy: 0.75,
-      envMapIntensity: 1.5,
+      roughness: 0.14,
+      metalness: 0.94,
+      clearcoat: 0.7,
+      anisotropy: 0.8,
+      envMapIntensity: 1.55,
     })
   );
   const boxTopTex = track(
@@ -1065,9 +1795,9 @@ export function buildMountainEnvironment(
   const boxDeckMat = track(
     new THREE.MeshPhysicalMaterial({
       map: boxTopTex,
-      roughness: 0.26,
+      roughness: 0.24,
       metalness: 0.35,
-      clearcoat: 0.55,
+      clearcoat: 0.6,
     })
   );
   const darkSupportMat = track(
@@ -1107,8 +1837,7 @@ export function buildMountainEnvironment(
         railGroup.add(coping);
       });
     } else if (r.style === 'kink') {
-      // Double-barrel shotgun rail
-      const tubeGeo = track(new THREE.CylinderGeometry(0.085, 0.085, beamLen, 10));
+      const tubeGeo = track(new THREE.CylinderGeometry(0.088, 0.088, beamLen, 10));
       tubeGeo.rotateX(Math.PI / 2);
       [-0.14, 0.14].forEach((offset) => {
         const tube = new THREE.Mesh(tubeGeo, steelMat);
@@ -1142,7 +1871,7 @@ export function buildMountainEnvironment(
         new THREE.MeshStandardMaterial({
           color: '#F59E0B',
           emissive: '#F59E0B',
-          emissiveIntensity: 1.8,
+          emissiveIntensity: 1.85,
         })
       );
       const beacon = new THREE.Mesh(beaconGeo, beaconMat);
@@ -1154,16 +1883,16 @@ export function buildMountainEnvironment(
   }
 
   // 4. Bonus Slalom Gates
-  const gatePoleGeo = track(new THREE.CylinderGeometry(0.065, 0.065, 2.6, 8));
-  const gateBarGeo = track(new THREE.BoxGeometry(3.85, 0.38, 0.12));
+  const gatePoleGeo = track(new THREE.CylinderGeometry(0.068, 0.068, 2.7, 8));
+  const gateBarGeo = track(new THREE.BoxGeometry(3.9, 0.4, 0.14));
   const gatePoleMat = track(
-    new THREE.MeshStandardMaterial({ color: '#FACC15', roughness: 0.3, metalness: 0.35 })
+    new THREE.MeshStandardMaterial({ color: '#FACC15', roughness: 0.28, metalness: 0.38 })
   );
   const gateBannerMat = track(
     new THREE.MeshStandardMaterial({
       color: '#0EA5E9',
       emissive: map.isNight ? '#0EA5E9' : '#0284C7',
-      emissiveIntensity: map.isNight ? 0.95 : 0.2,
+      emissiveIntensity: map.isNight ? 0.95 : 0.24,
       roughness: 0.35,
     })
   );
@@ -1172,65 +1901,137 @@ export function buildMountainEnvironment(
     const leftY = getBaseTerrainHeight(map, g.x - 1.85, g.z);
     const rightY = getBaseTerrainHeight(map, g.x + 1.85, g.z);
     const pL = new THREE.Mesh(gatePoleGeo, gatePoleMat);
-    pL.position.set(g.x - 1.85, leftY + 1.15, g.z);
+    pL.position.set(g.x - 1.85, leftY + 1.2, g.z);
     pL.castShadow = true;
     const pR = new THREE.Mesh(gatePoleGeo, gatePoleMat);
-    pR.position.set(g.x + 1.85, rightY + 1.15, g.z);
+    pR.position.set(g.x + 1.85, rightY + 1.2, g.z);
     pR.castShadow = true;
     const bar = new THREE.Mesh(gateBarGeo, gateBannerMat);
-    bar.position.set(g.x, Math.max(leftY, rightY) + 2.3, g.z);
+    bar.position.set(g.x, Math.max(leftY, rightY) + 2.38, g.z);
     group.add(pL, pR, bar);
   }
 
-  // 5. Detailed Finish Arch with Graphic Banner
-  const finishZ = map.lengthMeters;
-  const finishY = getBaseTerrainHeight(map, 0, finishZ);
-  const finishPostGeo = track(new THREE.CylinderGeometry(0.2, 0.26, 6.4, 12));
-  const finishArchGeo = track(new THREE.BoxGeometry(15.2, 1.5, 0.55));
-  const finishBannerTex = track(
-    createFinishBannerTexture(map.accentColor, maxAnisotropy)
-  );
-  const finishPostMat = track(
-    new THREE.MeshStandardMaterial({
-      color: '#DC2626',
-      roughness: 0.36,
-      metalness: 0.35,
-    })
-  );
-  const finishBannerMat = track(
-    new THREE.MeshStandardMaterial({
-      map: finishBannerTex,
-      roughness: 0.45,
-      metalness: 0.1,
-    })
-  );
-  const archL = new THREE.Mesh(finishPostGeo, finishPostMat);
-  archL.position.set(-7.2, finishY + 3.0, finishZ);
-  archL.castShadow = true;
-  const archR = new THREE.Mesh(finishPostGeo, finishPostMat);
-  archR.position.set(7.2, finishY + 3.0, finishZ);
-  archR.castShadow = true;
-  const archTop = new THREE.Mesh(finishArchGeo, finishBannerMat);
-  archTop.position.set(0, finishY + 5.85, finishZ);
-  archTop.castShadow = true;
-  group.add(archL, archR, archTop);
+  // 4b. Collectible Floating Air & Slalom Rings
+  const ringEntries = new Map<string, { group: THREE.Group; baseY: number; phase: number }>();
+  if (layout.rings.length > 0) {
+    const airRingGeo = track(new THREE.TorusGeometry(1.12, 0.11, 10, 24));
+    const slalomRingGeo = track(new THREE.TorusGeometry(0.95, 0.095, 10, 22));
+    const innerCoreGeo = track(new THREE.OctahedronGeometry(0.28, 0));
 
-  // 6. Instanced Layered Alpine Pines (Trunk + 3 foliage tiers + snow cap)
+    const airRingMat = track(
+      new THREE.MeshPhysicalMaterial({
+        color: '#FACC15',
+        emissive: '#F59E0B',
+        emissiveIntensity: map.isNight ? 1.35 : 0.65,
+        roughness: 0.16,
+        metalness: 0.85,
+        clearcoat: 0.9,
+      })
+    );
+    const slalomRingMat = track(
+      new THREE.MeshPhysicalMaterial({
+        color: '#38BDF8',
+        emissive: '#0EA5E9',
+        emissiveIntensity: map.isNight ? 1.25 : 0.55,
+        roughness: 0.18,
+        metalness: 0.8,
+        clearcoat: 0.9,
+      })
+    );
+    const coreMat = track(
+      new THREE.MeshBasicMaterial({
+        color: '#FFFFFF',
+      })
+    );
+
+    layout.rings.forEach((rg, idx) => {
+      const baseY = getBaseTerrainHeight(map, rg.x, rg.z) + rg.yOffset;
+      const rgGroup = new THREE.Group();
+      rgGroup.position.set(rg.x, baseY, rg.z);
+
+      const outer = new THREE.Mesh(
+        rg.kind === 'air' ? airRingGeo : slalomRingGeo,
+        rg.kind === 'air' ? airRingMat : slalomRingMat
+      );
+      const core = new THREE.Mesh(innerCoreGeo, coreMat);
+      rgGroup.add(outer, core);
+      group.add(rgGroup);
+
+      ringEntries.set(rg.id, { group: rgGroup, baseY, phase: idx * 0.75 });
+    });
+  }
+
+  // 5. Upgraded Multi-Part Finish Arena (omitted in Endless chunks)
+  if (!range?.omitFinish) {
+    const finishZ = map.lengthMeters;
+    const finishY = getBaseTerrainHeight(map, 0, finishZ);
+    const finishPostGeo = track(new THREE.CylinderGeometry(0.22, 0.3, 6.8, 12));
+    const finishArchGeo = track(new THREE.BoxGeometry(16.2, 1.7, 0.65));
+    const finishBannerTex = track(
+      createFinishBannerTexture(map.accentColor, maxAnisotropy)
+    );
+    const finishPostMat = track(
+      new THREE.MeshStandardMaterial({
+        color: '#DC2626',
+        roughness: 0.34,
+        metalness: 0.4,
+      })
+    );
+    const finishBannerMat = track(
+      new THREE.MeshStandardMaterial({
+        map: finishBannerTex,
+        roughness: 0.42,
+        metalness: 0.12,
+      })
+    );
+    const archL = new THREE.Mesh(finishPostGeo, finishPostMat);
+    archL.position.set(-7.6, finishY + 3.2, finishZ);
+    archL.castShadow = true;
+    const archR = new THREE.Mesh(finishPostGeo, finishPostMat);
+    archR.position.set(7.6, finishY + 3.2, finishZ);
+    archR.castShadow = true;
+    const archTop = new THREE.Mesh(finishArchGeo, finishBannerMat);
+    archTop.position.set(0, finishY + 6.1, finishZ);
+    archTop.castShadow = true;
+    group.add(archL, archR, archTop);
+
+    // Inflatable podium corral bollards flanking finish line
+    const bollardGeo = track(new THREE.CylinderGeometry(0.45, 0.55, 2.4, 12));
+    const bollardMat = track(
+      new THREE.MeshStandardMaterial({
+        color: map.accentColor,
+        roughness: 0.35,
+        metalness: 0.1,
+      })
+    );
+    [-9.5, 9.5].forEach((bx) => {
+      const bollard = new THREE.Mesh(bollardGeo, bollardMat);
+      bollard.position.set(bx, finishY + 1.1, finishZ - 4);
+      bollard.castShadow = true;
+      group.add(bollard);
+    });
+  }
+
+  // 6. Instanced Organic 4-Tier Alpine Pines (Bark-Textured Trunk + Perturbed Branch Whorls + Snow Caps)
   if (layout.trees.length > 0) {
     const count = layout.trees.length;
-    const trunkGeo = track(new THREE.CylinderGeometry(0.18, 0.3, 1.65, 6));
-    trunkGeo.translate(0, 0.72, 0);
+    const barkTex = track(createBarkTexture(maxAnisotropy));
+    const trunkGeo = track(new THREE.CylinderGeometry(0.16, 0.32, 1.8, 7));
+    trunkGeo.translate(0, 0.8, 0);
     const trunkMat = track(
-      new THREE.MeshStandardMaterial({ color: '#4A3228', roughness: 0.92, metalness: 0 })
+      new THREE.MeshStandardMaterial({ map: barkTex, roughness: 0.92, metalness: 0 })
     );
-    const crownLowerGeo = track(new THREE.ConeGeometry(1.68, 3.0, 8));
-    crownLowerGeo.translate(0, 2.35, 0);
-    const crownMidGeo = track(new THREE.ConeGeometry(1.32, 2.6, 8));
-    crownMidGeo.translate(0, 3.55, 0);
-    const crownUpperGeo = track(new THREE.ConeGeometry(0.95, 2.2, 8));
-    crownUpperGeo.translate(0, 4.75, 0);
-    const snowCapGeo = track(new THREE.ConeGeometry(0.62, 1.2, 8));
-    snowCapGeo.translate(0, 5.45, 0);
+
+    const crownLowerGeo = track(createOrganicFoliageCone(1.82, 2.8, 7, 1.1));
+    crownLowerGeo.translate(0, 2.25, 0);
+    const crownMidGeo = track(createOrganicFoliageCone(1.48, 2.45, 7, 2.4));
+    crownMidGeo.translate(0, 3.35, 0);
+    const crownUpperGeo = track(createOrganicFoliageCone(1.12, 2.1, 7, 3.9));
+    crownUpperGeo.translate(0, 4.45, 0);
+    const crownTipGeo = track(createOrganicFoliageCone(0.75, 1.55, 7, 5.2));
+    crownTipGeo.translate(0, 5.35, 0);
+    const snowCapGeo = track(createOrganicFoliageCone(0.62, 1.15, 7, 5.2));
+    snowCapGeo.translate(0, 5.65, 0);
 
     const foliageMat = track(
       new THREE.MeshStandardMaterial({
@@ -1242,7 +2043,7 @@ export function buildMountainEnvironment(
     const capMat = track(
       new THREE.MeshStandardMaterial({
         color: map.snowBaseColor,
-        roughness: 0.72,
+        roughness: 0.7,
         metalness: 0.02,
       })
     );
@@ -1251,6 +2052,7 @@ export function buildMountainEnvironment(
     const lowerMesh = new THREE.InstancedMesh(crownLowerGeo, foliageMat, count);
     const midMesh = new THREE.InstancedMesh(crownMidGeo, foliageMat, count);
     const upperMesh = new THREE.InstancedMesh(crownUpperGeo, foliageMat, count);
+    const tipMesh = new THREE.InstancedMesh(crownTipGeo, foliageMat, count);
     const capMesh = new THREE.InstancedMesh(snowCapGeo, capMat, count);
     lowerMesh.castShadow = true;
     midMesh.castShadow = true;
@@ -1264,8 +2066,8 @@ export function buildMountainEnvironment(
     for (let i = 0; i < count; i++) {
       const t = layout.trees[i];
       const y = getBaseTerrainHeight(map, t.x, t.z);
-      dummy.position.set(t.x, y - 0.15, t.z);
-      dummy.rotation.set(0, t.tint * Math.PI * 2, 0);
+      dummy.position.set(t.x, y - 0.16, t.z);
+      dummy.rotation.set((t.tint - 0.5) * 0.06, t.tint * Math.PI * 2, (t.tint - 0.5) * 0.05);
       dummy.scale.setScalar(t.scale);
       dummy.updateMatrix();
 
@@ -1273,15 +2075,17 @@ export function buildMountainEnvironment(
       lowerMesh.setMatrixAt(i, dummy.matrix);
       midMesh.setMatrixAt(i, dummy.matrix);
       upperMesh.setMatrixAt(i, dummy.matrix);
+      tipMesh.setMatrixAt(i, dummy.matrix);
       capMesh.setMatrixAt(i, dummy.matrix);
 
       instColor.copy(baseTint).lerp(altTint, t.tint);
       lowerMesh.setColorAt(i, instColor);
       midMesh.setColorAt(i, instColor);
       upperMesh.setColorAt(i, instColor);
+      tipMesh.setColorAt(i, instColor);
     }
 
-    [trunkMesh, lowerMesh, midMesh, upperMesh, capMesh].forEach((m) => {
+    [trunkMesh, lowerMesh, midMesh, upperMesh, tipMesh, capMesh].forEach((m) => {
       m.instanceMatrix.needsUpdate = true;
       if (m.instanceColor) m.instanceColor.needsUpdate = true;
       m.computeBoundingSphere();
@@ -1289,13 +2093,16 @@ export function buildMountainEnvironment(
     });
   }
 
-  // 7. Instanced Snow-Dusted Granite Boulders
+  // 7. Instanced Sculpted Granite Cliff Boulders + Talus Base Rocks + Snow Caps
   if (layout.rocks.length > 0) {
     const count = layout.rocks.length;
-    const rockGeo = track(new THREE.DodecahedronGeometry(0.95, 1));
-    const rockCapGeo = track(new THREE.DodecahedronGeometry(0.76, 1));
-    rockCapGeo.scale(1.02, 0.45, 1.02);
-    rockCapGeo.translate(0, 0.46, 0);
+    const rockGeo = track(createSculptedRockGeometry(0.98, 2.3));
+    const talusGeo = track(createSculptedRockGeometry(0.48, 4.9));
+    talusGeo.translate(0.75, -0.18, 0.42);
+
+    const rockCapGeo = track(createSculptedRockGeometry(0.78, 2.3));
+    rockCapGeo.scale(1.02, 0.42, 1.02);
+    rockCapGeo.translate(0, 0.48, 0);
 
     const rockMat = track(
       new THREE.MeshStandardMaterial({
@@ -1308,13 +2115,14 @@ export function buildMountainEnvironment(
     const rockSnowMat = track(
       new THREE.MeshStandardMaterial({
         color: map.snowBaseColor,
-        roughness: 0.74,
+        roughness: 0.72,
         metalness: 0.02,
         flatShading: true,
       })
     );
 
     const rockMesh = new THREE.InstancedMesh(rockGeo, rockMat, count);
+    const talusMesh = new THREE.InstancedMesh(talusGeo, rockMat, count);
     const rockCapMesh = new THREE.InstancedMesh(rockCapGeo, rockSnowMat, count);
     rockMesh.castShadow = true;
     rockMesh.receiveShadow = true;
@@ -1327,23 +2135,57 @@ export function buildMountainEnvironment(
       const norm = getTerrainSlopeNormal(map, layout, r.x, r.z);
       dummy.position.set(r.x, y + 0.25 * r.scale, r.z);
       dummy.rotation.set(norm.nz * 0.25, i * 1.3, -norm.nx * 0.25);
-      dummy.scale.set(r.scale * 1.15, r.scale * 0.72, r.scale * 1.05);
+      dummy.scale.set(r.scale * 1.18, r.scale * 0.74, r.scale * 1.08);
       dummy.updateMatrix();
       rockMesh.setMatrixAt(i, dummy.matrix);
+      talusMesh.setMatrixAt(i, dummy.matrix);
       rockCapMesh.setMatrixAt(i, dummy.matrix);
-      rockColor.setHSL(0.6, 0.12, 0.36 + (i % 5) * 0.04);
+      rockColor.setHSL(0.6, 0.12, 0.34 + (i % 5) * 0.045);
       rockMesh.setColorAt(i, rockColor);
+      talusMesh.setColorAt(i, rockColor);
     }
-    rockMesh.instanceMatrix.needsUpdate = true;
-    rockCapMesh.instanceMatrix.needsUpdate = true;
-    if (rockMesh.instanceColor) rockMesh.instanceColor.needsUpdate = true;
-    rockMesh.computeBoundingSphere();
-    rockCapMesh.computeBoundingSphere();
-    group.add(rockMesh, rockCapMesh);
+    [rockMesh, talusMesh, rockCapMesh].forEach((m) => {
+      m.instanceMatrix.needsUpdate = true;
+      if (m.instanceColor) m.instanceColor.needsUpdate = true;
+      m.computeBoundingSphere();
+      group.add(m);
+    });
   }
+
+  const update = (elapsedSec: number, dt: number) => {
+    snowSparkleUniforms.uTime.value = elapsedSec;
+
+    // Spin & gently bob collectible air/slalom rings
+    ringEntries.forEach((entry) => {
+      entry.group.rotation.y = elapsedSec * 2.1 + entry.phase;
+      entry.group.position.y = entry.baseY + Math.sin(elapsedSec * 2.8 + entry.phase) * 0.18;
+    });
+
+    // Move chairlift cabins smoothly along the haul cables
+    if (animatedChairs.length > 0 && cableMaxZ > cableMinZ) {
+      const span = cableMaxZ - cableMinZ;
+      for (let i = 0; i < animatedChairs.length; i++) {
+        const ch = animatedChairs[i];
+        ch.progress = (ch.progress + (ch.dir * dt * 4.5) / span + 1) % 1;
+        const cz = cableMinZ + ch.progress * span;
+        const cy = getBaseTerrainHeight(map, liftX, cz) + 10.35;
+        ch.group.position.set(ch.laneOffsetX, cy, cz);
+      }
+    }
+  };
+
+  const collectRing = (id: string) => {
+    const entry = ringEntries.get(id);
+    if (entry) {
+      entry.group.visible = false;
+      ringEntries.delete(id);
+    }
+  };
 
   return {
     group,
+    update,
+    collectRing,
     dispose: () => {
       disposables.forEach((d) => d.dispose());
     },

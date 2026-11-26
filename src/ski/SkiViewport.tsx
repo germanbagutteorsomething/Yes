@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
+  ENDLESS_CHUNK_LENGTH,
+  generateEndlessChunk,
   generateParkLayout,
   getBaseTerrainHeight,
   getSkiGearById,
@@ -11,20 +13,27 @@ import {
 } from '../data/skiMaps';
 import type {
   SkiCameraMode,
+  SkiGhostSample,
   SkiGrabType,
   SkiHudSnapshot,
   SkiInputState,
   SkiMapId,
   SkiMedalTier,
+  SkiParkLayout,
   SkiPhase,
   SkiRailFeature,
+  SkiRunCompletionPayload,
 } from '../types/ski';
 import { playSkiSound } from '../utils/skiAudio';
 import {
   buildMountainEnvironment,
+  createGhostSkierRig,
   createSkierRig,
   createSkyDome,
+  createSnowNormalTexture,
+  createSnowTexture,
   updateSkierPose,
+  type BuiltParkScene,
 } from './skierModel';
 
 interface SkiViewportProps {
@@ -34,9 +43,11 @@ interface SkiViewportProps {
   runSeed: number;
   soundEnabled: boolean;
   cameraMode: SkiCameraMode;
+  ghostEnabled?: boolean;
+  ghostSamples?: SkiGhostSample[];
   inputRef: React.MutableRefObject<SkiInputState>;
   onHudUpdate: (snapshot: SkiHudSnapshot) => void;
-  onFinishRun: (snapshot: SkiHudSnapshot) => void;
+  onFinishRun: (payload: SkiRunCompletionPayload) => void;
   onTogglePause: () => void;
   onCycleCamera: () => void;
 }
@@ -59,7 +70,7 @@ interface SnowParticle {
   life: number;
   maxLife: number;
   scale: number;
-  isSpark: boolean;
+  tone: 'snow' | 'spark' | 'boost';
 }
 
 function formatLiveTrick(params: {
@@ -77,8 +88,8 @@ function formatLiveTrick(params: {
         ? 'Rainbow Box Slide'
         : railStyle === 'kink'
           ? 'Kink Rail 50-50'
-          : 'Steel Rail Boardslide';
-    return { label: railName, basePoints: 250, isCork: false };
+          : 'Steel Lipslide';
+    return { label: railName, basePoints: 260, isCork: false };
   }
 
   const absSpin = Math.abs(spinDeg);
@@ -93,18 +104,25 @@ function formatLiveTrick(params: {
 
   if (isCork) {
     const corkDeg = Math.max(360, spinSnapped);
-    const prefix = flipCount >= 2 ? 'Double Cork' : 'Cork';
-    parts.push(`${prefix} ${corkDeg}`);
-    points += corkDeg * 1.6 + flipCount * 550;
+    const styleName =
+      flipCount >= 2
+        ? 'Double Cork'
+        : flipDeg < 0 && spinDeg < 0
+          ? 'Rodeo'
+          : flipDeg > 0 && absSpin >= 540
+            ? 'Misty'
+            : 'Cork';
+    parts.push(`${styleName} ${corkDeg}`);
+    points += corkDeg * 1.65 + flipCount * 580;
   } else if (flipCount >= 1) {
     const dir = flipDeg < 0 ? 'Backflip' : 'Frontflip';
     const flipLabel = flipCount >= 2 ? `Double ${dir}` : dir;
     if (spinSnapped >= 180) {
       parts.push(`${flipLabel} ${spinSnapped}`);
-      points += flipCount * 650 + spinSnapped * 1.25;
+      points += flipCount * 650 + spinSnapped * 1.3;
     } else {
       parts.push(flipLabel);
-      points += flipCount * 600;
+      points += flipCount * 620;
     }
   } else if (spinSnapped >= 180) {
     parts.push(`${spinSnapped}`);
@@ -144,6 +162,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
   runSeed,
   soundEnabled,
   cameraMode,
+  ghostEnabled = true,
+  ghostSamples,
   inputRef,
   onHudUpdate,
   onFinishRun,
@@ -159,6 +179,10 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
   soundRef.current = soundEnabled;
   const cameraModeRef = useRef(cameraMode);
   cameraModeRef.current = cameraMode;
+  const ghostSamplesRef = useRef(ghostSamples);
+  ghostSamplesRef.current = ghostSamples;
+  const ghostEnabledRef = useRef(ghostEnabled);
+  ghostEnabledRef.current = ghostEnabled;
   const onHudRef = useRef(onHudUpdate);
   onHudRef.current = onHudUpdate;
   const onFinishRef = useRef(onFinishRun);
@@ -179,6 +203,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       inp.up = downKeys.has('ArrowUp') || downKeys.has('KeyW');
       inp.down = downKeys.has('ArrowDown') || downKeys.has('KeyS');
       inp.jumpHeld = downKeys.has('Space');
+      inp.boostHeld = downKeys.has('KeyB') || downKeys.has('KeyF');
 
       if (downKeys.has('KeyJ') || downKeys.has('ShiftLeft') || downKeys.has('ShiftRight')) {
         inp.grab = 'mute';
@@ -390,17 +415,78 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     rimLight.position.set(-22, 20, 26);
     scene.add(rimLight);
 
-    // Build Mountain World + Skier Rig
+    // Build Mountain World (Fixed Park or Infinite Streaming Endless Chunks) + Skier + Ghost
     const maxAniso = renderer.capabilities.getMaxAnisotropy();
-    const parkScene = buildMountainEnvironment(map, layout, maxAniso);
-    scene.add(parkScene.group);
+    const endlessChunks = new Map<number, { layout: SkiParkLayout; built: BuiltParkScene }>();
+    let sharedSnowTex: THREE.CanvasTexture | null = null;
+    let sharedSnowNormalTex: THREE.DataTexture | null = null;
+    let parkScene: BuiltParkScene | null = null;
+
+    const rebuildActiveLayout = () => {
+      layout.kickers = [];
+      layout.rails = [];
+      layout.trees = [];
+      layout.rocks = [];
+      layout.gates = [];
+      layout.rings = [];
+      endlessChunks.forEach((ch) => {
+        layout.kickers.push(...ch.layout.kickers);
+        layout.rails.push(...ch.layout.rails);
+        layout.trees.push(...ch.layout.trees);
+        layout.rocks.push(...ch.layout.rocks);
+        layout.gates.push(...ch.layout.gates);
+        layout.rings.push(...ch.layout.rings);
+      });
+    };
+
+    const ensureEndlessChunk = (chunkIdx: number) => {
+      if (endlessChunks.has(chunkIdx)) return;
+      if (!sharedSnowTex) {
+        sharedSnowTex = createSnowTexture(map.snowBaseColor, map.snowRidgeColor, maxAniso);
+        sharedSnowTex.repeat.set(16, 48);
+      }
+      if (!sharedSnowNormalTex) {
+        sharedSnowNormalTex = createSnowNormalTexture(maxAniso);
+        sharedSnowNormalTex.repeat.set(16, 48);
+      }
+      const chunkLayout = generateEndlessChunk(map, chunkIdx, runSeed);
+      const zStart = chunkIdx * ENDLESS_CHUNK_LENGTH;
+      const built = buildMountainEnvironment(map, chunkLayout, maxAniso, {
+        zStart,
+        zEnd: zStart + ENDLESS_CHUNK_LENGTH,
+        omitFinish: true,
+        sharedSnowTex,
+        sharedSnowNormalTex,
+      });
+      scene.add(built.group);
+      endlessChunks.set(chunkIdx, { layout: chunkLayout, built });
+      rebuildActiveLayout();
+    };
+
+    if (map.isEndless) {
+      ensureEndlessChunk(0);
+      ensureEndlessChunk(1);
+    } else {
+      parkScene = buildMountainEnvironment(map, layout, maxAniso);
+      scene.add(parkScene.group);
+    }
 
     const skier = createSkierRig(gear);
     scene.add(skier.root);
     scene.add(skier.shadowMesh);
 
-    // Sculpted Powder Puff + Rail Spark Particle Pool (InstancedMesh)
-    const PARTICLE_COUNT = 128;
+    const activeGhostSamples = ghostSamplesRef.current;
+    const showGhost =
+      ghostEnabledRef.current &&
+      !map.isEndless &&
+      Boolean(activeGhostSamples && activeGhostSamples.length > 1);
+    const ghostRig = showGhost ? createGhostSkierRig() : null;
+    if (ghostRig) {
+      scene.add(ghostRig.root);
+    }
+
+    // Sculpted Powder Puff + Rail Spark + Turbo Boost Particle Pool (InstancedMesh)
+    const PARTICLE_COUNT = 240;
     const partGeo = new THREE.IcosahedronGeometry(0.11, 0);
     const partMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF' });
     const particleMesh = new THREE.InstancedMesh(partGeo, partMat, PARTICLE_COUNT);
@@ -411,13 +497,13 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     );
 
     // Dynamic Carved Twin-Ski Tracks on Snow (InstancedMesh)
-    const TRACK_COUNT = 220;
-    const trackGeo = new THREE.PlaneGeometry(0.15, 0.95);
+    const TRACK_COUNT = 240;
+    const trackGeo = new THREE.PlaneGeometry(0.16, 0.96);
     trackGeo.rotateX(-Math.PI / 2);
     const trackMat = new THREE.MeshBasicMaterial({
       color: map.snowRidgeColor,
       transparent: true,
-      opacity: 0.42,
+      opacity: 0.45,
       depthWrite: false,
       polygonOffset: true,
       polygonOffsetFactor: -1,
@@ -437,12 +523,12 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     let lastTrackZ = -10;
 
     // Ambient Falling Alpine Snow Flurries (InstancedMesh)
-    const FLURRY_COUNT = 90;
+    const FLURRY_COUNT = 110;
     const flurryGeo = new THREE.OctahedronGeometry(0.055, 0);
     const flurryMat = new THREE.MeshBasicMaterial({
       color: '#FFFFFF',
       transparent: true,
-      opacity: map.isNight ? 0.55 : 0.7,
+      opacity: map.isNight ? 0.58 : 0.72,
     });
     const flurryMesh = new THREE.InstancedMesh(flurryGeo, flurryMat, FLURRY_COUNT);
     flurryMesh.frustumCulled = false;
@@ -465,10 +551,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       life: 0,
       maxLife: 0.4,
       scale: 0,
-      isSpark: false,
+      tone: 'snow',
     }));
     const snowTintColor = new THREE.Color('#FFFFFF');
     const sparkTintColor = new THREE.Color('#FACC15');
+    const boostTintColor = new THREE.Color('#38BDF8');
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       _dummy.position.set(0, -999, 0);
       _dummy.scale.setScalar(0);
@@ -488,7 +575,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       vx: number,
       vy: number,
       vz: number,
-      isSpark: boolean
+      tone: SnowParticle['tone']
     ) => {
       const p = particles[particleCursor];
       particleCursor = (particleCursor + 1) % PARTICLE_COUNT;
@@ -500,9 +587,19 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       p.vy = vy;
       p.vz = vz;
       p.life = 0;
-      p.maxLife = isSpark ? 0.28 + Math.random() * 0.16 : 0.36 + Math.random() * 0.25;
-      p.scale = isSpark ? 0.75 : 1.0 + Math.random() * 0.8;
-      p.isSpark = isSpark;
+      p.maxLife =
+        tone === 'spark'
+          ? 0.28 + Math.random() * 0.16
+          : tone === 'boost'
+            ? 0.24 + Math.random() * 0.14
+            : 0.38 + Math.random() * 0.25;
+      p.scale =
+        tone === 'spark'
+          ? 0.78
+          : tone === 'boost'
+            ? 0.95 + Math.random() * 0.45
+            : 1.05 + Math.random() * 0.85;
+      p.tone = tone;
     };
 
     if (!isSoftwareGl) {
@@ -566,13 +663,27 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       railsHit: 0,
       cleanLandings: 0,
       bails: 0,
+      corksLanded: 0,
+      switchLandings: 0,
       trickScoreTotal: 0,
       railScoreTotal: 0,
       flowScoreTotal: 0,
       gatesCleared: 0,
+      boostCharge: 50,
+      isBoosting: false,
+      boostSfxCooldown: 0,
+      ringsCollected: 0,
+      closeCalls: 0,
+      landingSquash: 0,
       unlockedMedal: 'none' as SkiMedalTier,
       finished: false,
+      runElapsedSec: 0,
+      ghostSampleTimer: 0,
+      ghostDeltaMeters: null as number | null,
+      recordedGhost: [[0, 0, startY, 0]] as SkiGhostSample[],
       passedGates: new Set<string>(),
+      collectedRings: new Set<string>(),
+      nearMissedObstacles: new Set<string>(),
       hitRails: new Set<string>(),
       calloutText: '',
       calloutSubtext: '',
@@ -585,6 +696,33 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     camera.position.set(0, startY + 4.4, -8.5);
     camera.lookAt(0, startY + 1.2, 12);
 
+    const evaluateCompletedObjectives = (): string[] => {
+      const dist = Math.round(state.z);
+      const out: string[] = [];
+      if (map.id === 'the-yard') {
+        if (state.corksLanded >= 1) out.push('yard-cork');
+        if (state.railsHit >= 3) out.push('yard-rails');
+        if (state.score >= 8000) out.push('yard-silver');
+      } else if (map.id === 'forest-line') {
+        if (state.bails === 0) out.push('forest-clean');
+        if (state.bestTrickPoints >= 2200) out.push('forest-trick');
+        if (state.score >= 14000) out.push('forest-silver');
+      } else if (map.id === 'aspen-pipe') {
+        if (state.switchLandings >= 2) out.push('pipe-switch');
+        if (state.corksLanded >= 2) out.push('pipe-corks');
+        if (state.score >= 20000) out.push('pipe-silver');
+      } else if (map.id === 'apex-night') {
+        if (state.gatesCleared >= 3) out.push('apex-gates');
+        if (state.topSpeedKmh >= 125) out.push('apex-speed');
+        if (state.score >= 26000) out.push('apex-silver');
+      } else if (map.id === 'endless') {
+        if (dist >= 1500) out.push('endless-1500');
+        if (dist >= 3000) out.push('endless-3000');
+        if (state.score >= 25000) out.push('endless-score');
+      }
+      return out;
+    };
+
     const buildSnapshot = (
       liveLabel: string,
       livePoints: number,
@@ -594,6 +732,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       const projectedTotal =
         state.score + state.comboScore * state.comboMultiplier;
       const medalInfo = computeMedalState(projectedTotal);
+      const dist = map.isEndless
+        ? Math.max(0, Math.round(state.z))
+        : Math.min(map.lengthMeters, Math.max(0, Math.round(state.z)));
       return {
         score: Math.round(state.score),
         comboScore: Math.round(state.comboScore),
@@ -601,9 +742,12 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         comboTimeRatio:
           state.comboScore > 0 ? Math.max(0, Math.min(1, state.comboTimer / COMBO_WINDOW_SEC)) : 0,
         speedKmh: Math.round(speedKmh),
-        distanceMeters: Math.min(map.lengthMeters, Math.max(0, Math.round(state.z))),
-        lengthMeters: map.lengthMeters,
-        progressPct: Math.min(100, Math.max(0, (state.z / map.lengthMeters) * 100)),
+        distanceMeters: dist,
+        lengthMeters: map.isEndless ? dist : map.lengthMeters,
+        progressPct: map.isEndless
+          ? Math.min(100, ((dist % 1000) / 1000) * 100)
+          : Math.min(100, Math.max(0, (state.z / map.lengthMeters) * 100)),
+        isEndless: Boolean(map.isEndless),
         isAirborne: !state.onGround && !state.grindingRail,
         isGrinding: Boolean(state.grindingRail),
         isBailing: state.bailTimer > 0,
@@ -624,14 +768,21 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         railsHit: state.railsHit,
         cleanLandings: state.cleanLandings,
         bails: state.bails,
+        corksLanded: state.corksLanded,
+        switchLandings: state.switchLandings,
         trickScoreTotal: Math.round(state.trickScoreTotal),
         railScoreTotal: Math.round(state.railScoreTotal),
         flowScoreTotal: Math.round(state.flowScoreTotal),
         gatesCleared: state.gatesCleared,
-        totalGates: layout.gates.length,
+        totalGates: map.isEndless ? Math.max(state.gatesCleared, 6) : layout.gates.length,
+        boostCharge: Math.round(state.boostCharge),
+        isBoosting: state.isBoosting,
+        ringsCollected: state.ringsCollected,
+        closeCalls: state.closeCalls,
         medalEarned: medalInfo.medal,
         nextMedalLabel: medalInfo.nextLabel,
         nextMedalTarget: medalInfo.nextTarget,
+        ghostDeltaMeters: state.ghostDeltaMeters,
         cameraMode: cameraModeRef.current,
       };
     };
@@ -690,7 +841,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     };
 
     const triggerBail = (reasonText: string) => {
-      if (state.bailTimer > 0) return;
+      if (state.bailTimer > 0 || state.finished) return;
       state.bailTimer = 1.05;
       state.bails += 1;
       state.comboScore = 0;
@@ -704,13 +855,14 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       state.airFlipRad = 0;
       state.airCorkTilt = 0;
       state.airtime = 0;
+      state.isBoosting = false;
       state.vz = Math.max(9, state.vz * 0.42);
       state.vx *= 0.35;
       cameraShake = 0.55;
       triggerCallout('WIPEOUT!', reasonText, 'bail');
       playSkiSound('bail', soundRef.current);
 
-      for (let i = 0; i < 18; i++) {
+      for (let i = 0; i < 22; i++) {
         spawnParticle(
           state.x + (Math.random() - 0.5) * 0.8,
           state.y + 0.5,
@@ -718,8 +870,19 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           (Math.random() - 0.5) * 8,
           2.5 + Math.random() * 5,
           state.vz * 0.3 + (Math.random() - 0.5) * 5,
-          false
+          'snow'
         );
+      }
+
+      if (map.isEndless) {
+        state.finished = true;
+        const speedKmh = Math.hypot(state.vx, state.vz) * 3.6;
+        onFinishRef.current({
+          hud: buildSnapshot('', 0, 'none', speedKmh),
+          ghostSamples: [],
+          completedObjectiveIds: evaluateCompletedObjectives(),
+          finishedByWipeout: true,
+        });
       }
     };
 
@@ -774,8 +937,36 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       const isPlaying = phaseRef.current === 'playing' && !state.finished;
 
       if (isPlaying) {
+        state.runElapsedSec += dt;
         if (state.calloutTimer > 0) {
           state.calloutTimer = Math.max(0, state.calloutTimer - dt);
+        }
+
+        // Stream Endless chunks ahead & recycle distant chunks behind
+        if (map.isEndless) {
+          const curChunk = Math.max(0, Math.floor(state.z / ENDLESS_CHUNK_LENGTH));
+          ensureEndlessChunk(curChunk);
+          ensureEndlessChunk(curChunk + 1);
+          const staleChunk = curChunk - 2;
+          if (staleChunk >= 0 && endlessChunks.has(staleChunk)) {
+            const stale = endlessChunks.get(staleChunk)!;
+            scene.remove(stale.built.group);
+            stale.built.dispose();
+            endlessChunks.delete(staleChunk);
+            rebuildActiveLayout();
+          }
+        } else {
+          // Sample compact ghost keyframes every ~0.35s
+          state.ghostSampleTimer += dt;
+          if (state.ghostSampleTimer >= 0.35) {
+            state.ghostSampleTimer = 0;
+            state.recordedGhost.push([
+              Number(state.runElapsedSec.toFixed(2)),
+              Number(state.x.toFixed(2)),
+              Number(state.y.toFixed(2)),
+              Number(state.z.toFixed(2)),
+            ]);
+          }
         }
 
         const jumpTriggered = inp.jumpPressed;
@@ -807,16 +998,17 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
 
           state.grindSparkCooldown -= dt;
           if (state.grindSparkCooldown <= 0) {
-            state.grindSparkCooldown = 0.045;
+            state.grindSparkCooldown = 0.04;
+            state.boostCharge = Math.min(100, state.boostCharge + 1.2);
             playSkiSound('grind', soundRef.current);
             spawnParticle(
-              state.x + (Math.random() - 0.5) * 0.25,
+              state.x + (Math.random() - 0.5) * 0.28,
               state.y,
               state.z - 0.3,
-              (Math.random() - 0.5) * 3.5,
-              1.6 + Math.random() * 2.2,
+              (Math.random() - 0.5) * 4.2,
+              1.6 + Math.random() * 2.5,
               state.vz * 0.4,
-              true
+              'spark'
             );
           }
 
@@ -845,7 +1037,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             state.grindPointsAccum = 0;
           }
         } else if (state.onGround) {
-          // 2. Ground Carving & Kicker Launch Physics (Keyboard + Analog Thumbstick)
+          // 2. Ground Carving, Turbo Boost & Kicker Launch Physics (Keyboard + Analog Thumbstick)
           const rawSteer = (inp.left ? 1 : 0) - (inp.right ? 1 : 0);
           const steerAxis =
             Math.abs(inp.analogX) > 0.08 ? -inp.analogX : rawSteer;
@@ -860,9 +1052,22 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           );
           const tucking = tuckAmount > 0.15 && brakeAmount < 0.15 && state.bailTimer <= 0;
 
+          if (state.boostSfxCooldown > 0) state.boostSfxCooldown = Math.max(0, state.boostSfxCooldown - dt);
+          const wantsBoost = inp.boostHeld && state.bailTimer <= 0 && brakeAmount < 0.2;
+          if (wantsBoost && state.boostCharge > (state.isBoosting ? 1 : 12)) {
+            if (!state.isBoosting && state.boostSfxCooldown <= 0) {
+              playSkiSound('boost', soundRef.current);
+              state.boostSfxCooldown = 0.55;
+            }
+            state.isBoosting = true;
+            state.boostCharge = Math.max(0, state.boostCharge - 32 * dt);
+          } else {
+            state.isBoosting = false;
+          }
+
           if (state.bailTimer <= 0) {
             state.heading = THREE.MathUtils.clamp(
-              state.heading + steerAxis * 2.05 * dt,
+              state.heading + steerAxis * 2.08 * dt,
               -0.96,
               0.96
             );
@@ -882,29 +1087,32 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           // Forward speed acceleration down pitch
           const gravityAccel =
             map.slopePitch * 23.5 +
-            tuckAmount * 10.5 -
+            tuckAmount * 10.5 +
+            (state.isBoosting ? 22.0 : 0) -
             brakeAmount * 18;
-          const drag = 0.011 * state.vz * state.vz * (tucking ? 0.68 : 1.0);
+          const drag = 0.011 * state.vz * state.vz * (tucking || state.isBoosting ? 0.62 : 1.0);
+          const maxForwardSpeed = state.isBoosting ? 46.5 : tucking ? 37.5 : 31.5;
           const forwardSpeed = THREE.MathUtils.clamp(
             Math.hypot(state.vx, state.vz) + (gravityAccel - drag) * dt,
             brakeAmount > 0.35 ? 7.5 : 13.5,
-            tucking ? 37.5 : 31.5
+            maxForwardSpeed
           );
 
           state.vx = Math.sin(state.heading) * forwardSpeed;
           state.vz = Math.cos(state.heading) * forwardSpeed;
           state.carveRoll = THREE.MathUtils.damp(
             state.carveRoll,
-            -steerAxis * 0.44,
+            -steerAxis * 0.46,
             10,
             dt
           );
 
-          // Continuous Carving & Speed Flow Score
+          // Continuous Carving & Speed Flow Score (doubled during Turbo Boost)
           const curKmh = forwardSpeed * 3.6;
           if (state.bailTimer <= 0 && curKmh > 52) {
             const carveBonus = Math.abs(steerAxis) > 0.25 ? 1.35 : 1.0;
-            const flowPts = (curKmh - 42) * 0.9 * carveBonus * dt;
+            const boostFlowMult = state.isBoosting ? 2.0 : 1.0;
+            const flowPts = (curKmh - 42) * 0.9 * carveBonus * boostFlowMult * dt;
             state.flowScoreTotal += flowPts;
             state.score += flowPts;
             checkMedalUnlock();
@@ -920,18 +1128,31 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             state.heading *= -0.4;
           }
 
-          // Snow carve spray particles
-          if (Math.abs(steerAxis) > 0.25 && state.bailTimer <= 0 && Math.random() < 0.65) {
+          // Dual-Edge Snow Carve Spray Plumes + Cyan Boost Trails
+          if (Math.abs(steerAxis) > 0.2 && state.bailTimer <= 0 && Math.random() < 0.85) {
             const sprayDir = Math.sign(steerAxis);
             spawnParticle(
-              state.x - sprayDir * 0.28,
+              state.x - sprayDir * 0.26,
               groundY + 0.08,
-              state.z - 0.4,
-              -sprayDir * (2.2 + Math.random() * 2.5),
-              1.1 + Math.random() * 1.6,
+              state.z - 0.55,
+              -sprayDir * (2.6 + Math.random() * 2.8),
+              1.2 + Math.random() * 1.9,
               state.vz * 0.35,
-              false
+              state.isBoosting ? 'boost' : 'snow'
             );
+          }
+          if (state.isBoosting && Math.random() < 0.78) {
+            [-0.21, 0.21].forEach((offset) => {
+              spawnParticle(
+                state.x + offset,
+                groundY + 0.08,
+                state.z - 0.85,
+                (Math.random() - 0.5) * 1.1,
+                0.5 + Math.random() * 0.9,
+                state.vz * 0.25,
+                'boost'
+              );
+            });
           }
 
           const nextTerrain = getTerrainAndRampHeight(map, layout, state.x, state.z);
@@ -1072,8 +1293,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           // Check Touchdown on Snow
           const landTerrain = getTerrainAndRampHeight(map, layout, state.x, state.z);
           if (!state.grindingRail && state.y <= landTerrain.height) {
-            if (state.airtime > 0.4) {
+            if (state.airtime > 0.35) {
               cameraShake = Math.min(0.45, state.airtime * 0.28);
+              state.landingSquash = Math.min(0.24, state.airtime * 0.16);
             }
             state.y = landTerrain.height;
             state.onGround = true;
@@ -1096,11 +1318,21 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
                 grab: state.bestGrabInAir,
                 isGrinding: false,
               });
-              const airBonus = Math.round(state.airtime * 140);
-              const totalTrickPts = trick.basePoints + airBonus;
+              const airBonus = Math.round(state.airtime * 145);
+              const baseTotalTrickPts = trick.basePoints + airBonus;
 
               if (spinErr <= 48 && flipErr <= 48) {
+                const isBoltsStomp = spinErr <= 16 && flipErr <= 16;
+                const totalTrickPts = isBoltsStomp
+                  ? Math.round(baseTotalTrickPts * 1.25)
+                  : baseTotalTrickPts;
+
                 state.cleanLandings += 1;
+                if (trick.isCork) state.corksLanded += 1;
+                const snappedHalfTurns = Math.round(Math.abs(spinDeg) / 180);
+                const isSwitch = snappedHalfTurns % 2 === 1;
+                if (isSwitch) state.switchLandings += 1;
+                state.boostCharge = Math.min(100, state.boostCharge + (isBoltsStomp ? 30 : 20));
                 const earnedPreview = Math.round(totalTrickPts * state.comboMultiplier);
                 state.comboTrickBase += totalTrickPts;
                 state.comboScore += totalTrickPts;
@@ -1111,14 +1343,31 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
                   state.bestTrickPoints = earnedPreview;
                   state.bestTrickName = trick.label || 'Clean Air';
                 }
+                const prefixLabel = isSwitch && !trick.label.includes('Switch')
+                  ? `Switch ${trick.label || '180'}`
+                  : trick.label || 'STOMPED';
                 triggerCallout(
-                  `${trick.label || 'STOMPED'}!`,
+                  isBoltsStomp ? `BOLTS ${prefixLabel}!` : `${prefixLabel}!`,
                   `+${earnedPreview.toLocaleString()} · Combo ${state.comboMultiplier}x`,
                   'clean'
                 );
                 playSkiSound('stomp', soundRef.current, state.comboMultiplier);
+
+                if (isBoltsStomp) {
+                  for (let i = 0; i < 12; i++) {
+                    spawnParticle(
+                      state.x + (Math.random() - 0.5) * 0.5,
+                      state.y + 0.35,
+                      state.z,
+                      (Math.random() - 0.5) * 5.5,
+                      2.2 + Math.random() * 2.8,
+                      state.vz * 0.35 + (Math.random() - 0.5) * 2,
+                      'spark'
+                    );
+                  }
+                }
               } else if (spinErr <= 72 && flipErr <= 72) {
-                const earned = Math.round(totalTrickPts * 0.55);
+                const earned = Math.round(baseTotalTrickPts * 0.55);
                 state.trickScoreTotal += earned;
                 state.score += earned;
                 bankCombo(true);
@@ -1147,27 +1396,46 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             state.bestGrabInAir = 'none';
 
             // Landing snow puff
-            for (let i = 0; i < 8; i++) {
+            for (let i = 0; i < 12; i++) {
               spawnParticle(
-                state.x + (Math.random() - 0.5) * 0.6,
+                state.x + (Math.random() - 0.5) * 0.7,
                 state.y + 0.08,
                 state.z,
-                (Math.random() - 0.5) * 4,
-                0.8 + Math.random() * 1.4,
+                (Math.random() - 0.5) * 4.5,
+                0.9 + Math.random() * 1.6,
                 state.vz * 0.35,
-                false
+                'snow'
               );
             }
           }
         }
 
-        // 4. Obstacle & Bonus Gate Collisions
+        // 4. Obstacle Collisions, Near-Miss Close Calls, Gates & Collectible Air Rings
+        const curSpeedSq = state.vx * state.vx + state.vz * state.vz;
         if (state.bailTimer <= 0) {
           for (const tree of layout.trees) {
-            if (Math.abs(tree.z - state.z) < 1.25 && Math.abs(tree.x - state.x) < 1.08) {
+            const dz = Math.abs(tree.z - state.z);
+            const dx = Math.abs(tree.x - state.x);
+            if (dz < 1.25 && dx < 1.08) {
               state.x += state.x >= tree.x ? 1.5 : -1.5;
               triggerBail('Clipped an alpine pine');
               break;
+            } else if (
+              curSpeedSq > 280 &&
+              !state.nearMissedObstacles.has(tree.id) &&
+              dz < 1.8 &&
+              dx < 2.25
+            ) {
+              state.nearMissedObstacles.add(tree.id);
+              state.closeCalls += 1;
+              state.boostCharge = Math.min(100, state.boostCharge + 18);
+              const ccPts = 300 * state.comboMultiplier;
+              state.flowScoreTotal += ccPts;
+              state.score += ccPts;
+              if (state.comboScore > 0) state.comboTimer = COMBO_WINDOW_SEC;
+              triggerCallout('CLOSE CALL!', `+${ccPts.toLocaleString()} · +18% Boost`, 'boost');
+              playSkiSound('closecall', soundRef.current);
+              checkMedalUnlock();
             }
           }
         }
@@ -1175,14 +1443,33 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         if (state.bailTimer <= 0 && !state.grindingRail) {
           for (const rock of layout.rocks) {
             const ry = getBaseTerrainHeight(map, rock.x, rock.z);
+            const dz = Math.abs(rock.z - state.z);
+            const dx = Math.abs(rock.x - state.x);
             if (
-              Math.abs(rock.z - state.z) < 1.1 * rock.scale &&
-              Math.abs(rock.x - state.x) < 1.05 * rock.scale &&
+              dz < 1.1 * rock.scale &&
+              dx < 1.05 * rock.scale &&
               state.y < ry + 1.05 * rock.scale
             ) {
               state.x += state.x >= rock.x ? 1.4 : -1.4;
               triggerBail('Struck a granite boulder');
               break;
+            } else if (
+              curSpeedSq > 280 &&
+              !state.nearMissedObstacles.has(rock.id) &&
+              dz < 1.7 * rock.scale &&
+              dx < 2.15 * rock.scale &&
+              state.y < ry + 1.4 * rock.scale
+            ) {
+              state.nearMissedObstacles.add(rock.id);
+              state.closeCalls += 1;
+              state.boostCharge = Math.min(100, state.boostCharge + 18);
+              const ccPts = 300 * state.comboMultiplier;
+              state.flowScoreTotal += ccPts;
+              state.score += ccPts;
+              if (state.comboScore > 0) state.comboTimer = COMBO_WINDOW_SEC;
+              triggerCallout('CLOSE CALL!', `+${ccPts.toLocaleString()} · +18% Boost`, 'boost');
+              playSkiSound('closecall', soundRef.current);
+              checkMedalUnlock();
             }
           }
         }
@@ -1195,6 +1482,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           ) {
             state.passedGates.add(gate.id);
             state.gatesCleared += 1;
+            state.boostCharge = Math.min(100, state.boostCharge + 20);
             const gatePreview = gate.bonus * state.comboMultiplier;
             state.comboGateBase += gate.bonus;
             state.comboScore += gate.bonus;
@@ -1210,20 +1498,109 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           }
         }
 
-        // 5. Check Finish Arch
-        if (state.z >= map.lengthMeters) {
+        // Collectible Air & Slalom Rings
+        for (const rg of layout.rings) {
+          if (state.collectedRings.has(rg.id)) continue;
+          const rgWorldY = getBaseTerrainHeight(map, rg.x, rg.z) + rg.yOffset;
+          if (
+            Math.abs(state.z - rg.z) < 2.1 &&
+            Math.abs(state.x - rg.x) < 2.2 &&
+            Math.abs(state.y + 0.8 - rgWorldY) < 2.35
+          ) {
+            state.collectedRings.add(rg.id);
+            state.ringsCollected += 1;
+            state.boostCharge = Math.min(100, state.boostCharge + 26);
+            if (parkScene) {
+              parkScene.collectRing(rg.id);
+            } else {
+              endlessChunks.forEach((ch) => ch.built.collectRing(rg.id));
+            }
+            const rgPts = rg.bonus * state.comboMultiplier;
+            state.comboGateBase += rg.bonus;
+            state.comboScore += rg.bonus;
+            state.comboTimer = COMBO_WINDOW_SEC;
+            triggerCallout(
+              rg.kind === 'air' ? 'AIR RING!' : 'ALPINE RING!',
+              `+${rgPts.toLocaleString()} · +26% Boost`,
+              'ring'
+            );
+            playSkiSound('ring', soundRef.current);
+            for (let p = 0; p < 14; p++) {
+              spawnParticle(
+                rg.x + (Math.random() - 0.5) * 0.8,
+                rgWorldY + (Math.random() - 0.5) * 0.8,
+                rg.z,
+                (Math.random() - 0.5) * 6,
+                (Math.random() - 0.3) * 5,
+                state.vz * 0.25 + (Math.random() - 0.5) * 4,
+                rg.kind === 'air' ? 'spark' : 'boost'
+              );
+            }
+          }
+        }
+
+        // 5. Check Finish Arch (standard parks only)
+        if (!map.isEndless && state.z >= map.lengthMeters) {
           state.finished = true;
           bankCombo(true);
           state.flowScoreTotal += 1000;
           state.score += 1000; // Finish bonus
+          state.recordedGhost.push([
+            Number(state.runElapsedSec.toFixed(2)),
+            Number(state.x.toFixed(2)),
+            Number(state.y.toFixed(2)),
+            Number(state.z.toFixed(2)),
+          ]);
           playSkiSound('finish', soundRef.current);
           const speedKmh = Math.hypot(state.vx, state.vz) * 3.6;
-          onFinishRef.current(buildSnapshot('', 0, 'none', speedKmh));
+          onFinishRef.current({
+            hud: buildSnapshot('', 0, 'none', speedKmh),
+            ghostSamples: state.recordedGhost,
+            completedObjectiveIds: evaluateCompletedObjectives(),
+            finishedByWipeout: false,
+          });
+        }
+
+        // 6. Interpolate Personal Best Ghost Skier
+        if (ghostRig && activeGhostSamples && activeGhostSamples.length > 1) {
+          const tNow = state.runElapsedSec;
+          let gIdx = 0;
+          while (
+            gIdx < activeGhostSamples.length - 2 &&
+            activeGhostSamples[gIdx + 1][0] < tNow
+          ) {
+            gIdx++;
+          }
+          const a = activeGhostSamples[gIdx];
+          const b = activeGhostSamples[Math.min(gIdx + 1, activeGhostSamples.length - 1)];
+          const span = Math.max(0.001, b[0] - a[0]);
+          const alpha = THREE.MathUtils.clamp((tNow - a[0]) / span, 0, 1);
+          const gx = THREE.MathUtils.lerp(a[1], b[1], alpha);
+          const gy = THREE.MathUtils.lerp(a[2], b[2], alpha);
+          const gz = THREE.MathUtils.lerp(a[3], b[3], alpha);
+          ghostRig.root.position.set(gx, gy, gz);
+          const heading = Math.atan2(b[1] - a[1], Math.max(0.1, b[3] - a[3]));
+          ghostRig.bodyGroup.rotation.y = heading;
+          state.ghostDeltaMeters = Math.round(state.z - gz);
         }
       }
 
-      // Sync Skier 3D Transforms smoothly
+      // Update Environment Animations (Sky clouds/aurora, Snow crystal glints, Chairlifts, Rotating Rings)
+      skyDome.update(elapsedSec);
+      if (parkScene) {
+        parkScene.update(elapsedSec, dt);
+      } else {
+        endlessChunks.forEach((ch) => ch.built.update(elapsedSec, dt));
+      }
+
+      // Sync Skier 3D Transforms + Landing Suspension Compression
+      state.landingSquash = THREE.MathUtils.damp(state.landingSquash, 0, 11, dt);
       skier.root.position.set(state.x, state.y, state.z);
+      skier.carveGroup.scale.set(
+        1 + state.landingSquash * 0.4,
+        1 - state.landingSquash,
+        1 + state.landingSquash * 0.4
+      );
       const slopeNorm = getTerrainSlopeNormal(map, layout, state.x, state.z);
 
       if (state.bailTimer > 0) {
@@ -1282,7 +1659,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       }
 
       const speed = Math.hypot(state.vx, state.vz);
-      const speedRatio = THREE.MathUtils.clamp((speed - 12) / 25, 0, 1);
+      const speedRatio = THREE.MathUtils.clamp((speed - 12) / 30, 0, 1);
 
       const tuckHeld =
         (inp.up && state.onGround && !inp.down) ||
@@ -1292,6 +1669,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         grab: inp.grab,
         isAirborne: !state.onGround && !state.grindingRail,
         isGrinding: Boolean(state.grindingRail),
+        isBoosting: state.isBoosting,
         speedRatio,
         elapsedSec,
         dt,
@@ -1303,7 +1681,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         const slopePitchAngle = Math.atan2(-slopeNorm.nz, slopeNorm.ny);
         const cosH = Math.cos(state.heading);
         const sinH = Math.sin(state.heading);
-        [-0.2, 0.2].forEach((offset) => {
+        [-0.21, 0.21].forEach((offset) => {
           const tx = state.x + offset * cosH;
           const tz = state.z - offset * sinH;
           const ty = getTerrainAndRampHeight(map, layout, tx, tz).height + 0.028;
@@ -1325,7 +1703,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       skier.shadowMesh.scale.setScalar(shadowScale);
       (skier.shadowMesh.material as THREE.MeshBasicMaterial).opacity = Math.max(
         0.08,
-        0.44 - heightAboveSnow * 0.038
+        0.46 - heightAboveSnow * 0.038
       );
 
       // Update Particle Pool (zero allocations)
@@ -1352,7 +1730,14 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         _dummy.scale.setScalar(p.scale * fade);
         _dummy.updateMatrix();
         particleMesh.setMatrixAt(i, _dummy.matrix);
-        particleMesh.setColorAt(i, p.isSpark ? sparkTintColor : snowTintColor);
+        particleMesh.setColorAt(
+          i,
+          p.tone === 'spark'
+            ? sparkTintColor
+            : p.tone === 'boost'
+              ? boostTintColor
+              : snowTintColor
+        );
       }
       if (particlesDirty) {
         particleMesh.instanceMatrix.needsUpdate = true;
@@ -1380,7 +1765,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       sunLight.target.position.set(state.x, state.y, state.z + 14);
       sunLight.target.updateMatrixWorld();
 
-      // Smooth Exponential Chase Camera + Impact Shake + Dynamic FOV widening
+      // Smooth Exponential Chase Camera + Carve Bank + Boost FOV Surge
       const speedKmh = speed * 3.6;
       if (speedKmh > state.topSpeedKmh) state.topSpeedKmh = speedKmh;
       cameraShake = THREE.MathUtils.damp(cameraShake, 0, 9, dt);
@@ -1407,10 +1792,15 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
 
       _vecA.lerpVectors(_vecB.copy(_lookTarget), _lookTarget, 1);
       camera.lookAt(_vecA);
+      camera.rotateZ(state.carveRoll * -0.14);
 
-      const targetFov = THREE.MathUtils.clamp(58 + (speed - 14) * 0.72, 60, 77);
+      const targetFov = THREE.MathUtils.clamp(
+        58 + (speed - 14) * 0.72 + (state.isBoosting ? 5.5 : 0),
+        60,
+        84
+      );
       if (Math.abs(camera.fov - targetFov) > 0.05) {
-        camera.fov = THREE.MathUtils.damp(camera.fov, targetFov, 6, dt);
+        camera.fov = THREE.MathUtils.damp(camera.fov, targetFov, 6.5, dt);
         camera.updateProjectionMatrix();
       }
 
@@ -1464,7 +1854,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored);
       skyDome.dispose();
       skier.dispose();
-      parkScene.dispose();
+      if (ghostRig) ghostRig.dispose();
+      if (parkScene) parkScene.dispose();
+      endlessChunks.forEach((ch) => ch.built.dispose());
+      if (sharedSnowTex) sharedSnowTex.dispose();
+      if (sharedSnowNormalTex) sharedSnowNormalTex.dispose();
       partGeo.dispose();
       partMat.dispose();
       trackGeo.dispose();

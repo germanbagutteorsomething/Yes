@@ -6,6 +6,7 @@ import {
   BarChart3,
   BookOpen,
   Bot,
+  CircleDot,
   Cpu,
   Crown,
   FileDown,
@@ -14,6 +15,7 @@ import {
   Handshake,
   Lightbulb,
   Loader2,
+  Lock,
   Moon,
   Mountain,
   Puzzle,
@@ -35,6 +37,7 @@ import { MatchAnalysisPanel } from './components/MatchAnalysisPanel';
 import { MoveHistoryPanel } from './components/MoveHistoryPanel';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PlayerBar } from './components/PlayerBar';
+import { PoolGameWorkspace } from './components/PoolGameWorkspace';
 import { PuzzlesWorkspace } from './components/PuzzlesWorkspace';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { SkiGameWorkspace } from './components/SkiGameWorkspace';
@@ -67,7 +70,14 @@ import {
   type StockfishLevelNumber,
   type TimeControlId,
 } from './types/chess';
+import { ARCADE_UNLOCKABLES } from './types/arcade';
 import type { SkiMapId } from './types/ski';
+import {
+  isItemUnlocked,
+  loadArcadeState,
+  recordDailyProgress,
+  unlockArcadeItem,
+} from './utils/arcadeProgress';
 import { playChessSound } from './utils/sound';
 import {
   clearSavedMatches,
@@ -259,11 +269,13 @@ export default function App() {
   const isLoadedArchiveRef = useRef<boolean>(false);
 
   // Top-Level Game Hub & Studio Layout
-  const [activeGame, setActiveGame] = useState<'hub' | 'chess' | 'ski'>('hub');
+  const [activeGame, setActiveGame] = useState<'hub' | 'chess' | 'ski' | 'pool'>('hub');
   const [activeView, setActiveView] = useState<AppView>('play');
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('moves');
   const [requestedSkiMapId, setRequestedSkiMapId] = useState<SkiMapId | null>(null);
   const [requestedSkiNonce, setRequestedSkiNonce] = useState<number>(0);
+  const [arcadeState, setArcadeState] = useState(() => loadArcadeState());
+  const [boardUnlockNotice, setBoardUnlockNotice] = useState<string | null>(null);
 
   // Preferences (persisted)
   const [darkMode, setDarkMode] = useState<boolean>(initialPrefs.darkMode);
@@ -330,6 +342,7 @@ export default function App() {
     setSavedMatches(loadSavedMatches());
     setDefeatedBots(loadDefeatedBots());
     setDefeatedLevels(loadDefeatedLevels());
+    setArcadeState(loadArcadeState());
   }, []);
 
   // Persist UI preferences & sync <html>.dark
@@ -420,6 +433,7 @@ export default function App() {
       } else {
         setDefeatedLevels(markLevelDefeated(currentLevelConfig.level));
       }
+      setArcadeState(recordDailyProgress({ addChessWins: 1, bonusXp: 40 }));
     }
   }, [
     currentBot.eloLabel,
@@ -1444,6 +1458,15 @@ export default function App() {
     }
   }, []);
 
+  const handleSelectPool = useCallback(() => {
+    engineAbortRef.current?.abort();
+    hintAbortRef.current?.abort();
+    stockfishService.cancelPending();
+    setIsEngineThinking(false);
+    setIsFetchingHint(false);
+    setActiveGame('pool');
+  }, []);
+
   const chessNavItems: { id: AppView; label: string; icon: React.ReactNode }[] = [
     { id: 'play', label: 'Play', icon: <Swords className="w-3.5 h-3.5" aria-hidden="true" /> },
     { id: 'puzzles', label: 'Puzzles', icon: <Puzzle className="w-3.5 h-3.5" aria-hidden="true" /> },
@@ -1452,7 +1475,7 @@ export default function App() {
   ];
 
   const gameNavItems: {
-    id: 'hub' | 'chess' | 'ski';
+    id: 'hub' | 'chess' | 'ski' | 'pool';
     label: string;
     icon: React.ReactNode;
     onClick: () => void;
@@ -1474,6 +1497,12 @@ export default function App() {
       label: 'Cork7 Ski',
       icon: <Mountain className="w-3.5 h-3.5" aria-hidden="true" />,
       onClick: () => handleSelectSki(),
+    },
+    {
+      id: 'pool',
+      label: '8-Ball Pool',
+      icon: <CircleDot className="w-3.5 h-3.5" aria-hidden="true" />,
+      onClick: handleSelectPool,
     },
   ];
 
@@ -1571,7 +1600,7 @@ export default function App() {
                 <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>New Game</span>
               </button>
-            ) : activeGame === 'ski' ? (
+            ) : activeGame === 'ski' || activeGame === 'pool' ? (
               <button
                 type="button"
                 onClick={handleSelectHub}
@@ -1596,7 +1625,7 @@ export default function App() {
         {/* Mobile Multi-Game Strip */}
         <nav
           aria-label="Mobile games navigation"
-          className="md:hidden border-t border-stone-200/80 dark:border-stone-800/80 grid grid-cols-3 bg-stone-50/70 dark:bg-stone-900"
+          className="md:hidden border-t border-stone-200/80 dark:border-stone-800/80 grid grid-cols-4 bg-stone-50/70 dark:bg-stone-900"
         >
           {gameNavItems.map((item) => {
             const active = activeGame === item.id;
@@ -1665,6 +1694,7 @@ export default function App() {
           <GamesHub
             onSelectChess={handleSelectChess}
             onSelectSki={handleSelectSki}
+            onSelectPool={handleSelectPool}
           />
         )}
 
@@ -1673,6 +1703,14 @@ export default function App() {
             soundEnabled={soundEnabled}
             requestedMapId={requestedSkiMapId}
             requestedStartNonce={requestedSkiNonce}
+            onBackToHub={handleSelectHub}
+            onStatsChange={refreshArchiveData}
+          />
+        )}
+
+        {activeGame === 'pool' && (
+          <PoolGameWorkspace
+            soundEnabled={soundEnabled}
             onBackToHub={handleSelectHub}
             onStatsChange={refreshArchiveData}
           />
@@ -2365,40 +2403,82 @@ export default function App() {
 
                   {/* Board Theme & Piece Set */}
                   <div className="space-y-2.5 pt-1 border-t border-stone-200/80 dark:border-stone-800/80">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
-                        Board Style
-                      </span>
-                      <div className="flex items-center gap-1.5">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
+                          Board Style
+                        </span>
+                        <span className="font-mono text-[10px] text-stone-500 dark:text-stone-400 tabular-nums">
+                          {arcadeState.xp} XP
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
                         {(
                           [
                             { id: 'tournament', label: 'Green', light: '#EEEED2', dark: '#769656' },
                             { id: 'walnut', label: 'Walnut', light: '#F0D9B5', dark: '#B58863' },
                             { id: 'slate', label: 'Slate', light: '#E6E9EE', dark: '#6B7D92' },
+                            { id: 'midnight', label: 'Midnight', light: '#CBD5E1', dark: '#1E293B' },
+                            { id: 'royal', label: 'Royal', light: '#F5EED6', dark: '#1B5E3F' },
                           ] as const
-                        ).map((item) => (
-                          <button
-                            key={item.id}
-                            type="button"
-                            onClick={() => setBoardTheme(item.id)}
-                            aria-label={`${item.label} board theme`}
-                            className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors ${
-                              boardTheme === item.id
-                                ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/40 text-stone-900 dark:text-stone-100'
-                                : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800'
-                            }`}
-                          >
-                            <span
-                              aria-hidden="true"
-                              className="inline-block h-3 w-3 rounded-xs border border-stone-400/50"
-                              style={{
-                                background: `linear-gradient(135deg, ${item.light} 50%, ${item.dark} 50%)`,
+                        ).map((item) => {
+                          const unlocked = isItemUnlocked(arcadeState, 'chess-board', item.id);
+                          const unlockDef = ARCADE_UNLOCKABLES.find(
+                            (u) => u.category === 'chess-board' && u.targetId === item.id
+                          );
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => {
+                                if (unlocked) {
+                                  setBoardTheme(item.id);
+                                  setBoardUnlockNotice(null);
+                                  return;
+                                }
+                                if (unlockDef) {
+                                  const res = unlockArcadeItem(unlockDef.id);
+                                  setArcadeState(res.state);
+                                  if (res.ok) {
+                                    setBoardTheme(item.id);
+                                    setBoardUnlockNotice(`Unlocked ${item.label} board!`);
+                                  } else if (res.error) {
+                                    setBoardUnlockNotice(`${item.label}: ${res.error}`);
+                                  }
+                                }
                               }}
-                            />
-                            <span>{item.label}</span>
-                          </button>
-                        ))}
+                              aria-label={`${item.label} board theme`}
+                              className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors ${
+                                boardTheme === item.id
+                                  ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/40 text-stone-900 dark:text-stone-100'
+                                  : unlocked
+                                  ? 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800'
+                                  : 'border-stone-200 dark:border-stone-800 text-stone-400 dark:text-stone-500 hover:bg-stone-50 dark:hover:bg-stone-800'
+                              }`}
+                            >
+                              <span
+                                aria-hidden="true"
+                                className="inline-block h-3 w-3 rounded-xs border border-stone-400/50"
+                                style={{
+                                  background: `linear-gradient(135deg, ${item.light} 50%, ${item.dark} 50%)`,
+                                }}
+                              />
+                              <span>{item.label}</span>
+                              {!unlocked && unlockDef && (
+                                <span className="inline-flex items-center gap-0.5 font-mono text-[10px] text-amber-600 dark:text-amber-400 tabular-nums">
+                                  <Lock className="w-2.5 h-2.5" aria-hidden="true" />
+                                  {unlockDef.costXp}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
+                      {boardUnlockNotice && (
+                        <p className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                          {boardUnlockNotice}
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex items-center justify-between">

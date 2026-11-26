@@ -23,6 +23,9 @@ export type SkiSoundEffect =
   | 'bail'
   | 'grind'
   | 'gate'
+  | 'ring'
+  | 'boost'
+  | 'closecall'
   | 'finish';
 
 export function playSkiSound(
@@ -109,6 +112,52 @@ export function playSkiSound(
     gain.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + 0.19);
+    return;
+  }
+
+  if (effect === 'ring') {
+    [784, 1046.5, 1318.5].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + idx * 0.032);
+      gain.gain.setValueAtTime(0.075, now + idx * 0.032);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.032 + 0.14);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + idx * 0.032);
+      osc.stop(now + idx * 0.032 + 0.15);
+    });
+    return;
+  }
+
+  if (effect === 'boost') {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(145, now);
+    osc.frequency.exponentialRampToValueAtTime(520, now + 0.18);
+    gain.gain.setValueAtTime(0.065, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.23);
+    return;
+  }
+
+  if (effect === 'closecall') {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(480, now);
+    osc.frequency.exponentialRampToValueAtTime(210, now + 0.14);
+    gain.gain.setValueAtTime(0.075, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.16);
     return;
   }
 

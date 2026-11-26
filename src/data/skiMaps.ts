@@ -3,10 +3,13 @@ import type {
   SkiKickerFeature,
   SkiMapConfig,
   SkiMapId,
+  SkiObjectiveDef,
   SkiParkLayout,
   SkiRailFeature,
+  SkiRingCollectible,
   SkiRockObstacle,
   SkiTreeObstacle,
+  SkiTrickGuideEntry,
   SkiGateFeature,
 } from '../types/ski';
 
@@ -104,6 +107,110 @@ export const SKI_MAPS: SkiMapConfig[] = [
     targetScore: 26000,
     isNight: true,
   },
+  {
+    id: 'endless',
+    name: 'Endless Backcountry',
+    subtitle: 'Infinite procedural alpine chute—speed and hazards escalate until you wipe out.',
+    difficulty: 'Endless',
+    lengthMeters: 99999,
+    slopePitch: 0.255,
+    halfWidth: 26,
+    hasSuperpipe: false,
+    treeDensity: 4.5,
+    rockDensity: 1.8,
+    skyColor: '#3675B5',
+    horizonColor: '#C5E1F8',
+    fogDensity: 0.0052,
+    sunColor: '#FFE8C2',
+    sunIntensity: 2.05,
+    ambientSky: '#9DC9F0',
+    ambientGround: '#6B7E91',
+    snowBaseColor: '#F3F8FE',
+    snowRidgeColor: '#C9D9EC',
+    accentColor: '#EC4899',
+    targetScore: 18000,
+    isEndless: true,
+  },
+];
+
+export const SKI_PARK_OBJECTIVES: Record<SkiMapId, SkiObjectiveDef[]> = {
+  'the-yard': [
+    { id: 'yard-cork', label: 'Stomp a Cork', detail: 'Land at least 1 Cork spin off any kicker' },
+    { id: 'yard-rails', label: 'Rail Session', detail: 'Hit 3 rails or boxes in a single run' },
+    { id: 'yard-silver', label: 'Park Medal', detail: 'Reach Silver score (8,000+ pts)' },
+  ],
+  'forest-line': [
+    { id: 'forest-clean', label: 'Clean Carve', detail: 'Finish Forest Line with 0 wipeouts' },
+    { id: 'forest-trick', label: 'Signature Air', detail: 'Land a single trick worth 2,200+ pts' },
+    { id: 'forest-silver', label: 'Freeride Silver', detail: 'Reach Silver score (14,000+ pts)' },
+  ],
+  'aspen-pipe': [
+    { id: 'pipe-switch', label: 'Switch Rider', detail: 'Stomp 2 Switch (180°/540°) landings' },
+    { id: 'pipe-corks', label: 'Cork Doubleheader', detail: 'Land 2 Corks in one pipe run' },
+    { id: 'pipe-silver', label: 'Pipe Medal', detail: 'Reach Silver score (20,000+ pts)' },
+  ],
+  'apex-night': [
+    { id: 'apex-gates', label: 'Slalom Line', detail: 'Clear 3 glowing gates on Apex Night' },
+    { id: 'apex-speed', label: 'Midnight Rocket', detail: 'Hit 125+ km/h top speed down the chute' },
+    { id: 'apex-silver', label: 'Night Pro Silver', detail: 'Reach Silver score (26,000+ pts)' },
+  ],
+  endless: [
+    { id: 'endless-1500', label: 'Alpine Endurance', detail: 'Survive past 1,500m downhill' },
+    { id: 'endless-3000', label: 'Endless Summit', detail: 'Survive past 3,000m downhill' },
+    { id: 'endless-score', label: 'Backcountry Legend', detail: 'Score 25,000+ pts in Endless mode' },
+  ],
+};
+
+export const SKI_TRICK_BOOK: SkiTrickGuideEntry[] = [
+  {
+    name: '180 / 360 / 540 / 720 Spin',
+    category: 'Rotation',
+    points: '225 – 900 base',
+    controls: 'Airborne: Hold A/D or ←/→ (Stick Left/Right)',
+    tip: 'Pop with Space right on the painted kicker lip to gain extra hangtime for 540s and 720s.',
+  },
+  {
+    name: 'Frontflip / Backflip',
+    category: 'Cork & Flip',
+    points: '600 – 1,200 base',
+    controls: 'Airborne: Hold W/S or ↑/↓ (Stick Up/Down)',
+    tip: 'Level out with skis pointing downhill just before touching the snow for a clean stomp.',
+  },
+  {
+    name: 'Cork 360 / Cork 720',
+    category: 'Cork & Flip',
+    points: '1,100 – 2,400+ base',
+    controls: 'Airborne: Hold Spin + Flip diagonally together',
+    tip: 'Hold any Grab mid-cork to boost rotation speed by 18% and add a 1.35x grab multiplier.',
+  },
+  {
+    name: 'Mute · Tail · Japan Grab',
+    category: 'Grab',
+    points: '1.35x Trick + 160',
+    controls: 'J / K / L (or Touch Mute / Tail / Japan)',
+    tip: 'Grabs tighten your skier tuck in mid-air so spins come around noticeably faster.',
+  },
+  {
+    name: 'Rail Grind & Lip Pop',
+    category: 'Rail',
+    points: '280/sec + Multiplier',
+    controls: 'Ollie onto rail, Space to Pop Off early',
+    tip: 'Popping off a rail adds +1x to your live combo multiplier and lets you link straight into a spin.',
+  },
+  {
+    name: 'Switch & Bolts Stomp',
+    category: 'Style',
+    points: '+25% Pts · +1x Streak',
+    controls: 'Align skis cleanly (<= 16° error) on touchdown',
+    tip: 'Switch landings (180°/540°/900°) and dead-straight Bolts Stomps supercharge your Turbo Boost meter.',
+  },
+  {
+    name: 'Turbo Boost & Air Rings',
+    category: 'Style',
+    points: '+300 Ring · 2x Flow',
+    controls: 'Hold B / F (or Touch BOOST) + fly through floating Rings',
+    tip: 'Clean tricks, rails, and glowing Air Rings charge Boost. Close-skimming past trees at speed triggers Close Call bonuses!',
+  },
 ];
 
 export const SKI_GEAR_STYLES: SkiGearStyle[] = [
@@ -166,6 +273,39 @@ export const SKI_GEAR_STYLES: SkiGearStyle[] = [
     skiAccentColor: '#38BDF8',
     helmetColor: '#1E293B',
     visorColor: '#A855F7',
+  },
+  {
+    id: 'aurora-ice',
+    name: 'Aurora Glacier',
+    jacketColor: '#0D9488',
+    pantsColor: '#0F172A',
+    skiBaseColor: '#E0F2FE',
+    skiAccentColor: '#2DD4BF',
+    helmetColor: '#F8FAFC',
+    visorColor: '#5EEAD4',
+    unlockCostXp: 100,
+  },
+  {
+    id: 'neon-cyber',
+    name: 'Hyper Prism',
+    jacketColor: '#DB2777',
+    pantsColor: '#111827',
+    skiBaseColor: '#1E1B4B',
+    skiAccentColor: '#F472B6',
+    helmetColor: '#0F172A',
+    visorColor: '#38BDF8',
+    unlockCostXp: 180,
+  },
+  {
+    id: 'gold-olympian',
+    name: 'Podium Gold Pro',
+    jacketColor: '#CA8A04',
+    pantsColor: '#1C1917',
+    skiBaseColor: '#FEF9C3',
+    skiAccentColor: '#FACC15',
+    helmetColor: '#FEF08A',
+    visorColor: '#F59E0B',
+    unlockCostXp: 280,
   },
 ];
 
@@ -290,15 +430,214 @@ export function getTerrainSlopeNormal(
   return { nx: nx / len, ny: ny / len, nz: nz / len };
 }
 
+export const ENDLESS_CHUNK_LENGTH = 240;
+
+export function generateEndlessChunk(
+  map: SkiMapConfig,
+  chunkIndex: number,
+  seed = 1
+): SkiParkLayout {
+  const zStart = chunkIndex * ENDLESS_CHUNK_LENGTH;
+  const zEnd = zStart + ENDLESS_CHUNK_LENGTH;
+  const rand = createRng(`sq8-endless-${seed}-${chunkIndex}`);
+  const difficultyBoost = Math.min(1.9, 1 + chunkIndex * 0.08);
+
+  const kickers: SkiKickerFeature[] = [];
+  const rails: SkiRailFeature[] = [];
+  const trees: SkiTreeObstacle[] = [];
+  const rocks: SkiRockObstacle[] = [];
+  const gates: SkiGateFeature[] = [];
+  const rings: SkiRingCollectible[] = [];
+
+  let zCursor = Math.max(60, zStart + 28);
+  let zone = 0;
+  while (zCursor < zEnd - 26) {
+    zone += 1;
+    const laneOffset = (rand() - 0.5) * (map.halfWidth * 0.92);
+    if ((chunkIndex + zone) % 3 === 1) {
+      const kHeight = 2.6 + Math.min(1.1, chunkIndex * 0.12);
+      kickers.push({
+        id: `ek-${chunkIndex}-${zone}`,
+        kind: 'kicker',
+        x: laneOffset,
+        z: zCursor,
+        width: 7.2,
+        length: 11.5,
+        height: kHeight,
+        label: 'Backcountry Boot',
+      });
+      rings.push({
+        id: `eri-${chunkIndex}-${zone}`,
+        x: laneOffset,
+        yOffset: kHeight + 2.2,
+        z: zCursor + 7.5,
+        bonus: 350,
+        kind: 'air',
+      });
+      rails.push({
+        id: `er-${chunkIndex}-${zone}`,
+        kind: 'rail',
+        style: zone % 2 === 0 ? 'kink' : 'tube',
+        x: laneOffset > 0 ? -Math.min(11, laneOffset + 7) : Math.min(11, -laneOffset + 7),
+        z: zCursor + 7,
+        length: 13,
+        width: 0.7,
+        height: 0.85,
+      });
+    } else if ((chunkIndex + zone) % 3 === 2) {
+      rails.push({
+        id: `er-box-${chunkIndex}-${zone}`,
+        kind: 'rail',
+        style: 'box',
+        x: laneOffset,
+        z: zCursor,
+        length: 13,
+        width: 1.5,
+        height: 0.8,
+      });
+      rings.push({
+        id: `eri-sl-${chunkIndex}-${zone}`,
+        x: laneOffset * 0.4,
+        yOffset: 1.25,
+        z: zCursor - 14,
+        bonus: 250,
+        kind: 'slalom',
+      });
+      gates.push({
+        id: `eg-${chunkIndex}-${zone}`,
+        x: Math.max(-map.halfWidth + 5, Math.min(map.halfWidth - 5, -laneOffset * 0.85)),
+        z: zCursor + 18,
+        bonus: 350,
+      });
+    } else {
+      kickers.push({
+        id: `ek-l-${chunkIndex}-${zone}`,
+        kind: 'kicker',
+        x: -7.5,
+        z: zCursor,
+        width: 6.5,
+        length: 10.5,
+        height: 2.7,
+        label: 'Left Lip',
+      });
+      rings.push({
+        id: `eri-l-${chunkIndex}-${zone}`,
+        x: -7.5,
+        yOffset: 4.5,
+        z: zCursor + 7,
+        bonus: 350,
+        kind: 'air',
+      });
+      kickers.push({
+        id: `ek-r-${chunkIndex}-${zone}`,
+        kind: 'kicker',
+        x: 7.5,
+        z: zCursor + 14,
+        width: 6.5,
+        length: 10.5,
+        height: 2.9,
+        label: 'Right Lip',
+      });
+      rings.push({
+        id: `eri-r-${chunkIndex}-${zone}`,
+        x: 7.5,
+        yOffset: 4.7,
+        z: zCursor + 21,
+        bonus: 350,
+        kind: 'air',
+      });
+    }
+    zCursor += 66 + rand() * 18;
+  }
+
+  const isNearParkFeature = (x: number, z: number, padX: number): boolean => {
+    for (const k of kickers) {
+      if (Math.abs(x - k.x) < k.width * 0.5 + padX && z > k.z - k.length - 14 && z < k.z + 24) {
+        return true;
+      }
+    }
+    for (const r of rails) {
+      if (Math.abs(x - r.x) < r.width + padX && z > r.z - 12 && z < r.z + r.length + 14) {
+        return true;
+      }
+    }
+    for (const g of gates) {
+      if (Math.abs(x - g.x) < 4.5 && Math.abs(z - g.z) < 8) return true;
+    }
+    for (const rg of rings) {
+      if (Math.abs(x - rg.x) < 3.5 && Math.abs(z - rg.z) < 6) return true;
+    }
+    return false;
+  };
+
+  // Perimeter forest
+  const perimCount = Math.floor(ENDLESS_CHUNK_LENGTH * 0.28);
+  for (let i = 0; i < perimCount; i++) {
+    const z = zStart + rand() * ENDLESS_CHUNK_LENGTH;
+    const side = rand() < 0.5 ? -1 : 1;
+    trees.push({
+      id: `etp-${chunkIndex}-${i}`,
+      x: side * (map.halfWidth + 2.5 + rand() * 22),
+      z,
+      scale: 0.85 + rand() * 0.65,
+      tint: rand(),
+    });
+  }
+
+  // Interior escalating trees & rocks
+  const runTrees = Math.floor((ENDLESS_CHUNK_LENGTH / 100) * map.treeDensity * difficultyBoost);
+  for (let i = 0; i < runTrees; i++) {
+    const z = Math.max(52, zStart + rand() * ENDLESS_CHUNK_LENGTH);
+    const x = (rand() - 0.5) * (map.halfWidth * 1.72);
+    if (isNearParkFeature(x, z, 4.2)) continue;
+    trees.push({
+      id: `etr-${chunkIndex}-${i}`,
+      x,
+      z,
+      scale: 0.82 + rand() * 0.5,
+      tint: rand(),
+    });
+  }
+
+  const runRocks = Math.floor((ENDLESS_CHUNK_LENGTH / 100) * map.rockDensity * difficultyBoost);
+  for (let i = 0; i < runRocks; i++) {
+    const z = Math.max(60, zStart + rand() * ENDLESS_CHUNK_LENGTH);
+    const x = (rand() - 0.5) * (map.halfWidth * 1.65);
+    if (isNearParkFeature(x, z, 4.0)) continue;
+    rocks.push({
+      id: `erk-${chunkIndex}-${i}`,
+      x,
+      z,
+      scale: 0.78 + rand() * 0.62,
+    });
+  }
+
+  return { kickers, rails, trees, rocks, gates, rings };
+}
+
 export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
+  if (map.isEndless) {
+    return generateEndlessChunk(map, 0, 1);
+  }
   const rand = createRng(`squareeight-ski-${map.id}`);
   const kickers: SkiKickerFeature[] = [];
   const rails: SkiRailFeature[] = [];
   const trees: SkiTreeObstacle[] = [];
   const rocks: SkiRockObstacle[] = [];
   const gates: SkiGateFeature[] = [];
+  const rings: SkiRingCollectible[] = [];
 
-  // Place rhythmic freestyle lines from z = 70m up to finish - 65m
+  // Early warm-up slalom ring
+  rings.push({
+    id: 'ri-start-1',
+    x: 0,
+    yOffset: 1.25,
+    z: 36,
+    bonus: 250,
+    kind: 'slalom',
+  });
+
+  // Place rhythmic freestyle lines from z = 65m up to finish - 75m
   let zCursor = 65;
   let zoneIndex = 0;
 
@@ -309,15 +648,25 @@ export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
       // Aspen Superpipe: center big air kickers alternating with coping rails near lips
       if (zoneIndex % 2 === 1) {
         const big = zoneIndex % 4 === 3;
+        const kx = (rand() - 0.5) * 4;
+        const kh = big ? 3.5 : 2.5;
         kickers.push({
           id: `k-${zoneIndex}`,
           kind: 'kicker',
-          x: (rand() - 0.5) * 4,
+          x: kx,
           z: zCursor,
           width: big ? 8.2 : 6.8,
           length: big ? 13 : 10.5,
-          height: big ? 3.5 : 2.5,
+          height: kh,
           label: big ? 'Mega Booter' : 'Park Kicker',
+        });
+        rings.push({
+          id: `ri-pipe-${zoneIndex}`,
+          x: kx,
+          yOffset: kh + 2.25,
+          z: zCursor + 7.5,
+          bonus: 350,
+          kind: 'air',
         });
       } else {
         // Pipe lip coping rails + center box
@@ -342,6 +691,14 @@ export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
           width: 1.4,
           height: 0.7,
         });
+        rings.push({
+          id: `ri-line-${zoneIndex}`,
+          x: side * 7.5,
+          yOffset: 1.25,
+          z: zCursor - 14,
+          bonus: 250,
+          kind: 'slalom',
+        });
       }
       if (zoneIndex % 3 === 0) {
         gates.push({
@@ -360,6 +717,7 @@ export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
         // Kicker zone (often paired with side rail)
         const isPro = map.id === 'apex-night';
         const isBig = isPro || zoneIndex % 4 === 1;
+        const kh = isPro ? 3.7 : isBig ? 2.8 : 2.1;
         kickers.push({
           id: `k-${zoneIndex}`,
           kind: 'kicker',
@@ -367,8 +725,16 @@ export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
           z: zCursor,
           width: isBig ? 7.4 : 6.4,
           length: isBig ? 12.2 : 10,
-          height: isPro ? 3.7 : isBig ? 2.8 : 2.1,
+          height: kh,
           label: isPro ? 'Apex Step-Down' : isBig ? 'Big Air' : 'Tabletop',
+        });
+        rings.push({
+          id: `ri-k-${zoneIndex}`,
+          x: laneOffset,
+          yOffset: kh + 2.1,
+          z: zCursor + 7.2,
+          bonus: 350,
+          kind: 'air',
         });
 
         // Secondary rail on opposite lane
@@ -397,6 +763,14 @@ export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
           width: railStyle === 'box' ? 1.5 : 0.7,
           height: 0.8,
         });
+        rings.push({
+          id: `ri-sl-${zoneIndex}`,
+          x: laneOffset * 0.45,
+          yOffset: 1.25,
+          z: zCursor - 14,
+          bonus: 250,
+          kind: 'slalom',
+        });
         // Bonus slalom gate nearby
         gates.push({
           id: `g-${zoneIndex}`,
@@ -406,6 +780,8 @@ export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
         });
       } else {
         // Twin staggered kickers
+        const hL = map.id === 'apex-night' ? 3.2 : 2.4;
+        const hR = map.id === 'apex-night' ? 3.4 : 2.6;
         kickers.push({
           id: `k-a-${zoneIndex}`,
           kind: 'kicker',
@@ -413,8 +789,16 @@ export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
           z: zCursor,
           width: 6.4,
           length: 10.5,
-          height: map.id === 'apex-night' ? 3.2 : 2.4,
+          height: hL,
           label: 'Left Lip',
+        });
+        rings.push({
+          id: `ri-la-${zoneIndex}`,
+          x: -7.5,
+          yOffset: hL + 2.0,
+          z: zCursor + 6.8,
+          bonus: 350,
+          kind: 'air',
         });
         kickers.push({
           id: `k-b-${zoneIndex}`,
@@ -423,8 +807,16 @@ export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
           z: zCursor + 16,
           width: 6.4,
           length: 10.5,
-          height: map.id === 'apex-night' ? 3.4 : 2.6,
+          height: hR,
           label: 'Right Lip',
+        });
+        rings.push({
+          id: `ri-rb-${zoneIndex}`,
+          x: 7.5,
+          yOffset: hR + 2.0,
+          z: zCursor + 22.8,
+          bonus: 350,
+          kind: 'air',
         });
       }
 
@@ -433,7 +825,7 @@ export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
   }
 
   // Helper to ensure obstacles don't block kicker approaches, landings, or rails
-  const isNearParkFeature = (x: number, z: number, padX: number, padZ: number): boolean => {
+  const isNearParkFeature = (x: number, z: number, padX: number, _padZ: number): boolean => {
     for (const k of kickers) {
       if (Math.abs(x - k.x) < k.width * 0.5 + padX && z > k.z - k.length - 14 && z < k.z + 24) {
         return true;
@@ -446,6 +838,11 @@ export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
     }
     for (const g of gates) {
       if (Math.abs(x - g.x) < 4.5 && Math.abs(z - g.z) < 8) {
+        return true;
+      }
+    }
+    for (const rg of rings) {
+      if (Math.abs(x - rg.x) < 3.5 && Math.abs(z - rg.z) < 6) {
         return true;
       }
     }
@@ -496,5 +893,5 @@ export function generateParkLayout(map: SkiMapConfig): SkiParkLayout {
     });
   }
 
-  return { kickers, rails, trees, rocks, gates };
+  return { kickers, rails, trees, rocks, gates, rings };
 }
