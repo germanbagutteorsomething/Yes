@@ -330,7 +330,13 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
 
   const handleCycleCamera = useCallback(() => {
     setCameraMode((prev) =>
-      prev === 'chase' ? 'low' : prev === 'low' ? 'wide' : 'chase'
+      prev === 'chase'
+        ? 'low'
+        : prev === 'low'
+          ? 'wide'
+          : prev === 'wide'
+            ? 'fpv'
+            : 'chase'
     );
   }, []);
 
@@ -956,6 +962,18 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
         onCycleCamera={handleCycleCamera}
       />
 
+      {/* Subtle First-Person Ski Goggle Peripheral Vignette */}
+      {cameraMode === 'fpv' && phase === 'playing' && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 z-[5]"
+          style={{
+            background:
+              'radial-gradient(ellipse 78% 74% at 50% 50%, rgba(0,0,0,0) 68%, rgba(12,18,30,0.42) 94%, rgba(6,10,18,0.68) 100%)',
+          }}
+        />
+      )}
+
       {/* Top HUD Bar (No backdrop-blur over WebGL; solid rgba surfaces) */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 sm:gap-3 p-2.5 sm:p-4">
         {/* Top-Left Telemetry: Map + Distance + Speed + Turbo Boost + Ghost Split */}
@@ -1078,11 +1096,17 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
             <button
               type="button"
               onClick={handleCycleCamera}
-              title={`Camera: ${cameraMode} (C)`}
-              className="inline-flex h-9 w-9 sm:w-auto items-center justify-center gap-1.5 rounded-lg border border-white/15 bg-stone-950/80 sm:px-2.5 text-xs font-medium text-white hover:bg-stone-900 transition-colors whitespace-nowrap"
+              title={`Camera: ${cameraMode === 'fpv' ? '1st Person' : cameraMode} (C)`}
+              className={`inline-flex h-9 w-9 sm:w-auto items-center justify-center gap-1.5 rounded-lg border sm:px-2.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                cameraMode === 'fpv'
+                  ? 'border-sky-400/60 bg-sky-950/85 text-sky-200'
+                  : 'border-white/15 bg-stone-950/80 text-white hover:bg-stone-900'
+              }`}
             >
               <Camera className="w-3.5 h-3.5" aria-hidden="true" />
-              <span className="hidden sm:inline capitalize">{cameraMode}</span>
+              <span className="hidden sm:inline capitalize">
+                {cameraMode === 'fpv' ? '1st Person' : cameraMode}
+              </span>
             </button>
 
             <button

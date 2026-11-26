@@ -57,6 +57,8 @@ const _vecA = new THREE.Vector3();
 const _vecB = new THREE.Vector3();
 const _camTarget = new THREE.Vector3();
 const _lookTarget = new THREE.Vector3();
+const _upVec = new THREE.Vector3();
+const _quatA = new THREE.Quaternion();
 const _dummy = new THREE.Object3D();
 
 interface SnowParticle {
@@ -1765,7 +1767,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       sunLight.target.position.set(state.x, state.y, state.z + 14);
       sunLight.target.updateMatrixWorld();
 
-      // Smooth Exponential Chase Camera + Carve Bank + Boost FOV Surge
+      // Smooth Exponential Chase Camera OR First-Person Helmet/Goggle Cam
       const speedKmh = speed * 3.6;
       if (speedKmh > state.topSpeedKmh) state.topSpeedKmh = speedKmh;
       cameraShake = THREE.MathUtils.damp(cameraShake, 0, 9, dt);
@@ -1773,32 +1775,58 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       const shakeY = (Math.random() - 0.5) * cameraShake;
 
       const camMode = cameraModeRef.current;
-      const distBack = camMode === 'low' ? 6.2 : camMode === 'wide' ? 12.2 : 8.8;
-      const heightUp = camMode === 'low' ? 2.5 : camMode === 'wide' ? 5.6 : 4.1;
+      const isFpv = camMode === 'fpv';
+      skier.setFirstPerson(isFpv);
 
-      _camTarget.set(
-        state.x - state.vx * 0.08 + shakeX,
-        Math.max(shadowTerrainY + 1.8, state.y + heightUp) + shakeY,
-        state.z - distBack
-      );
-      _lookTarget.set(state.x + state.vx * 0.07, state.y + 1.0, state.z + 14);
+      if (isFpv) {
+        skier.root.updateMatrixWorld(true);
+        skier.fpvEyeAnchor.getWorldPosition(_camTarget);
+        skier.fpvLookAnchor.getWorldPosition(_lookTarget);
+        skier.trickPivot.getWorldQuaternion(_quatA);
+        _upVec.set(0, 1, 0).applyQuaternion(_quatA).normalize();
 
-      camera.position.x = THREE.MathUtils.damp(camera.position.x, _camTarget.x, 8.5, dt);
-      camera.position.y = THREE.MathUtils.damp(camera.position.y, _camTarget.y, 7.5, dt);
-      camera.position.z = THREE.MathUtils.damp(camera.position.z, _camTarget.z, 12, dt);
+        camera.position.set(
+          _camTarget.x + shakeX * 0.45,
+          _camTarget.y + shakeY * 0.45,
+          _camTarget.z
+        );
+        camera.up.copy(_upVec);
+        camera.lookAt(_lookTarget);
+      } else {
+        camera.up.set(0, 1, 0);
+        const distBack = camMode === 'low' ? 6.2 : camMode === 'wide' ? 12.2 : 8.8;
+        const heightUp = camMode === 'low' ? 2.5 : camMode === 'wide' ? 5.6 : 4.1;
+
+        _camTarget.set(
+          state.x - state.vx * 0.08 + shakeX,
+          Math.max(shadowTerrainY + 1.8, state.y + heightUp) + shakeY,
+          state.z - distBack
+        );
+        _lookTarget.set(state.x + state.vx * 0.07, state.y + 1.0, state.z + 14);
+
+        camera.position.x = THREE.MathUtils.damp(camera.position.x, _camTarget.x, 8.5, dt);
+        camera.position.y = THREE.MathUtils.damp(camera.position.y, _camTarget.y, 7.5, dt);
+        camera.position.z = THREE.MathUtils.damp(camera.position.z, _camTarget.z, 12, dt);
+
+        _vecA.lerpVectors(_vecB.copy(_lookTarget), _lookTarget, 1);
+        camera.lookAt(_vecA);
+        camera.rotateZ(state.carveRoll * -0.14);
+      }
 
       // Keep sky dome centered around camera so horizon never clips
       skyDome.mesh.position.copy(camera.position);
 
-      _vecA.lerpVectors(_vecB.copy(_lookTarget), _lookTarget, 1);
-      camera.lookAt(_vecA);
-      camera.rotateZ(state.carveRoll * -0.14);
-
-      const targetFov = THREE.MathUtils.clamp(
-        58 + (speed - 14) * 0.72 + (state.isBoosting ? 5.5 : 0),
-        60,
-        84
-      );
+      const targetFov = isFpv
+        ? THREE.MathUtils.clamp(
+            76 + (speed - 14) * 0.65 + (state.isBoosting ? 7.0 : 0),
+            76,
+            96
+          )
+        : THREE.MathUtils.clamp(
+            58 + (speed - 14) * 0.72 + (state.isBoosting ? 5.5 : 0),
+            60,
+            84
+          );
       if (Math.abs(camera.fov - targetFov) > 0.05) {
         camera.fov = THREE.MathUtils.damp(camera.fov, targetFov, 6.5, dt);
         camera.updateProjectionMatrix();

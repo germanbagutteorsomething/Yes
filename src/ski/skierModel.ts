@@ -24,6 +24,9 @@ export interface SkierRig {
   skisGroup: THREE.Group;
   scarfSegments: THREE.Mesh[];
   boostWakeGroup: THREE.Group;
+  fpvEyeAnchor: THREE.Object3D;
+  fpvLookAnchor: THREE.Object3D;
+  setFirstPerson: (enabled: boolean) => void;
   shadowMesh: THREE.Mesh;
   dispose: () => void;
 }
@@ -751,12 +754,15 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
   torsoGroup.position.set(0, -0.16, -0.04);
   trickPivot.add(torsoGroup);
 
+  const fpvHiddenObjects: THREE.Object3D[] = [];
+
   const jacketGeo = track(new THREE.CapsuleGeometry(0.205, 0.34, 8, 14));
   const jacket = new THREE.Mesh(jacketGeo, jacketMat);
   jacket.position.set(0, 0.25, 0);
   jacket.scale.set(1.14, 1, 0.78);
   jacket.castShadow = true;
   torsoGroup.add(jacket);
+  fpvHiddenObjects.push(jacket);
 
   // Horizontal quilted jacket baffles
   const baffleGeo = track(new THREE.TorusGeometry(0.185, 0.022, 6, 16));
@@ -766,6 +772,7 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
     baffle.position.set(0, by, 0);
     baffle.scale.set(1.18, 0.82, 1);
     torsoGroup.add(baffle);
+    fpvHiddenObjects.push(baffle);
   });
 
   // Front waterproof zipper + Racing Bib
@@ -773,17 +780,20 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
   const zipper = new THREE.Mesh(zipperGeo, darkTrimMat);
   zipper.position.set(0, 0.25, 0.16);
   torsoGroup.add(zipper);
+  fpvHiddenObjects.push(zipper);
 
   const bibGeo = track(new THREE.PlaneGeometry(0.22, 0.2));
   const bib = new THREE.Mesh(bibGeo, bibMat);
   bib.position.set(0, 0.27, 0.172);
   torsoGroup.add(bib);
+  fpvHiddenObjects.push(bib);
 
   // Storm collar + hood ridge
   const collarGeo = track(new THREE.CylinderGeometry(0.135, 0.17, 0.13, 12));
   const collar = new THREE.Mesh(collarGeo, darkTrimMat);
   collar.position.set(0, 0.49, 0.01);
   torsoGroup.add(collar);
+  fpvHiddenObjects.push(collar);
 
   // 3-Segment Articulated Flowing Scarf
   const scarfSegments: THREE.Mesh[] = [];
@@ -800,6 +810,7 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
     seg.castShadow = true;
     scarfParent.add(seg);
     scarfSegments.push(seg);
+    fpvHiddenObjects.push(seg);
     scarfParent = seg;
   }
 
@@ -809,22 +820,35 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
   backpack.position.set(0, 0.27, -0.175);
   backpack.castShadow = true;
   torsoGroup.add(backpack);
+  fpvHiddenObjects.push(backpack);
 
   const packStrapGeo = track(new THREE.BoxGeometry(0.26, 0.04, 0.145));
   const packAccent = new THREE.Mesh(packStrapGeo, skiEdgeMat);
   packAccent.position.set(0, 0.35, -0.175);
   torsoGroup.add(packAccent);
+  fpvHiddenObjects.push(packAccent);
 
   const shovelPoleGeo = track(new THREE.CylinderGeometry(0.012, 0.012, 0.36, 6));
   const shovelShaft = new THREE.Mesh(shovelPoleGeo, steelEdgeMat);
   shovelShaft.position.set(0.08, 0.38, -0.23);
   shovelShaft.rotation.z = -0.15;
   torsoGroup.add(shovelShaft);
+  fpvHiddenObjects.push(shovelShaft);
 
   // Aerodynamic Racing Helmet + Vent Ridge + Curved Toric Iridescent Goggles
   const headGroup = new THREE.Group();
   headGroup.position.set(0, 0.65, 0.03);
   torsoGroup.add(headGroup);
+  fpvHiddenObjects.push(headGroup);
+
+  // First-person helmet eye & downhill look anchors inside trickPivot
+  const fpvEyeAnchor = new THREE.Object3D();
+  fpvEyeAnchor.position.set(0, 0.52, -0.02);
+  trickPivot.add(fpvEyeAnchor);
+
+  const fpvLookAnchor = new THREE.Object3D();
+  fpvLookAnchor.position.set(0, -2.75, 12);
+  trickPivot.add(fpvLookAnchor);
 
   const helmetGeo = track(new THREE.SphereGeometry(0.178, 20, 16));
   const helmet = new THREE.Mesh(helmetGeo, helmetMat);
@@ -927,6 +951,15 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
   shadowMesh.rotation.x = -Math.PI / 2;
   shadowMesh.position.y = 0.03;
 
+  let isFpvActive = false;
+  const setFirstPerson = (enabled: boolean) => {
+    if (isFpvActive === enabled) return;
+    isFpvActive = enabled;
+    for (let i = 0; i < fpvHiddenObjects.length; i++) {
+      fpvHiddenObjects[i].visible = !enabled;
+    }
+  };
+
   return {
     root,
     carveGroup,
@@ -941,6 +974,9 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
     skisGroup,
     scarfSegments,
     boostWakeGroup,
+    fpvEyeAnchor,
+    fpvLookAnchor,
+    setFirstPerson,
     shadowMesh,
     dispose: () => {
       disposables.forEach((d) => d.dispose());

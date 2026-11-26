@@ -9,7 +9,7 @@ export type SkiDifficulty = 'Park' | 'Freeride' | 'Halfpipe' | 'Pro Night' | 'En
 
 export type SkiGrabType = 'none' | 'mute' | 'safety' | 'tail' | 'japan';
 
-export type SkiCameraMode = 'chase' | 'low' | 'wide';
+export type SkiCameraMode = 'chase' | 'low' | 'wide' | 'fpv';
 
 export type SkiPhase = 'menu' | 'playing' | 'paused' | 'finished';
 
