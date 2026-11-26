@@ -45,6 +45,9 @@ interface SkiViewportProps {
   cameraMode: SkiCameraMode;
   ghostEnabled?: boolean;
   ghostSamples?: SkiGhostSample[];
+  endlessImmortal?: boolean;
+  finishEarlyNonce?: number;
+  legacyPhysics?: boolean;
   inputRef: React.MutableRefObject<SkiInputState>;
   onHudUpdate: (snapshot: SkiHudSnapshot) => void;
   onFinishRun: (payload: SkiRunCompletionPayload) => void;
@@ -166,6 +169,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
   cameraMode,
   ghostEnabled = true,
   ghostSamples,
+  endlessImmortal = false,
+  finishEarlyNonce = 0,
+  legacyPhysics = false,
   inputRef,
   onHudUpdate,
   onFinishRun,
@@ -185,6 +191,12 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
   ghostSamplesRef.current = ghostSamples;
   const ghostEnabledRef = useRef(ghostEnabled);
   ghostEnabledRef.current = ghostEnabled;
+  const endlessImmortalRef = useRef(endlessImmortal);
+  endlessImmortalRef.current = endlessImmortal;
+  const finishEarlyNonceRef = useRef(finishEarlyNonce);
+  finishEarlyNonceRef.current = finishEarlyNonce;
+  const legacyPhysicsRef = useRef(legacyPhysics);
+  legacyPhysicsRef.current = legacyPhysics;
   const onHudRef = useRef(onHudUpdate);
   onHudRef.current = onHudUpdate;
   const onFinishRef = useRef(onFinishRun);
@@ -525,7 +537,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     let lastTrackZ = -10;
 
     // Ambient Falling Alpine Snow Flurries (InstancedMesh)
-    const FLURRY_COUNT = 110;
+    const FLURRY_COUNT = 120;
     const flurryGeo = new THREE.OctahedronGeometry(0.055, 0);
     const flurryMat = new THREE.MeshBasicMaterial({
       color: '#FFFFFF',
@@ -542,6 +554,29 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       driftPhase: i * 0.7,
     }));
     scene.add(flurryMesh);
+
+    // Aerodynamic High-Speed Wind Streaks (InstancedMesh around camera)
+    const WIND_COUNT = 54;
+    const windGeo = new THREE.BoxGeometry(0.022, 0.022, 2.2);
+    const windMat = new THREE.MeshBasicMaterial({
+      color: map.isNight ? '#BAE6FD' : '#FFFFFF',
+      transparent: true,
+      opacity: 0.34,
+      depthWrite: false,
+    });
+    const windMesh = new THREE.InstancedMesh(windGeo, windMat, WIND_COUNT);
+    windMesh.frustumCulled = false;
+    const windStreaks = Array.from({ length: WIND_COUNT }, (_, i) => {
+      const ang = (i / WIND_COUNT) * Math.PI * 2;
+      const rad = 2.6 + (i % 5) * 1.15;
+      return {
+        ox: Math.cos(ang) * rad,
+        oy: Math.sin(ang) * (rad * 0.62) + 0.35,
+        zOffset: ((i * 17) % 36),
+        speedMul: 1.4 + (i % 4) * 0.25,
+      };
+    });
+    scene.add(windMesh);
     const particles: SnowParticle[] = Array.from({ length: PARTICLE_COUNT }, () => ({
       active: false,
       x: 0,
@@ -645,12 +680,16 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       airtime: 0,
       airSpinRad: 0,
       airFlipRad: 0,
+      airSpinVel: 0,
+      airFlipVel: 0,
       airCorkTilt: 0,
+      ollieCharge: 0,
       bestGrabInAir: 'none' as SkiGrabType,
       grindingRail: null as SkiRailFeature | null,
       grindPointsAccum: 0,
       grindSparkCooldown: 0,
       bailTimer: 0,
+      invulnTimer: 0,
       score: 0,
       comboScore: 0,
       comboTrickBase: 0,
@@ -750,6 +789,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           ? Math.min(100, ((dist % 1000) / 1000) * 100)
           : Math.min(100, Math.max(0, (state.z / map.lengthMeters) * 100)),
         isEndless: Boolean(map.isEndless),
+        isImmortal: Boolean(map.isEndless && endlessImmortalRef.current),
         isAirborne: !state.onGround && !state.grindingRail,
         isGrinding: Boolean(state.grindingRail),
         isBailing: state.bailTimer > 0,
@@ -844,7 +884,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
 
     const triggerBail = (reasonText: string) => {
       if (state.bailTimer > 0 || state.finished) return;
-      state.bailTimer = 1.05;
+      const isImmortalEndless = Boolean(map.isEndless && endlessImmortalRef.current);
+      state.bailTimer = isImmortalEndless ? 0.65 : 1.05;
+      if (isImmortalEndless) {
+        state.invulnTimer = 1.65;
+      }
       state.bails += 1;
       state.comboScore = 0;
       state.comboTrickBase = 0;
@@ -855,16 +899,25 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       state.grindingRail = null;
       state.airSpinRad = 0;
       state.airFlipRad = 0;
+      state.airSpinVel = 0;
+      state.airFlipVel = 0;
       state.airCorkTilt = 0;
+      state.ollieCharge = 0;
       state.airtime = 0;
       state.isBoosting = false;
-      state.vz = Math.max(9, state.vz * 0.42);
+      state.vz = isImmortalEndless
+        ? Math.max(12.5, state.vz * 0.56)
+        : Math.max(9, state.vz * 0.42);
       state.vx *= 0.35;
-      cameraShake = 0.55;
-      triggerCallout('WIPEOUT!', reasonText, 'bail');
+      cameraShake = isImmortalEndless ? 0.4 : 0.55;
+      triggerCallout(
+        isImmortalEndless ? 'IMMORTAL RECOVER!' : 'WIPEOUT!',
+        isImmortalEndless ? `${reasonText} · Kept Riding` : reasonText,
+        isImmortalEndless ? 'boost' : 'bail'
+      );
       playSkiSound('bail', soundRef.current);
 
-      for (let i = 0; i < 22; i++) {
+      for (let i = 0; i < 24; i++) {
         spawnParticle(
           state.x + (Math.random() - 0.5) * 0.8,
           state.y + 0.5,
@@ -872,11 +925,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           (Math.random() - 0.5) * 8,
           2.5 + Math.random() * 5,
           state.vz * 0.3 + (Math.random() - 0.5) * 5,
-          'snow'
+          isImmortalEndless && i % 3 === 0 ? 'boost' : 'snow'
         );
       }
 
-      if (map.isEndless) {
+      if (map.isEndless && !isImmortalEndless) {
         state.finished = true;
         const speedKmh = Math.hypot(state.vx, state.vz) * 3.6;
         onFinishRef.current({
@@ -887,6 +940,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         });
       }
     };
+
+    let handledFinishNonce = finishEarlyNonceRef.current;
 
     // Resize observer
     const handleResize = () => {
@@ -935,6 +990,23 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       const dt = Math.min(0.05, Math.max(0.001, rawDt));
       elapsedSec += dt;
 
+      if (finishEarlyNonceRef.current !== handledFinishNonce) {
+        handledFinishNonce = finishEarlyNonceRef.current;
+        if (!state.finished) {
+          state.finished = true;
+          bankCombo(true);
+          const speedKmh = Math.hypot(state.vx, state.vz) * 3.6;
+          playSkiSound('finish', soundRef.current);
+          onFinishRef.current({
+            hud: buildSnapshot('', 0, 'none', speedKmh),
+            ghostSamples: [],
+            completedObjectiveIds: evaluateCompletedObjectives(),
+            finishedByWipeout: false,
+          });
+          return;
+        }
+      }
+
       const inp = inputRef.current;
       const isPlaying = phaseRef.current === 'playing' && !state.finished;
 
@@ -977,9 +1049,13 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         if (state.bailTimer > 0) {
           state.bailTimer = Math.max(0, state.bailTimer - dt);
         }
+        if (state.invulnTimer > 0) {
+          state.invulnTimer = Math.max(0, state.invulnTimer - dt);
+        }
 
         const terrainInfo = getTerrainAndRampHeight(map, layout, state.x, state.z);
         const groundY = terrainInfo.height;
+        const useLegacy = legacyPhysicsRef.current;
 
         // 1. Rail Grind Update
         if (state.grindingRail) {
@@ -1020,6 +1096,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             state.vy = 7.6;
             state.onGround = false;
             state.airtime = 0.05;
+            state.airSpinVel = 0;
+            state.airFlipVel = 0;
             state.comboMultiplier = Math.min(10, state.comboMultiplier + 1);
             state.maxCombo = Math.max(state.maxCombo, state.comboMultiplier);
             playSkiSound('ollie', soundRef.current);
@@ -1029,6 +1107,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             state.onGround = false;
             state.vy = 2.4;
             state.airtime = 0.05;
+            state.airSpinVel = 0;
+            state.airFlipVel = 0;
             state.comboMultiplier = Math.min(10, state.comboMultiplier + 1);
             state.maxCombo = Math.max(state.maxCombo, state.comboMultiplier);
             triggerCallout(
@@ -1068,13 +1148,14 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           }
 
           if (state.bailTimer <= 0) {
+            const steerRate = useLegacy ? 2.08 : 2.25;
             state.heading = THREE.MathUtils.clamp(
-              state.heading + steerAxis * 2.08 * dt,
-              -0.96,
-              0.96
+              state.heading + steerAxis * steerRate * dt,
+              -0.98,
+              0.98
             );
             if (Math.abs(steerAxis) < 0.06) {
-              state.heading = THREE.MathUtils.damp(state.heading, 0, 2.2, dt);
+              state.heading = THREE.MathUtils.damp(state.heading, 0, useLegacy ? 2.2 : 1.05, dt);
             }
           }
 
@@ -1086,33 +1167,87 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             }
           }
 
-          // Forward speed acceleration down pitch
-          const gravityAccel =
-            map.slopePitch * 23.5 +
-            tuckAmount * 10.5 +
-            (state.isBoosting ? 22.0 : 0) -
-            brakeAmount * 18;
-          const drag = 0.011 * state.vz * state.vz * (tucking || state.isBoosting ? 0.62 : 1.0);
-          const maxForwardSpeed = state.isBoosting ? 46.5 : tucking ? 37.5 : 31.5;
-          const forwardSpeed = THREE.MathUtils.clamp(
-            Math.hypot(state.vx, state.vz) + (gravityAccel - drag) * dt,
-            brakeAmount > 0.35 ? 7.5 : 13.5,
-            maxForwardSpeed
-          );
+          let forwardSpeed = Math.hypot(state.vx, state.vz);
+          let driftIntensity = Math.abs(steerAxis);
 
-          state.vx = Math.sin(state.heading) * forwardSpeed;
-          state.vz = Math.cos(state.heading) * forwardSpeed;
-          state.carveRoll = THREE.MathUtils.damp(
-            state.carveRoll,
-            -steerAxis * 0.46,
-            10,
-            dt
-          );
+          if (useLegacy) {
+            // Legacy Arcade Physics (original instant vector carving)
+            const gravityAccel =
+              map.slopePitch * 23.5 +
+              tuckAmount * 10.5 +
+              (state.isBoosting ? 22.0 : 0) -
+              brakeAmount * 18;
+            const drag = 0.011 * state.vz * state.vz * (tucking || state.isBoosting ? 0.62 : 1.0);
+            const maxForwardSpeed = state.isBoosting ? 46.5 : tucking ? 37.5 : 31.5;
+            forwardSpeed = THREE.MathUtils.clamp(
+              forwardSpeed + (gravityAccel - drag) * dt,
+              brakeAmount > 0.35 ? 7.5 : 13.5,
+              maxForwardSpeed
+            );
+            state.vx = Math.sin(state.heading) * forwardSpeed;
+            state.vz = Math.cos(state.heading) * forwardSpeed;
+            state.carveRoll = THREE.MathUtils.damp(
+              state.carveRoll,
+              -steerAxis * 0.46,
+              10,
+              dt
+            );
+          } else {
+            // Pro Alpine Physics: slope-aware gravity, momentum drift & edge-grip carving
+            const localNorm = getTerrainSlopeNormal(map, layout, state.x, state.z);
+            const slopeDrive = THREE.MathUtils.clamp(-localNorm.nz, 0.06, 0.52);
+            const sideHillForce = localNorm.nx * 18.5;
+
+            const dirX = Math.sin(state.heading);
+            const dirZ = Math.cos(state.heading);
+            const rightX = Math.cos(state.heading);
+            const rightZ = -Math.sin(state.heading);
+
+            let vForward = state.vx * dirX + state.vz * dirZ;
+            let vLat = state.vx * rightX + state.vz * rightZ;
+
+            const gravityAccel =
+              slopeDrive * 36.5 +
+              tuckAmount * 11.2 +
+              (state.isBoosting ? 24.0 : 0) -
+              brakeAmount * 21.0;
+            const aeroDrag =
+              0.0095 * vForward * Math.abs(vForward) * (tucking || state.isBoosting ? 0.56 : 1.0);
+            const snowFriction = brakeAmount > 0.2 ? 3.5 * brakeAmount : 0.45;
+            const maxProSpeed = state.isBoosting ? 49.0 : tucking ? 40.0 : 34.0;
+
+            vForward = THREE.MathUtils.clamp(
+              vForward + (gravityAccel - aeroDrag - snowFriction) * dt,
+              brakeAmount > 0.35 ? 7.0 : 13.5,
+              maxProSpeed
+            );
+
+            // Ski edges bite into snow: lateral slip decays faster when cleanly carving, slower when braking/drifting
+            const edgeGrip = brakeAmount > 0.25 ? 4.2 : Math.abs(steerAxis) > 0.7 ? 7.8 : 10.2;
+            vLat = THREE.MathUtils.damp(vLat, 0, edgeGrip, dt);
+
+            state.vx = dirX * vForward + rightX * vLat + sideHillForce * dt;
+            state.vz = Math.max(6.5, dirZ * vForward + rightZ * vLat);
+            forwardSpeed = Math.hypot(state.vx, state.vz);
+            driftIntensity = Math.max(Math.abs(steerAxis), THREE.MathUtils.clamp(Math.abs(vLat) / 7.5, 0, 1.25));
+
+            const targetRoll = THREE.MathUtils.clamp(
+              -steerAxis * 0.52 - THREE.MathUtils.clamp(vLat * 0.045, -0.22, 0.22),
+              -0.62,
+              0.62
+            );
+            state.carveRoll = THREE.MathUtils.damp(state.carveRoll, targetRoll, 12, dt);
+
+            // Pre-load spring Ollie while jump is held on snow
+            state.ollieCharge = inp.jumpHeld && state.bailTimer <= 0
+              ? Math.min(0.28, state.ollieCharge + dt)
+              : THREE.MathUtils.damp(state.ollieCharge, 0, 12, dt);
+          }
 
           // Continuous Carving & Speed Flow Score (doubled during Turbo Boost)
           const curKmh = forwardSpeed * 3.6;
           if (state.bailTimer <= 0 && curKmh > 52) {
-            const carveBonus = Math.abs(steerAxis) > 0.25 ? 1.35 : 1.0;
+            const carveBonus = driftIntensity > 0.25 ? 1.35 : 1.0;
             const boostFlowMult = state.isBoosting ? 2.0 : 1.0;
             const flowPts = (curKmh - 42) * 0.9 * carveBonus * boostFlowMult * dt;
             state.flowScoreTotal += flowPts;
@@ -1128,17 +1263,18 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           if (Math.abs(state.x) > maxLat) {
             state.x = Math.sign(state.x) * maxLat;
             state.heading *= -0.4;
+            if (!useLegacy) state.vx *= -0.35;
           }
 
           // Dual-Edge Snow Carve Spray Plumes + Cyan Boost Trails
-          if (Math.abs(steerAxis) > 0.2 && state.bailTimer <= 0 && Math.random() < 0.85) {
-            const sprayDir = Math.sign(steerAxis);
+          if (driftIntensity > 0.2 && state.bailTimer <= 0 && Math.random() < (useLegacy ? 0.85 : 0.92)) {
+            const sprayDir = Math.abs(steerAxis) > 0.1 ? Math.sign(steerAxis) : Math.sign(state.vx || 1);
             spawnParticle(
               state.x - sprayDir * 0.26,
               groundY + 0.08,
               state.z - 0.55,
-              -sprayDir * (2.6 + Math.random() * 2.8),
-              1.2 + Math.random() * 1.9,
+              -sprayDir * (2.6 + driftIntensity * 2.8),
+              1.2 + driftIntensity * 1.6,
               state.vz * 0.35,
               state.isBoosting ? 'boost' : 'snow'
             );
@@ -1158,46 +1294,80 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           }
 
           const nextTerrain = getTerrainAndRampHeight(map, layout, state.x, state.z);
+          const chargePop = useLegacy ? 0 : state.ollieCharge * 6.5;
 
           // Check kicker lip launch!
           if (state.wasOnKicker && !nextTerrain.isOnKicker) {
-            const popBonus = jumpTriggered || inp.jumpHeld ? 3.2 : 1.1;
+            const popBonus = (jumpTriggered || inp.jumpHeld ? 3.2 : 1.1) + chargePop;
             const slopeBoost = Math.max(0.24, state.lastKickerSlope);
             state.vy = state.vz * slopeBoost + popBonus;
             state.onGround = false;
             state.airtime = 0.02;
             state.airSpinRad = 0;
             state.airFlipRad = 0;
+            state.airSpinVel = 0;
+            state.airFlipVel = 0;
             state.airCorkTilt = 0;
+            state.ollieCharge = 0;
             state.bestGrabInAir = 'none';
             playSkiSound('ollie', soundRef.current);
           } else if (
             map.hasSuperpipe &&
-            Math.abs(state.x) > 12.2 &&
-            Math.abs(state.vx) > 6.5 &&
+            Math.abs(state.x) > (useLegacy ? 12.2 : 11.8) &&
+            Math.abs(state.vx) > (useLegacy ? 6.5 : 5.5) &&
             Math.sign(state.x) === Math.sign(state.vx)
           ) {
             // Superpipe lip air out!
-            state.vy = Math.abs(state.vx) * 0.68 + (jumpTriggered ? 3.0 : 1.4);
-            state.vx *= 0.25;
-            state.heading *= 0.25;
+            if (useLegacy) {
+              state.vy = Math.abs(state.vx) * 0.68 + (jumpTriggered ? 3.0 : 1.4);
+              state.vx *= 0.25;
+              state.heading *= 0.25;
+            } else {
+              state.vy = Math.abs(state.vx) * 0.78 + (jumpTriggered || inp.jumpHeld ? 3.4 : 1.8) + chargePop;
+              state.vx *= -0.18;
+              state.heading *= 0.22;
+            }
             state.onGround = false;
             state.airtime = 0.02;
             state.airSpinRad = 0;
             state.airFlipRad = 0;
+            state.airSpinVel = 0;
+            state.airFlipVel = 0;
             state.airCorkTilt = 0;
+            state.ollieCharge = 0;
             state.bestGrabInAir = 'none';
             playSkiSound('ollie', soundRef.current);
           } else if (jumpTriggered && state.bailTimer <= 0) {
             // Flat-ground Ollie
-            state.vy = 6.9 + (nextTerrain.isOnKicker ? 2.1 : 0);
+            state.vy = (useLegacy ? 6.9 : 7.3) + (nextTerrain.isOnKicker ? 2.1 : 0) + chargePop;
             state.onGround = false;
             state.airtime = 0.02;
             state.airSpinRad = 0;
             state.airFlipRad = 0;
+            state.airSpinVel = 0;
+            state.airFlipVel = 0;
             state.airCorkTilt = 0;
+            state.ollieCharge = 0;
             state.bestGrabInAir = 'none';
             playSkiSound('ollie', soundRef.current);
+          } else if (
+            !useLegacy &&
+            !nextTerrain.isOnKicker &&
+            state.bailTimer <= 0 &&
+            forwardSpeed > 22 &&
+            nextTerrain.height < state.y + state.vy * dt - 9.0 * dt * dt - 0.035
+          ) {
+            // Natural convex roller crest launch in Pro Physics
+            state.vy = Math.max(-1.6, state.vy * 0.65);
+            state.onGround = false;
+            state.airtime = 0.02;
+            state.airSpinRad = 0;
+            state.airFlipRad = 0;
+            state.airSpinVel = 0;
+            state.airFlipVel = 0;
+            state.airCorkTilt = 0;
+            state.ollieCharge = 0;
+            state.bestGrabInAir = 'none';
           } else {
             state.y = nextTerrain.height;
             state.vy = (nextTerrain.height - groundY) / dt;
@@ -1208,7 +1378,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         } else {
           // 3. Airborne Freestyle Tricks & Gravity
           state.airtime += dt;
-          state.vy -= 18.2 * dt;
+          const airGravity = useLegacy ? 18.2 : inp.grab !== 'none' ? 16.5 : 17.6;
+          state.vy -= airGravity * dt;
           state.x += state.vx * dt;
           state.z += state.vz * dt;
           state.y += state.vy * dt;
@@ -1227,8 +1398,26 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           const flipInput =
             Math.abs(inp.analogY) > 0.14 ? inp.analogY : rawFlip;
 
-          state.airSpinRad += spinInput * 6.45 * grabSpeedBoost * dt;
-          state.airFlipRad += flipInput * 5.95 * grabSpeedBoost * dt;
+          if (useLegacy) {
+            state.airSpinRad += spinInput * 6.45 * grabSpeedBoost * dt;
+            state.airFlipRad += flipInput * 5.95 * grabSpeedBoost * dt;
+          } else {
+            // Smooth angular acceleration & inertia in Pro Physics
+            state.airSpinVel = THREE.MathUtils.damp(
+              state.airSpinVel,
+              spinInput * 6.85 * grabSpeedBoost,
+              spinInput !== 0 ? 15 : 10,
+              dt
+            );
+            state.airFlipVel = THREE.MathUtils.damp(
+              state.airFlipVel,
+              flipInput * 6.35 * grabSpeedBoost,
+              flipInput !== 0 ? 15 : 10,
+              dt
+            );
+            state.airSpinRad += state.airSpinVel * dt;
+            state.airFlipRad += state.airFlipVel * dt;
+          }
 
           if (inp.grab !== 'none') {
             state.bestGrabInAir = inp.grab;
@@ -1282,6 +1471,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
                     }
                     state.airSpinRad = 0;
                     state.airFlipRad = 0;
+                    state.airSpinVel = 0;
+                    state.airFlipVel = 0;
                     state.airCorkTilt = 0;
                     state.airtime = 0;
                     playSkiSound('grind', soundRef.current);
@@ -1295,6 +1486,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           // Check Touchdown on Snow
           const landTerrain = getTerrainAndRampHeight(map, layout, state.x, state.z);
           if (!state.grindingRail && state.y <= landTerrain.height) {
+            const impactVy = Math.abs(state.vy);
             if (state.airtime > 0.35) {
               cameraShake = Math.min(0.45, state.airtime * 0.28);
               state.landingSquash = Math.min(0.24, state.airtime * 0.16);
@@ -1307,6 +1499,14 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             const flipDeg = THREE.MathUtils.radToDeg(state.airFlipRad);
             const spinErr = wrapAngleErrorDeg(Math.abs(spinDeg), 180);
             const flipErr = wrapAngleErrorDeg(Math.abs(flipDeg), 360);
+
+            // Pro Physics: clean landings transfer vertical drop energy into downhill landing speed pump
+            if (!useLegacy && spinErr <= 52 && flipErr <= 52 && impactVy > 4.5) {
+              const landNorm = getTerrainSlopeNormal(map, layout, state.x, state.z);
+              const downhillFactor = THREE.MathUtils.clamp(-landNorm.nz * 3.2, 0.25, 1.15);
+              const speedSurge = Math.min(6.2, (impactVy - 3.5) * 0.34 * downhillFactor);
+              state.vz = Math.min(48, state.vz + speedSurge);
+            }
 
             const didMeaningfulTrick =
               Math.abs(spinDeg) >= 135 ||
@@ -1391,21 +1591,28 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
               checkMedalUnlock();
             }
 
+            const bigAirLanding = state.airtime > 0.65;
             state.airSpinRad = 0;
             state.airFlipRad = 0;
+            state.airSpinVel = 0;
+            state.airFlipVel = 0;
             state.airCorkTilt = 0;
+            state.ollieCharge = 0;
             state.airtime = 0;
             state.bestGrabInAir = 'none';
 
-            // Landing snow puff
-            for (let i = 0; i < 12; i++) {
+            // Landing snow powder ring & spray
+            const puffCount = bigAirLanding ? 18 : 12;
+            for (let i = 0; i < puffCount; i++) {
+              const ang = (i / puffCount) * Math.PI * 2;
+              const radialSpeed = bigAirLanding ? 3.4 + Math.random() * 2.4 : 2.2 + Math.random() * 2.0;
               spawnParticle(
-                state.x + (Math.random() - 0.5) * 0.7,
+                state.x + Math.cos(ang) * 0.4,
                 state.y + 0.08,
-                state.z,
-                (Math.random() - 0.5) * 4.5,
-                0.9 + Math.random() * 1.6,
-                state.vz * 0.35,
+                state.z + Math.sin(ang) * 0.4,
+                Math.cos(ang) * radialSpeed,
+                0.95 + Math.random() * 1.85,
+                state.vz * 0.35 + Math.sin(ang) * radialSpeed * 0.45,
                 'snow'
               );
             }
@@ -1414,7 +1621,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
 
         // 4. Obstacle Collisions, Near-Miss Close Calls, Gates & Collectible Air Rings
         const curSpeedSq = state.vx * state.vx + state.vz * state.vz;
-        if (state.bailTimer <= 0) {
+        if (state.bailTimer <= 0 && state.invulnTimer <= 0) {
           for (const tree of layout.trees) {
             const dz = Math.abs(tree.z - state.z);
             const dx = Math.abs(tree.x - state.x);
@@ -1442,7 +1649,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           }
         }
 
-        if (state.bailTimer <= 0 && !state.grindingRail) {
+        if (state.bailTimer <= 0 && state.invulnTimer <= 0 && !state.grindingRail) {
           for (const rock of layout.rocks) {
             const ry = getBaseTerrainHeight(map, rock.x, rock.z);
             const dz = Math.abs(rock.z - state.z);
@@ -1777,6 +1984,30 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       const camMode = cameraModeRef.current;
       const isFpv = camMode === 'fpv';
       skier.setFirstPerson(isFpv);
+      skier.carveGroup.visible =
+        isFpv || state.invulnTimer <= 0 || Math.floor(state.invulnTimer * 16) % 2 === 0;
+
+      // Update Aerodynamic Speed Wind Streaks around camera
+      const windIntensity = THREE.MathUtils.clamp(
+        (speedKmh - 64) / 56 + (state.isBoosting ? 0.55 : 0) + (isFpv ? 0.2 : 0),
+        0,
+        1
+      );
+      windMesh.visible = windIntensity > 0.04;
+      if (windMesh.visible) {
+        windMat.opacity = windIntensity * (isFpv ? 0.42 : 0.3);
+        for (let i = 0; i < WIND_COUNT; i++) {
+          const w = windStreaks[i];
+          const zCycle = (w.zOffset - elapsedSec * speed * w.speedMul) % 36;
+          const wz = state.z + (zCycle < 0 ? zCycle + 36 : zCycle) - 6;
+          _dummy.position.set(state.x + w.ox, state.y + 1.4 + w.oy, wz);
+          _dummy.rotation.set(0, 0, 0);
+          _dummy.scale.set(1, 1, 0.7 + windIntensity * 1.6);
+          _dummy.updateMatrix();
+          windMesh.setMatrixAt(i, _dummy.matrix);
+        }
+        windMesh.instanceMatrix.needsUpdate = true;
+      }
 
       if (isFpv) {
         skier.root.updateMatrixWorld(true);
@@ -1889,10 +2120,16 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       if (sharedSnowNormalTex) sharedSnowNormalTex.dispose();
       partGeo.dispose();
       partMat.dispose();
+      particleMesh.dispose();
       trackGeo.dispose();
       trackMat.dispose();
+      trackMesh.dispose();
       flurryGeo.dispose();
       flurryMat.dispose();
+      flurryMesh.dispose();
+      windGeo.dispose();
+      windMat.dispose();
+      windMesh.dispose();
       envTex.dispose();
       renderer.dispose();
     };

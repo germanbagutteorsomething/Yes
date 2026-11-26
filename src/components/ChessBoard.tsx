@@ -5,6 +5,7 @@ import type {
   BoardArrow,
   BoardHighlight,
   BoardTheme,
+  GameVariant,
   MoveClassification,
   PendingPromotion,
   PieceSet,
@@ -13,6 +14,7 @@ import type {
   PromotionPiece,
 } from '../types/chess';
 import { playChessSound } from '../utils/sound';
+import { getVariantLegalMoves, HILL_SQUARES } from '../utils/variants';
 import { ChessPieceSvg } from './ChessPieceSvg';
 
 interface ChessBoardProps {
@@ -45,6 +47,9 @@ interface ChessBoardProps {
   onToggleArrow?: (arrow: BoardArrow) => void;
   onToggleHighlight?: (highlight: BoardHighlight) => void;
   onClearAnnotations?: () => void;
+  // Variant mechanics
+  variant?: GameVariant;
+  fogVisibleSquares?: Set<Square> | null;
 }
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const;
@@ -292,6 +297,8 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
   onToggleArrow,
   onToggleHighlight,
   onClearAnnotations,
+  variant = 'standard',
+  fogVisibleSquares = null,
 }) => {
   const boardRef = useRef<HTMLDivElement>(null);
   const lastDraggedMoveRef = useRef<string | null>(null);
@@ -356,14 +363,14 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     const activeSquare =
       dragState && !dragState.isPremoveDrag ? dragState.from : selectedSquare;
     if (!canInteract || !activeSquare) return new Map<Square, boolean>();
-    const moves = gameAtFen.moves({ square: activeSquare, verbose: true });
+    const moves = getVariantLegalMoves(gameAtFen, variant, activeSquare);
     const map = new Map<Square, boolean>();
     for (const m of moves) {
       const targetHasPiece = Boolean(gameAtFen.get(m.to)) || m.isEnPassant();
       map.set(m.to, targetHasPiece);
     }
     return map;
-  }, [canInteract, dragState, selectedSquare, gameAtFen]);
+  }, [canInteract, dragState, selectedSquare, gameAtFen, variant]);
 
   const premoveTargets = useMemo(() => {
     if (!allowPremove || canInteract) return new Set<Square>();
@@ -397,6 +404,13 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     }
 
     const toSq = lastMove.to as Square;
+    if (
+      fogVisibleSquares &&
+      (!fogVisibleSquares.has(lastMove.from as Square) || !fogVisibleSquares.has(toSq))
+    ) {
+      return map;
+    }
+
     const moveKey = `${lastMove.from}-${lastMove.to}`;
     const wasDragged = lastDraggedMoveRef.current === moveKey;
     if (wasDragged) {
@@ -431,7 +445,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     }
 
     return map;
-  }, [animCounter, displayFiles, displayRanks, gameAtFen, lastMove]);
+  }, [animCounter, displayFiles, displayRanks, fogVisibleSquares, gameAtFen, lastMove]);
 
   const getSquareFromPoint = useCallback(
     (clientX: number, clientY: number): Square | null => {
@@ -779,19 +793,28 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
               const fileIdx = FILES.indexOf(file);
               const rankNum = Number(rank);
               const isLight = (fileIdx + rankNum) % 2 === 1;
-              const piece = gameAtFen.get(sq);
+              const isSquareVisible = !fogVisibleSquares || fogVisibleSquares.has(sq);
+              const rawPiece = gameAtFen.get(sq);
+              const piece = isSquareVisible ? rawPiece : undefined;
+              const isHillSquare = variant === 'king-of-the-hill' && HILL_SQUARES.has(sq);
+              const isRacingFinish = variant === 'racing-kings' && rank === '8';
 
               const isSelected = selectedSquare === sq || premoveSelected === sq;
               const isLastMove =
-                lastMove !== null && (lastMove.from === sq || lastMove.to === sq);
+                isSquareVisible &&
+                lastMove !== null &&
+                (lastMove.from === sq || lastMove.to === sq);
               const isPremoveSq =
                 premove !== null && (premove.from === sq || premove.to === sq);
               const isCaptureLanding =
-                animCounter > 0 && lastMove?.to === sq && Boolean(lastMove.isCapture);
-              const isKingInCheck = checkedKingSquare === sq;
+                isSquareVisible &&
+                animCounter > 0 &&
+                lastMove?.to === sq &&
+                Boolean(lastMove.isCapture);
+              const isKingInCheck = isSquareVisible && checkedKingSquare === sq;
               const isLegalTarget = legalTargets.has(sq);
               const isPremoveTarget = premoveTargets.has(sq);
-              const isCaptureTarget = legalTargets.get(sq) === true;
+              const isCaptureTarget = isSquareVisible && legalTargets.get(sq) === true;
               const isDragOrigin = dragState?.isDragging && dragState.from === sq;
               const isDragHover =
                 dragState?.isDragging &&
@@ -841,6 +864,34 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                       aria-hidden="true"
                       className="pointer-events-none absolute inset-0"
                       style={{ backgroundColor: ANNOTATION_COLORS[squareHighlight.color].highlight }}
+                    />
+                  )}
+
+                  {/* King of the Hill center target marker */}
+                  {isHillSquare && (
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-[6%] rounded-md border-2 border-dashed border-amber-500/70 bg-amber-400/12"
+                    />
+                  )}
+
+                  {/* Racing Kings rank 8 finish-line accent */}
+                  {isRacingFinish && (
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-x-0 top-0 h-[5px] bg-gradient-to-r from-amber-400 via-emerald-400 to-amber-400 opacity-85"
+                    />
+                  )}
+
+                  {/* Fog of War mist overlay for unseen squares */}
+                  {!isSquareVisible && (
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-0 z-15 bg-stone-900/72 dark:bg-stone-950/80"
+                      style={{
+                        backgroundImage:
+                          'radial-gradient(circle at 30% 30%, rgba(148, 163, 184, 0.14), rgba(15, 23, 42, 0.25))',
+                      }}
                     />
                   )}
 

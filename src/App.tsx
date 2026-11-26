@@ -20,6 +20,7 @@ import {
   Mountain,
   Puzzle,
   RotateCcw,
+  Settings,
   Sun,
   Swords,
   Undo2,
@@ -44,6 +45,7 @@ import { SkiGameWorkspace } from './components/SkiGameWorkspace';
 import { detectOpening } from './data/openings';
 import { getBotMove } from './engine/botService';
 import { stockfishService } from './engine/stockfishService';
+import { getVariantEngineMove, getVariantHintMove } from './engine/variantAi';
 import {
   BOT_PROFILES,
   GAME_VARIANTS,
@@ -92,7 +94,14 @@ import {
   savePreferences,
   updateMatchAnalysisInHistory,
 } from './utils/storage';
-import { generateVariantStartFen } from './utils/variants';
+import {
+  computeFogVisibleSquares,
+  evaluateVariantGameEnd,
+  findKingSquare,
+  generateVariantStartFen,
+  getThreeCheckCounts,
+  isVariantMoveLegal,
+} from './utils/variants';
 
 const INITIAL_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const MAX_ENGINE_HINTS = 3;
@@ -182,53 +191,22 @@ function findCheckedKingSquare(fen: string): Square | null {
   return null;
 }
 
-function evaluateGameEnd(chess: Chess): GameResult | null {
-  if (chess.isCheckmate()) {
-    const winner: PlayerColor = chess.turn() === 'w' ? 'b' : 'w';
-    const winnerName = winner === 'w' ? 'White' : 'Black';
-    return {
-      winner,
-      reason: 'checkmate',
-      headline: `${winnerName} wins by Checkmate`,
-      detail: 'The opposing king has no legal escape.',
-    };
-  }
-  if (chess.isStalemate()) {
-    return {
-      winner: 'draw',
-      reason: 'stalemate',
-      headline: 'Draw by Stalemate',
-      detail: `${chess.turn() === 'w' ? 'White' : 'Black'} has no legal moves and is not in check.`,
-    };
-  }
-  if (chess.isThreefoldRepetition()) {
-    return {
-      winner: 'draw',
-      reason: 'threefold',
-      headline: 'Draw by Threefold Repetition',
-      detail: 'The same board position occurred three times.',
-    };
-  }
-  if (chess.isInsufficientMaterial()) {
-    return {
-      winner: 'draw',
-      reason: 'insufficient',
-      headline: 'Draw by Insufficient Material',
-      detail: 'Neither side has enough material to force checkmate.',
-    };
-  }
-  if (chess.isDrawByFiftyMoves()) {
-    return {
-      winner: 'draw',
-      reason: 'fifty-move',
-      headline: 'Draw by Fifty-Move Rule',
-      detail: '50 consecutive moves occurred without a pawn move or capture.',
-    };
-  }
-  return null;
+function evaluateGameEnd(
+  chess: Chess,
+  variant: GameVariant = 'standard',
+  moves: MoveRecord[] = []
+): GameResult | null {
+  return evaluateVariantGameEnd(chess, variant, moves);
 }
 
-function hasSufficientMaterialForTimeout(chess: Chess, color: PlayerColor): boolean {
+function hasSufficientMaterialForTimeout(
+  chess: Chess,
+  color: PlayerColor,
+  variant: GameVariant = 'standard'
+): boolean {
+  if (variant === 'king-of-the-hill' || variant === 'racing-kings') {
+    return true;
+  }
   let knights = 0;
   let bishops = 0;
   for (const row of chess.board()) {
@@ -282,6 +260,10 @@ export default function App() {
   const [soundEnabled, setSoundEnabled] = useState<boolean>(initialPrefs.soundEnabled);
   const [boardTheme, setBoardTheme] = useState<BoardTheme>(initialPrefs.boardTheme);
   const [pieceSet, setPieceSet] = useState<PieceSet>(initialPrefs.pieceSet);
+  const [skiLegacyPhysics, setSkiLegacyPhysics] = useState<boolean>(
+    Boolean(initialPrefs.skiLegacyPhysics)
+  );
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
 
   // Game configuration
   const [gameMode, setGameMode] = useState<GameMode>('stockfish');
@@ -351,8 +333,8 @@ export default function App() {
     if (darkMode) root.classList.add('dark');
     else root.classList.remove('dark');
 
-    savePreferences({ darkMode, soundEnabled, boardTheme, pieceSet });
-  }, [boardTheme, darkMode, pieceSet, soundEnabled]);
+    savePreferences({ darkMode, soundEnabled, boardTheme, pieceSet, skiLegacyPhysics });
+  }, [boardTheme, darkMode, pieceSet, skiLegacyPhysics, soundEnabled]);
 
   // Terminate worker on unmount
   useEffect(() => {
@@ -468,7 +450,11 @@ export default function App() {
         const nextRemaining = Math.max(0, prev[turn] - delta);
         if (nextRemaining === 0 && prev[turn] > 0) {
           const opponent: PlayerColor = turn === 'w' ? 'b' : 'w';
-          const opponentCanWin = hasSufficientMaterialForTimeout(chessRef.current, opponent);
+          const opponentCanWin = hasSufficientMaterialForTimeout(
+            chessRef.current,
+            opponent,
+            variant
+          );
 
           engineAbortRef.current?.abort();
           hintAbortRef.current?.abort();
@@ -503,7 +489,7 @@ export default function App() {
     }, 100);
 
     return () => window.clearInterval(interval);
-  }, [activeGame, activeView, currentTimeControl.id, gameResult, moves.length, soundEnabled, turn]);
+  }, [activeGame, activeView, currentTimeControl.id, gameResult, moves.length, soundEnabled, turn, variant]);
 
   const startNewGame = useCallback(
     (overrides?: {
@@ -574,12 +560,14 @@ export default function App() {
   );
 
   const syncFromChess = useCallback(
-    (newMoveRecord?: MoveRecord) => {
+    (newMoveRecord?: MoveRecord, overrideMoves?: MoveRecord[]) => {
       const chess = chessRef.current;
       const nextFen = chess.fen();
       const nextTurn = chess.turn();
       const nextCheck = chess.isCheck();
-      const result = evaluateGameEnd(chess);
+      const nextMoves =
+        overrideMoves ?? (newMoveRecord ? [...moves, newMoveRecord] : moves);
+      const result = evaluateGameEnd(chess, variant, nextMoves);
 
       setFen(nextFen);
       setTurn(nextTurn);
@@ -633,7 +621,7 @@ export default function App() {
         setFlipped(nextTurn === 'b');
       }
     },
-    [autoFlipTwoPlayer, currentTimeControl, gameMode, soundEnabled]
+    [autoFlipTwoPlayer, currentTimeControl, gameMode, moves, soundEnabled, variant]
   );
 
   const executeMove = useCallback(
@@ -645,6 +633,11 @@ export default function App() {
     ): boolean => {
       const chess = chessRef.current;
       try {
+        const legal = isVariantMoveLegal(chess, from, to, variant);
+        if (legal.length === 0) {
+          if (!silentOnIllegal) playChessSound('illegal', soundEnabled);
+          return false;
+        }
         const move = chess.move({ from, to, promotion });
         const record: MoveRecord = {
           ply: chess.history().length,
@@ -669,7 +662,7 @@ export default function App() {
         return false;
       }
     },
-    [soundEnabled, syncFromChess]
+    [soundEnabled, syncFromChess, variant]
   );
 
   const handleSubmitSanMove = useCallback(
@@ -683,6 +676,11 @@ export default function App() {
       const chess = chessRef.current;
       try {
         const move = chess.move(trimmed);
+        if (variant === 'racing-kings' && chess.isCheck()) {
+          chess.undo();
+          playChessSound('illegal', soundEnabled);
+          return false;
+        }
         const record: MoveRecord = {
           ply: chess.history().length,
           san: move.san,
@@ -704,7 +702,17 @@ export default function App() {
         return false;
       }
     },
-    [gameMode, gameResult, humanColor, isAnalyzing, soundEnabled, syncFromChess, turn, viewIndex]
+    [
+      gameMode,
+      gameResult,
+      humanColor,
+      isAnalyzing,
+      soundEnabled,
+      syncFromChess,
+      turn,
+      variant,
+      viewIndex,
+    ]
   );
 
   const handleAttemptMove = useCallback(
@@ -713,8 +721,7 @@ export default function App() {
       if (gameMode === 'stockfish' && turn !== humanColor) return;
 
       const chess = chessRef.current;
-      const legalMoves = chess.moves({ square: from, verbose: true });
-      const matchingMoves = legalMoves.filter((m) => m.to === to);
+      const matchingMoves = isVariantMoveLegal(chess, from, to, variant);
 
       if (matchingMoves.length === 0) {
         playChessSound('illegal', soundEnabled);
@@ -729,7 +736,17 @@ export default function App() {
 
       executeMove(from, to);
     },
-    [executeMove, gameMode, gameResult, humanColor, isAnalyzing, soundEnabled, turn, viewIndex]
+    [
+      executeMove,
+      gameMode,
+      gameResult,
+      humanColor,
+      isAnalyzing,
+      soundEnabled,
+      turn,
+      variant,
+      viewIndex,
+    ]
   );
 
   const handleSelectPromotion = useCallback(
@@ -764,16 +781,22 @@ export default function App() {
 
     const movePromise =
       opponentKind === 'bot'
-        ? getBotMove(fen, lanHistory, currentBot, controller.signal, startFen)
-        : stockfishService
-            .getBestMove(lanHistory, currentLevelConfig, controller.signal, startFen)
-            .then(async (best) => {
-              const elapsed = performance.now() - startTime;
-              if (elapsed < 320) {
-                await new Promise((r) => setTimeout(r, 320 - elapsed));
-              }
-              return best;
-            });
+        ? getBotMove(fen, lanHistory, currentBot, controller.signal, startFen, variant, moves)
+        : getVariantEngineMove(
+            variant,
+            fen,
+            lanHistory,
+            currentLevelConfig,
+            moves,
+            controller.signal,
+            startFen
+          ).then(async (best) => {
+            const elapsed = performance.now() - startTime;
+            if (elapsed < 320) {
+              await new Promise((r) => setTimeout(r, 320 - elapsed));
+            }
+            return best;
+          });
 
     movePromise
       .then((best) => {
@@ -806,6 +829,7 @@ export default function App() {
     moves,
     fen,
     startFen,
+    variant,
     currentBot,
     currentLevelConfig,
     executeMove,
@@ -826,14 +850,13 @@ export default function App() {
     setPremove(null);
 
     const chess = chessRef.current;
-    const legalMoves = chess.moves({ square: queued.from, verbose: true });
-    const matching = legalMoves.filter((m) => m.to === queued.to);
+    const matching = isVariantMoveLegal(chess, queued.from, queued.to, variant);
     if (matching.length === 0) return;
 
     const needsPromo = matching.some((m) => Boolean(m.promotion));
     const promo = queued.promotion ?? (needsPromo ? 'q' : undefined);
     executeMove(queued.from, queued.to, promo, true);
-  }, [canInteractWithBoard, executeMove, premove]);
+  }, [canInteractWithBoard, executeMove, premove, variant]);
 
   const runMatchAnalysis = useCallback(
     (
@@ -921,8 +944,7 @@ export default function App() {
     setIsFetchingHint(true);
 
     const lanHistory = moves.map((m) => m.lan);
-    stockfishService
-      .getHintMove(lanHistory, startFen, controller.signal)
+    getVariantHintMove(variant, fen, lanHistory, moves, startFen, controller.signal)
       .then((best) => {
         if (controller.signal.aborted) return;
         setHintArrow({ from: best.from, to: best.to });
@@ -937,12 +959,14 @@ export default function App() {
       });
   }, [
     canInteractWithBoard,
+    fen,
     gameMode,
     hintsUsed,
     isFetchingHint,
     moves,
     soundEnabled,
     startFen,
+    variant,
   ]);
 
   const handleUndo = useCallback(() => {
@@ -965,8 +989,9 @@ export default function App() {
     if (gameMode === 'two-player') {
       const undone = chess.undo();
       if (!undone) return;
-      setMoves((prev) => prev.slice(0, -1));
-      syncFromChess();
+      const nextMoves = moves.slice(0, -1);
+      setMoves(nextMoves);
+      syncFromChess(undefined, nextMoves);
       playChessSound('move', soundEnabled);
       return;
     }
@@ -984,11 +1009,12 @@ export default function App() {
     }
 
     if (popCount > 0) {
-      setMoves((prev) => prev.slice(0, prev.length - popCount));
-      syncFromChess();
+      const nextMoves = moves.slice(0, moves.length - popCount);
+      setMoves(nextMoves);
+      syncFromChess(undefined, nextMoves);
       playChessSound('move', soundEnabled);
     }
-  }, [gameMode, gameResult, humanColor, moves.length, soundEnabled, syncFromChess, turn]);
+  }, [gameMode, gameResult, humanColor, moves, soundEnabled, syncFromChess, turn]);
 
   const handleResign = useCallback(() => {
     if (gameResult) return;
@@ -1100,9 +1126,16 @@ export default function App() {
       if (match.opponentKind) setOpponentKind(match.opponentKind);
       if (match.stockfishLevel) setStockfishLevel(match.stockfishLevel);
       if (match.botId) setSelectedBotId(match.botId);
-      setVariant(match.variant ?? 'standard');
+      const loadedVariant = match.variant ?? 'standard';
+      setVariant(loadedVariant);
       setStartFen(match.startFen || INITIAL_FEN);
-      setVariantNote(match.variant === 'shuffle960' ? 'Saved 960 Match' : null);
+      setVariantNote(
+        loadedVariant === 'shuffle960'
+          ? 'Saved 960 Match'
+          : loadedVariant !== 'standard'
+          ? 'Saved Variant Match'
+          : null
+      );
       setHumanColor(match.humanColor);
       setFlipped(match.humanColor === 'b');
       setFen(replay.fen());
@@ -1407,6 +1440,51 @@ export default function App() {
     !isFetchingHint &&
     (hintsRemaining === null || hintsRemaining > 0);
 
+  const fogVisibleSquares = useMemo(() => {
+    if (variant !== 'fog-of-war' || gameResult || isReviewingHistory) {
+      return null;
+    }
+    const viewerColor: PlayerColor = gameMode === 'stockfish' ? humanColor : turn;
+    return computeFogVisibleSquares(displayFen, viewerColor);
+  }, [displayFen, gameMode, gameResult, humanColor, isReviewingHistory, turn, variant]);
+
+  const threeCheckCounts = useMemo(() => {
+    if (variant !== 'three-check') return null;
+    const slice =
+      viewIndex === null
+        ? moves
+        : viewIndex < 0
+        ? []
+        : moves.slice(0, viewIndex + 1);
+    return getThreeCheckCounts(slice);
+  }, [moves, variant, viewIndex]);
+
+  const racingKingRanks = useMemo(() => {
+    if (variant !== 'racing-kings') return null;
+    const temp = new Chess();
+    try {
+      temp.load(displayFen);
+    } catch {
+      return null;
+    }
+    const wSq = findKingSquare(temp, 'w');
+    const bSq = findKingSquare(temp, 'b');
+    return {
+      w: wSq ? Number(wSq[1]) : 1,
+      b: bSq ? Number(bSq[1]) : 1,
+    };
+  }, [displayFen, variant]);
+
+  const getVariantPlayerBadge = (color: PlayerColor): string | null => {
+    if (threeCheckCounts) {
+      return `${threeCheckCounts[color]}/3 checks`;
+    }
+    if (racingKingRanks) {
+      return `Rank ${racingKingRanks[color]}/8`;
+    }
+    return null;
+  };
+
   // Top & Bottom PlayerBar assignments based on board orientation
   const topColor: PlayerColor = flipped ? 'w' : 'b';
   const bottomColor: PlayerColor = flipped ? 'b' : 'w';
@@ -1591,6 +1669,16 @@ export default function App() {
               {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
 
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Open Settings"
+              title="Settings"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 transition-colors shrink-0"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+
             {activeGame === 'chess' ? (
               <button
                 type="button"
@@ -1701,6 +1789,8 @@ export default function App() {
         {activeGame === 'ski' && (
           <SkiGameWorkspace
             soundEnabled={soundEnabled}
+            legacyPhysics={skiLegacyPhysics}
+            onToggleLegacyPhysics={() => setSkiLegacyPhysics((prev) => !prev)}
             requestedMapId={requestedSkiMapId}
             requestedStartNonce={requestedSkiNonce}
             onBackToHub={handleSelectHub}
@@ -1744,6 +1834,7 @@ export default function App() {
                     currentTimeControl.id !== 'none' ? clocksMs[topColor] : null
                   }
                   pieceSet={pieceSet}
+                  variantBadge={getVariantPlayerBadge(topColor)}
                 />
 
                 {/* Board + Optional Analysis Eval Bar */}
@@ -1780,6 +1871,8 @@ export default function App() {
                       onToggleArrow={handleToggleArrow}
                       onToggleHighlight={handleToggleHighlight}
                       onClearAnnotations={handleClearAnnotations}
+                      variant={variant}
+                      fogVisibleSquares={fogVisibleSquares}
                     />
                   </div>
                 </div>
@@ -1807,6 +1900,7 @@ export default function App() {
                     currentTimeControl.id !== 'none' ? clocksMs[bottomColor] : null
                   }
                   pieceSet={pieceSet}
+                  variantBadge={getVariantPlayerBadge(bottomColor)}
                 />
 
                 {/* Live Opening & Annotation Status Bar */}
@@ -1816,15 +1910,7 @@ export default function App() {
                       className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400 shrink-0"
                       aria-hidden="true"
                     />
-                    {openingInfo ? (
-                      <span className="truncate">
-                        <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
-                          {openingInfo.eco}
-                        </span>
-                        <span className="mx-1.5 text-stone-400">·</span>
-                        <span>{openingInfo.name}</span>
-                      </span>
-                    ) : variantNote || variant !== 'standard' ? (
+                    {variantNote || variant !== 'standard' ? (
                       <span className="truncate">
                         <span className="font-semibold text-stone-900 dark:text-stone-100">
                           {GAME_VARIANTS.find((v) => v.id === variant)?.label ?? 'Custom'}
@@ -1834,6 +1920,14 @@ export default function App() {
                             · {variantNote}
                           </span>
                         )}
+                      </span>
+                    ) : openingInfo ? (
+                      <span className="truncate">
+                        <span className="font-mono font-semibold text-stone-900 dark:text-stone-100">
+                          {openingInfo.eco}
+                        </span>
+                        <span className="mx-1.5 text-stone-400">·</span>
+                        <span>{openingInfo.name}</span>
                       </span>
                     ) : (
                       <span className="text-stone-500 dark:text-stone-400 truncate">
@@ -2153,40 +2247,58 @@ export default function App() {
                   </div>
 
                   {/* Variant Selection */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
                         Chess Variant
                       </span>
-                      <span className="text-[11px] text-stone-500 dark:text-stone-400 truncate max-w-[175px]">
+                      <span className="text-[11px] font-medium text-emerald-700 dark:text-emerald-400 truncate max-w-[180px]">
                         {GAME_VARIANTS.find((v) => v.id === variant)?.label}
                       </span>
                     </div>
-                    <div className="grid grid-cols-3 gap-1">
-                      {GAME_VARIANTS.map((v) => {
-                        const active = variant === v.id;
-                        return (
-                          <button
-                            key={v.id}
-                            type="button"
-                            title={v.description}
-                            onClick={() => startNewGame({ variant: v.id })}
-                            className={`rounded-md border px-2 py-1.5 text-[11px] font-medium transition-colors whitespace-nowrap ${
-                              active
-                                ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/70 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
-                                : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
-                            }`}
-                          >
-                            {v.shortLabel}
-                          </button>
-                        );
-                      })}
+
+                    {(
+                      [
+                        { key: 'rules', label: 'Rules & Twists', cols: 'grid-cols-3' },
+                        { key: 'setups', label: 'Custom Armies & 960', cols: 'grid-cols-3' },
+                        { key: 'odds', label: 'Material Odds', cols: 'grid-cols-4' },
+                      ] as const
+                    ).map((group) => (
+                      <div key={group.key} className="space-y-1">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-400 dark:text-stone-500">
+                          {group.label}
+                        </div>
+                        <div className={`grid ${group.cols} gap-1`}>
+                          {GAME_VARIANTS.filter((v) => v.category === group.key).map((v) => {
+                            const active = variant === v.id;
+                            return (
+                              <button
+                                key={v.id}
+                                type="button"
+                                title={v.description}
+                                onClick={() => startNewGame({ variant: v.id })}
+                                className={`rounded-md border px-2 py-1.5 text-[11px] font-medium transition-colors whitespace-nowrap truncate ${
+                                  active
+                                    ? 'border-emerald-700 dark:border-emerald-500 bg-emerald-50/70 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
+                                    : 'border-stone-200 dark:border-stone-700 bg-stone-50/60 dark:bg-stone-800/60 text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+                                }`}
+                              >
+                                {v.shortLabel}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+
+                    <div className="rounded-lg border border-stone-200/80 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 px-2.5 py-2 text-[11px] text-stone-600 dark:text-stone-300 leading-relaxed">
+                      {GAME_VARIANTS.find((v) => v.id === variant)?.description}
+                      {(variant === 'shuffle960' || variant === 'double-960') && (
+                        <span className="block mt-0.5 text-[10px] text-stone-400 dark:text-stone-500">
+                          Castling is active when a side’s King begins on the e-file.
+                        </span>
+                      )}
                     </div>
-                    {variant === 'shuffle960' && (
-                      <p className="mt-1.5 text-[11px] text-stone-500 dark:text-stone-400">
-                        960 Setup · castling enabled when King starts on e-file.
-                      </p>
-                    )}
                   </div>
 
                   {/* Engine / Bots / Side */}
@@ -2579,6 +2691,118 @@ export default function App() {
       <footer className="border-t border-stone-200/80 dark:border-stone-800/80 py-3 px-4 text-center text-xs text-stone-500 dark:text-stone-400">
         Made by Anas Messaoud
       </footer>
+
+      {/* Global Settings Modal */}
+      {settingsOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/60 p-4"
+          onClick={() => setSettingsOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="global-settings-title"
+            className="w-full max-w-md rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 shadow-xl space-y-4 animate-chess-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-stone-200/80 dark:border-stone-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Settings className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
+                <h2
+                  id="global-settings-title"
+                  className="font-display text-base font-bold text-stone-900 dark:text-stone-100"
+                >
+                  Settings
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(false)}
+                aria-label="Close Settings"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800 hover:text-stone-900 dark:hover:text-stone-100 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              {/* Cork7 Ski Physics Mode */}
+              <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/40 p-3 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="font-semibold text-stone-900 dark:text-stone-100">
+                      Cork7 Ski Physics
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400">
+                      {skiLegacyPhysics
+                        ? 'Legacy mode: original arcadey rail carving and fixed slope gravity.'
+                        : 'Pro Alpine: momentum drift carving, real slope pitch, crest airtime & landing pump.'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5 rounded-lg bg-stone-200/70 dark:bg-stone-900 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setSkiLegacyPhysics(false)}
+                    className={`rounded-md px-3 py-1.5 font-semibold transition-colors ${
+                      !skiLegacyPhysics
+                        ? 'bg-emerald-700 text-white shadow-xs'
+                        : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100'
+                    }`}
+                  >
+                    Pro Alpine (Better)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSkiLegacyPhysics(true)}
+                    className={`rounded-md px-3 py-1.5 font-semibold transition-colors ${
+                      skiLegacyPhysics
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100'
+                    }`}
+                  >
+                    Legacy Physics
+                  </button>
+                </div>
+              </div>
+
+              {/* Sound & Appearance */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between rounded-lg border border-stone-200 dark:border-stone-800 px-3 py-2.5">
+                  <span className="font-medium text-stone-800 dark:text-stone-200">
+                    Game Sound Effects
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSoundEnabled((s) => !s)}
+                    className={`rounded-md px-3 py-1 font-semibold transition-colors ${
+                      soundEnabled
+                        ? 'bg-emerald-700 text-white'
+                        : 'bg-stone-200 dark:bg-stone-800 text-stone-600 dark:text-stone-400'
+                    }`}
+                  >
+                    {soundEnabled ? 'On' : 'Off'}
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-stone-200 dark:border-stone-800 px-3 py-2.5">
+                  <span className="font-medium text-stone-800 dark:text-stone-200">
+                    Appearance Theme
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setDarkMode((d) => !d)}
+                    className="rounded-md border border-stone-200 dark:border-stone-700 bg-stone-100 dark:bg-stone-800 px-3 py-1 font-semibold text-stone-800 dark:text-stone-200 hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors"
+                  >
+                    {darkMode ? 'Dark' : 'Light'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <OfflineIndicator />
     </div>

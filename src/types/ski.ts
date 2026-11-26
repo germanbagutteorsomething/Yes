@@ -142,6 +142,7 @@ export interface SkiHudSnapshot {
   lengthMeters: number;
   progressPct: number;
   isEndless: boolean;
+  isImmortal: boolean;
   isAirborne: boolean;
   isGrinding: boolean;
   isBailing: boolean;
@@ -215,5 +216,6 @@ export interface StoredSkiProgress {
   selectedMapId: SkiMapId;
   selectedGearId: string;
   ghostEnabled: boolean;
+  endlessImmortal?: boolean;
   records: Partial<Record<SkiMapId, SkiMapRecord>>;
 }

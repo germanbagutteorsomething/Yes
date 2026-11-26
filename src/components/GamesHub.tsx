@@ -169,8 +169,8 @@ export const GamesHub: React.FC<GamesHubProps> = ({
                 SquareEight Chess
               </h2>
               <p className="text-xs sm:text-sm text-stone-600 dark:text-stone-400 leading-relaxed">
-                Full FIDE chess studio with Chess960, 6 personalities, 3-Minute Puzzle Rush,
-                endgame drills, and Stockfish post-match review.
+                Full FIDE chess studio with 15 variants (King of the Hill, 3-Check, Fog of War,
+                Racing Kings, 960), 6 personalities, 3-Minute Puzzle Rush, and Stockfish review.
               </p>
             </div>
 

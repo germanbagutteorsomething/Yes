@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import {
   BOT_PROFILES,
+  GAME_VARIANTS,
   STOCKFISH_LEVELS,
   type BotId,
   type SavedMatch,
@@ -220,6 +221,14 @@ export const ArchiveWorkspace: React.FC<ArchiveWorkspaceProps> = ({
 
                       <div className="flex flex-wrap items-center gap-x-2 text-[11px] text-stone-500 dark:text-stone-400">
                         <span>{dateLabel}</span>
+                        {m.variant && m.variant !== 'standard' && (
+                          <>
+                            <span>·</span>
+                            <span className="font-medium text-emerald-700 dark:text-emerald-400">
+                              {GAME_VARIANTS.find((v) => v.id === m.variant)?.shortLabel ?? m.variant}
+                            </span>
+                          </>
+                        )}
                         {m.openingName && (
                           <>
                             <span>·</span>

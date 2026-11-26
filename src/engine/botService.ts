@@ -1,6 +1,8 @@
 import { Chess, type Move, type PieceSymbol, type Square } from 'chess.js';
-import type { BotProfile, PromotionPiece } from '../types/chess';
+import type { BotProfile, GameVariant, MoveRecord, PromotionPiece } from '../types/chess';
+import { getThreeCheckCounts, getVariantLegalMoves, HILL_SQUARES } from '../utils/variants';
 import { stockfishService, type CandidateMove, type EngineBestMove } from './stockfishService';
+import { getVariantEngineMove, pickRacingKingsMove } from './variantAi';
 
 const PIECE_CP: Record<PieceSymbol, number> = {
   p: 100,
@@ -270,7 +272,9 @@ export async function getBotMove(
   lanHistory: string[],
   bot: BotProfile,
   signal?: AbortSignal,
-  startFen?: string
+  startFen?: string,
+  variant: GameVariant = 'standard',
+  moves: MoveRecord[] = []
 ): Promise<EngineBestMove> {
   const startedAt = performance.now();
   const chess = new Chess(fen);
@@ -278,14 +282,49 @@ export async function getBotMove(
 
   let chosenMove: EngineBestMove | null = null;
 
-  if (bot.style === 'random') {
+  if (variant === 'racing-kings') {
+    if (bot.style === 'random') {
+      const legal = getVariantLegalMoves(chess, 'racing-kings');
+      if (legal.length === 0) throw new Error('No legal Racing Kings moves available.');
+      chosenMove = toEngineMove(legal[Math.floor(Math.random() * legal.length)]);
+    } else {
+      chosenMove = pickRacingKingsMove(fen, bot.skillLevel);
+    }
+  } else if (variant === 'king-of-the-hill' || variant === 'three-check') {
+    if (bot.style === 'random') {
+      chosenMove = pickRandomMove(chess);
+    } else if (bot.style === 'greedy') {
+      const legal = chess.moves({ verbose: true });
+      if (variant === 'king-of-the-hill') {
+        const hillWin = legal.find((m) => m.piece === 'k' && HILL_SQUARES.has(m.to));
+        if (hillWin) chosenMove = toEngineMove(hillWin);
+      } else {
+        const myChecks = getThreeCheckCounts(moves)[chess.turn()];
+        if (myChecks >= 2) {
+          const checkWin = legal.find((m) => m.san.includes('+') || m.san.includes('#'));
+          if (checkWin) chosenMove = toEngineMove(checkWin);
+        }
+      }
+      if (!chosenMove) chosenMove = pickGreedyMove(chess);
+    } else {
+      chosenMove = await getVariantEngineMove(
+        variant,
+        fen,
+        lanHistory,
+        { skillLevel: bot.skillLevel, depth: bot.depth, movetime: bot.movetime },
+        moves,
+        signal,
+        startFen
+      );
+    }
+  } else if (bot.style === 'random') {
     chosenMove = pickRandomMove(chess);
   } else if (bot.style === 'greedy') {
     chosenMove = pickGreedyMove(chess);
   } else {
     // Check opening book only from standard initial position
     const useBookChance = bot.id === 'sam' ? 0.8 : 0.75;
-    if (isStandardStart && Math.random() < useBookChance) {
+    if (isStandardStart && variant === 'standard' && Math.random() < useBookChance) {
       chosenMove = tryBookMove(chess, lanHistory, bot.id);
     }
 

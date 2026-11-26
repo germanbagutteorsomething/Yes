@@ -15,6 +15,8 @@ import {
   Pause,
   Play,
   RotateCcw,
+  Shield,
+  SlidersHorizontal,
   Sparkles,
   Trophy,
   Zap,
@@ -49,11 +51,14 @@ import {
   loadSkiProgress,
   recordSkiRunResult,
   saveSkiSelection,
+  setSkiEndlessImmortal,
   setSkiGhostEnabled,
 } from '../utils/storage';
 
 interface SkiGameWorkspaceProps {
   soundEnabled: boolean;
+  legacyPhysics?: boolean;
+  onToggleLegacyPhysics?: () => void;
   requestedMapId?: SkiMapId | null;
   requestedStartNonce?: number;
   onBackToHub?: () => void;
@@ -70,6 +75,7 @@ const INITIAL_HUD: SkiHudSnapshot = {
   lengthMeters: 1100,
   progressPct: 0,
   isEndless: false,
+  isImmortal: false,
   isAirborne: false,
   isGrinding: false,
   isBailing: false,
@@ -146,6 +152,8 @@ function triggerHaptic(ms = 10) {
 
 export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
   soundEnabled,
+  legacyPhysics = false,
+  onToggleLegacyPhysics,
   requestedMapId = null,
   requestedStartNonce = 0,
   onBackToHub,
@@ -160,6 +168,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
     requestedMapId ? 'playing' : 'menu'
   );
   const [runSeed, setRunSeed] = useState<number>(1);
+  const [finishEarlyNonce, setFinishEarlyNonce] = useState<number>(0);
   const [cameraMode, setCameraMode] = useState<SkiCameraMode>('chase');
   const [hud, setHud] = useState<SkiHudSnapshot>(INITIAL_HUD);
   const [isNewBest, setIsNewBest] = useState<boolean>(false);
@@ -318,6 +327,15 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
   const handleToggleGhost = useCallback(() => {
     setProgress((prev) => setSkiGhostEnabled(!prev.ghostEnabled));
   }, []);
+
+  const handleToggleEndlessImmortal = useCallback(() => {
+    setProgress((prev) => setSkiEndlessImmortal(!prev.endlessImmortal));
+  }, []);
+
+  const handleFinishEndlessRun = useCallback(() => {
+    clearInputs();
+    setFinishEarlyNonce((n) => n + 1);
+  }, [clearInputs]);
 
   const handleTogglePause = useCallback(() => {
     clearInputs();
@@ -544,6 +562,42 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              {onToggleLegacyPhysics && (
+                <button
+                  type="button"
+                  onClick={onToggleLegacyPhysics}
+                  title={
+                    legacyPhysics
+                      ? 'Legacy Physics: original arcadey rail carving & fixed slope speed'
+                      : 'Pro Physics: momentum carving, drift, terrain crest airtime, & landing pump'
+                  }
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                    legacyPhysics
+                      ? 'border-amber-600/50 dark:border-amber-500/50 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200'
+                      : 'border-emerald-600/50 dark:border-emerald-500/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200'
+                  }`}
+                >
+                  <SlidersHorizontal className="w-4 h-4" aria-hidden="true" />
+                  <span>Physics: {legacyPhysics ? 'Legacy' : 'Pro'}</span>
+                </button>
+              )}
+
+              {activeMap.isEndless && (
+                <button
+                  type="button"
+                  onClick={handleToggleEndlessImmortal}
+                  title="Immortal Mode: wipeouts recover cleanly without ending Endless runs"
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                    progress.endlessImmortal
+                      ? 'border-cyan-600/50 dark:border-cyan-500/50 bg-cyan-50 dark:bg-cyan-950/40 text-cyan-800 dark:text-cyan-200'
+                      : 'border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-600 dark:text-stone-400'
+                  }`}
+                >
+                  <Shield className="w-4 h-4" aria-hidden="true" />
+                  <span>Immortal: {progress.endlessImmortal ? 'On' : 'Off'}</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={handleToggleGhost}
@@ -669,6 +723,25 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                           <Ghost className="w-3 h-3" />
                           <span>Ghost PB</span>
                         </div>
+                      )}
+
+                      {m.isEndless && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleEndlessImmortal();
+                          }}
+                          title="Immortal Mode: wipeouts recover cleanly without ending Endless runs"
+                          className={`absolute bottom-2 left-2 inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-2 py-0.5 rounded border transition-colors ${
+                            progress.endlessImmortal
+                              ? 'border-cyan-400/70 bg-cyan-950/85 text-cyan-200'
+                              : 'border-white/20 bg-stone-950/75 text-stone-300 hover:text-white'
+                          }`}
+                        >
+                          <Shield className="w-3 h-3" />
+                          <span>Immortal: {progress.endlessImmortal ? 'On' : 'Off'}</span>
+                        </button>
                       )}
                     </div>
 
@@ -955,6 +1028,9 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
         cameraMode={cameraMode}
         ghostEnabled={progress.ghostEnabled}
         ghostSamples={progress.records[mapId]?.bestGhost}
+        endlessImmortal={Boolean(progress.endlessImmortal)}
+        finishEarlyNonce={finishEarlyNonce}
+        legacyPhysics={legacyPhysics}
         inputRef={inputRef}
         onHudUpdate={setHud}
         onFinishRun={handleFinishRun}
@@ -1026,8 +1102,12 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
               >
                 Ghost {hud.ghostDeltaMeters >= 0 ? `+${hud.ghostDeltaMeters}m` : `${hud.ghostDeltaMeters}m`}
               </span>
+            ) : hud.isEndless ? (
+              <span className={hud.isImmortal ? 'text-cyan-300 font-semibold' : ''}>
+                {hud.isImmortal ? 'Endless · Immortal' : 'Endless Run'}
+              </span>
             ) : (
-              <span>{hud.isEndless ? 'Endless Run' : `${hud.lengthMeters.toLocaleString()}m`}</span>
+              <span>{`${hud.lengthMeters.toLocaleString()}m`}</span>
             )}
           </div>
         </div>
@@ -1361,6 +1441,48 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                 <Play className="w-3.5 h-3.5" />
                 <span>Resume Run</span>
               </button>
+              {activeMap.isEndless && (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleToggleEndlessImmortal}
+                    className={`w-full inline-flex items-center justify-center gap-2 rounded-lg border py-2.5 px-4 text-xs font-semibold transition-colors ${
+                      progress.endlessImmortal
+                        ? 'border-cyan-500/60 bg-cyan-950/70 text-cyan-200 hover:bg-cyan-900/70'
+                        : 'border-stone-700 bg-stone-800 text-stone-100 hover:bg-stone-700'
+                    }`}
+                  >
+                    <Shield className="w-3.5 h-3.5" />
+                    <span>
+                      Endless Immortal Mode: {progress.endlessImmortal ? 'On' : 'Off'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleFinishEndlessRun}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-amber-500/50 bg-amber-950/60 py-2.5 px-4 text-xs font-semibold text-amber-200 hover:bg-amber-900/60 transition-colors"
+                  >
+                    <Flag className="w-3.5 h-3.5" />
+                    <span>Finish & Bank Endless Run</span>
+                  </button>
+                </>
+              )}
+              {onToggleLegacyPhysics && (
+                <button
+                  type="button"
+                  onClick={onToggleLegacyPhysics}
+                  className={`w-full inline-flex items-center justify-center gap-2 rounded-lg border py-2.5 px-4 text-xs font-semibold transition-colors ${
+                    legacyPhysics
+                      ? 'border-amber-500/50 bg-amber-950/60 text-amber-200 hover:bg-amber-900/60'
+                      : 'border-emerald-500/50 bg-emerald-950/60 text-emerald-200 hover:bg-emerald-900/60'
+                  }`}
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  <span>
+                    Ski Physics: {legacyPhysics ? 'Legacy (Original)' : 'Pro Alpine (Better)'}
+                  </span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() =>
@@ -1432,7 +1554,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                 <h2 className="mt-0.5 font-display text-xl font-bold">{activeMap.name}</h2>
                 <p className="mt-0.5 text-xs text-stone-400 font-mono tabular-nums">
                   {hud.isEndless
-                    ? `Distance: ${hud.distanceMeters.toLocaleString()}m · +25 XP Earned`
+                    ? `Distance: ${hud.distanceMeters.toLocaleString()}m${hud.isImmortal ? ' · Immortal' : ''} · +25 XP Earned`
                     : `Silver: ${activeMap.targetScore.toLocaleString()} · Gold: ${Math.round(activeMap.targetScore * 1.6).toLocaleString()}`}
                 </p>
               </div>

@@ -16,6 +16,7 @@ interface PlayerBarProps {
   isGameOver?: boolean;
   timeRemainingMs?: number | null;
   pieceSet?: PieceSet;
+  variantBadge?: string | null;
 }
 
 function formatClock(ms: number): string {
@@ -44,6 +45,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   isGameOver = false,
   timeRemainingMs = null,
   pieceSet = 'classic',
+  variantBadge = null,
 }) => {
   const capturedPieceColor: PlayerColor = color === 'w' ? 'b' : 'w';
 
@@ -120,6 +122,11 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
       </div>
 
       <div className="flex items-center gap-2 shrink-0">
+        {variantBadge && (
+          <span className="font-mono text-[11px] font-semibold whitespace-nowrap shrink-0 px-2 py-1 rounded-md border border-amber-300/70 dark:border-amber-700/70 bg-amber-50/80 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 tabular-nums">
+            {variantBadge}
+          </span>
+        )}
         {statusText && (
           <span
             className={`text-xs font-medium whitespace-nowrap shrink-0 px-2.5 py-1 rounded-md ${

@@ -25,6 +25,7 @@ export interface StoredPreferences {
   soundEnabled: boolean;
   boardTheme: BoardTheme;
   pieceSet: PieceSet;
+  skiLegacyPhysics?: boolean;
 }
 
 function safeReadJson<T>(key: string, fallback: T): T {
@@ -132,12 +133,14 @@ export function markEndgameCompleted(drillId: string): string[] {
 }
 
 export function loadPreferences(): StoredPreferences {
-  return safeReadJson<StoredPreferences>(PREFS_KEY, {
-    darkMode: false,
-    soundEnabled: true,
-    boardTheme: 'tournament',
-    pieceSet: 'classic',
-  });
+  const raw = safeReadJson<Partial<StoredPreferences>>(PREFS_KEY, {});
+  return {
+    darkMode: raw.darkMode ?? false,
+    soundEnabled: raw.soundEnabled ?? true,
+    boardTheme: raw.boardTheme ?? 'tournament',
+    pieceSet: raw.pieceSet ?? 'classic',
+    skiLegacyPhysics: raw.skiLegacyPhysics ?? false,
+  };
 }
 
 export function savePreferences(prefs: StoredPreferences) {
@@ -152,6 +155,7 @@ export function loadSkiProgress(): StoredSkiProgress {
     selectedMapId: raw.selectedMapId ?? 'the-yard',
     selectedGearId: raw.selectedGearId ?? 'alpine-orange',
     ghostEnabled: raw.ghostEnabled ?? true,
+    endlessImmortal: raw.endlessImmortal ?? false,
     records: raw.records ?? {},
   };
 }
@@ -175,6 +179,13 @@ export function saveSkiSelection(
 export function setSkiGhostEnabled(ghostEnabled: boolean): StoredSkiProgress {
   const cur = loadSkiProgress();
   const next: StoredSkiProgress = { ...cur, ghostEnabled };
+  safeWriteJson(SKI_PROGRESS_KEY, next);
+  return next;
+}
+
+export function setSkiEndlessImmortal(endlessImmortal: boolean): StoredSkiProgress {
+  const cur = loadSkiProgress();
+  const next: StoredSkiProgress = { ...cur, endlessImmortal };
   safeWriteJson(SKI_PROGRESS_KEY, next);
   return next;
 }

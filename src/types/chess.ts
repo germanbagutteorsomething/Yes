@@ -14,14 +14,26 @@ export type BotPlayStyle = 'random' | 'greedy' | 'aggressive' | 'solid' | 'blitz
 
 export type GameVariant =
   | 'standard'
+  | 'king-of-the-hill'
+  | 'three-check'
+  | 'fog-of-war'
+  | 'racing-kings'
   | 'shuffle960'
+  | 'double-960'
+  | 'no-pawns'
+  | 'cavalry-charge'
+  | 'queen-swarm'
+  | 'peasants-revolt'
   | 'odds-pawn'
   | 'odds-knight'
   | 'odds-rook'
   | 'odds-queen';
 
+export type VariantCategory = 'rules' | 'setups' | 'odds';
+
 export interface VariantConfig {
   id: GameVariant;
+  category: VariantCategory;
   label: string;
   shortLabel: string;
   description: string;
@@ -30,39 +42,108 @@ export interface VariantConfig {
 export const GAME_VARIANTS: VariantConfig[] = [
   {
     id: 'standard',
+    category: 'rules',
     label: 'Standard Chess',
     shortLabel: 'Standard',
-    description: 'Classic FIDE starting position',
+    description: 'Classic FIDE starting position and rules.',
+  },
+  {
+    id: 'king-of-the-hill',
+    category: 'rules',
+    label: 'King of the Hill',
+    shortLabel: 'Hill King',
+    description: 'Reach d4, e4, d5, or e5 with your King to win immediately (or checkmate).',
+  },
+  {
+    id: 'three-check',
+    category: 'rules',
+    label: 'Three-Check',
+    shortLabel: '3-Check',
+    description: 'Deliver 3 checks to the opposing King to win immediately.',
+  },
+  {
+    id: 'fog-of-war',
+    category: 'rules',
+    label: 'Fog of War',
+    shortLabel: 'Fog of War',
+    description: 'Only squares your pieces can reach or defend are visible through the mist.',
+  },
+  {
+    id: 'racing-kings',
+    category: 'rules',
+    label: 'Racing Kings',
+    shortLabel: 'Race Kings',
+    description: 'Checks are illegal. First King to reach rank 8 wins the race!',
   },
   {
     id: 'shuffle960',
+    category: 'setups',
     label: '960 Backrank',
     shortLabel: '960 Setup',
-    description: 'Randomized Fischer back-rank (960 valid layouts)',
+    description: 'Randomized Fischer back-rank (960 valid layouts).',
+  },
+  {
+    id: 'double-960',
+    category: 'setups',
+    label: 'Double 960',
+    shortLabel: 'Double 960',
+    description: 'White and Black each start with an independent randomized 960 back-rank.',
+  },
+  {
+    id: 'no-pawns',
+    category: 'setups',
+    label: 'No Pawns',
+    shortLabel: 'No Pawns',
+    description: 'Pure piece tactics from Move 1 with zero pawns on the board.',
+  },
+  {
+    id: 'cavalry-charge',
+    category: 'setups',
+    label: 'Cavalry Charge',
+    shortLabel: 'Cavalry',
+    description: 'Every back-rank piece except the King is replaced with Knights.',
+  },
+  {
+    id: 'queen-swarm',
+    category: 'setups',
+    label: 'Queen Swarm',
+    shortLabel: 'All Queens',
+    description: 'Seven Queens per side behind a pawn wall—total tactical chaos.',
+  },
+  {
+    id: 'peasants-revolt',
+    category: 'setups',
+    label: "Peasants' Revolt",
+    shortLabel: 'Peasants',
+    description: 'Asymmetric duel: White’s 8 Pawns & Knight vs Black’s 4 Knights & Pawn.',
   },
   {
     id: 'odds-pawn',
+    category: 'odds',
     label: 'Pawn Odds',
     shortLabel: '+Pawn',
-    description: 'Opponent starts without the f-pawn',
+    description: 'Opponent starts without the f-pawn.',
   },
   {
     id: 'odds-knight',
+    category: 'odds',
     label: 'Knight Odds',
     shortLabel: '+Knight',
-    description: 'Opponent starts without a queenside knight',
+    description: 'Opponent starts without a queenside knight.',
   },
   {
     id: 'odds-rook',
+    category: 'odds',
     label: 'Rook Odds',
     shortLabel: '+Rook',
-    description: 'Opponent starts without the a-rook',
+    description: 'Opponent starts without the a-rook.',
   },
   {
     id: 'odds-queen',
+    category: 'odds',
     label: 'Queen Odds',
     shortLabel: '+Queen',
-    description: 'Opponent starts without a queen',
+    description: 'Opponent starts without a queen.',
   },
 ];
 
@@ -206,6 +287,7 @@ export const TIME_CONTROLS: TimeControlConfig[] = [
 
 export type GameEndReason =
   | 'checkmate'
+  | 'variant-win'
   | 'stalemate'
   | 'threefold'
   | 'insufficient'
