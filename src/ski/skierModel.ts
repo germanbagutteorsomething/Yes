@@ -546,16 +546,16 @@ export function createSkyDome(map: SkiMapConfig): {
 
         // Atmospheric Rayleigh horizon alpenglow band near the sun
         float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
-        float horizonGlow = exp(-abs(dir.y) * 9.0) * pow(sunDot, 2.2) * (1.0 - uIsNight * 0.7);
-        sky += uSunColor * horizonGlow * 0.34;
+        float horizonGlow = exp(-abs(dir.y) * 10.0) * pow(sunDot, 2.4) * (1.0 - uIsNight * 0.72);
+        sky += uSunColor * horizonGlow * 0.22;
 
-        float halo = pow(sunDot, mix(10.0, 26.0, uIsNight));
-        float corona = pow(sunDot, 4.0) * 0.28;
-        float disc = smoothstep(mix(0.9960, 0.9980, uIsNight), mix(0.9988, 0.9994, uIsNight), sunDot);
+        float halo = pow(sunDot, mix(12.0, 26.0, uIsNight));
+        float corona = pow(sunDot, 5.0) * 0.16;
+        float disc = smoothstep(mix(0.9968, 0.9982, uIsNight), mix(0.9990, 0.9994, uIsNight), sunDot);
         float azim = atan(dir.x, dir.z);
-        float sunRays = pow(sunDot, 3.2) * (0.5 + 0.5 * sin(azim * 16.0 + dir.y * 11.0)) * (1.0 - uIsNight) * 0.16;
-        sky += uSunColor * (halo * mix(0.62, 0.30, uIsNight) + corona * (1.0 - uIsNight) + sunRays);
-        sky += mix(uSunColor, vec3(1.0), 0.78) * disc * mix(1.65, 1.05, uIsNight);
+        float sunRays = pow(sunDot, 4.2) * (0.5 + 0.5 * sin(azim * 16.0 + dir.y * 11.0)) * (1.0 - uIsNight) * 0.09;
+        sky += uSunColor * (halo * mix(0.42, 0.26, uIsNight) + corona * (1.0 - uIsNight) + sunRays);
+        sky += mix(uSunColor, vec3(1.0), 0.78) * disc * mix(1.32, 1.0, uIsNight);
 
         // Drifting two-tier alpine cirrus & sunlit cumulus cloud bands
         if (dir.y > 0.03) {
@@ -1584,15 +1584,16 @@ export function buildMountainEnvironment(
     new THREE.MeshPhysicalMaterial({
       map: snowTex,
       normalMap: snowNormalTex,
-      normalScale: new THREE.Vector2(0.58, 0.44),
+      normalScale: new THREE.Vector2(0.62, 0.48),
       vertexColors: true,
-      roughness: 0.58,
-      metalness: 0.03,
-      clearcoat: 0.30,
-      clearcoatRoughness: 0.30,
-      sheen: 0.55,
-      sheenRoughness: 0.42,
-      sheenColor: new THREE.Color(map.isNight ? '#7DD3FC' : '#E0F2FE'),
+      roughness: 0.66,
+      metalness: 0.02,
+      clearcoat: 0.14,
+      clearcoatRoughness: 0.36,
+      sheen: 0.26,
+      sheenRoughness: 0.48,
+      sheenColor: new THREE.Color(map.isNight ? '#7DD3FC' : '#BAE6FD'),
+      envMapIntensity: 0.24,
     })
   );
 
@@ -1636,13 +1637,13 @@ export function buildMountainEnvironment(
         vec2 sLocal = fract(vSnowWorldPos.xz * 7.8) - 0.5;
         float sRnd = fract(sin(dot(sCell, vec2(127.1, 311.7))) * 43758.5453);
         float sRnd2 = fract(sin(dot(sCell, vec2(269.5, 183.3))) * 43758.5453);
-        float sTwinkle = pow(max(0.0, sin(sRnd * 6.2831 + snowViewDir.x * 11.0 + snowViewDir.z * 8.0 + uTime * 2.6)), 11.0);
-        float sDot = smoothstep(0.38, 0.04, length(sLocal));
-        float sFade = 1.0 - smoothstep(18.0, 96.0, distCam);
-        float sparkle = step(0.54, sRnd2) * sTwinkle * sDot * sFade;
-        float sssWrap = pow(1.0 - max(0.0, dot(snowViewDir, normalize(vSnowWorldNormal))), 2.4) * sFade;
-        float sunIceGlint = pow(max(0.0, snowViewDir.z * 0.72 + snowViewDir.y * 0.45), 5.5) * sFade * 0.10;
-        outgoingLight += uSparkleColor * (sparkle * 1.48 + sunIceGlint) + uIceTint * (sssWrap * 0.14);
+        float sTwinkle = pow(max(0.0, sin(sRnd * 6.2831 + snowViewDir.x * 11.0 + snowViewDir.z * 8.0 + uTime * 2.6)), 16.0);
+        float sDot = smoothstep(0.32, 0.04, length(sLocal));
+        float sFade = 1.0 - smoothstep(16.0, 82.0, distCam);
+        float sparkle = step(0.68, sRnd2) * sTwinkle * sDot * sFade;
+        float sssWrap = pow(1.0 - max(0.0, dot(snowViewDir, normalize(vSnowWorldNormal))), 2.6) * sFade;
+        float sunIceGlint = pow(max(0.0, snowViewDir.z * 0.72 + snowViewDir.y * 0.45), 6.0) * sFade * 0.035;
+        outgoingLight += uSparkleColor * (sparkle * 0.85 + sunIceGlint) + uIceTint * (sssWrap * 0.065);
         #include <opaque_fragment>
         `
       );
@@ -1757,13 +1758,13 @@ export function buildMountainEnvironment(
   const cloudPuffGeo = track(new THREE.IcosahedronGeometry(1, 1));
   const cloudMat = track(
     new THREE.MeshStandardMaterial({
-      color: map.isNight ? '#1E3A5F' : '#F8FAFC',
-      emissive: map.isNight ? '#0F172A' : '#E0F2FE',
-      emissiveIntensity: map.isNight ? 0.22 : 0.16,
-      roughness: 0.95,
+      color: map.isNight ? '#1E3A5F' : '#E2E8F0',
+      emissive: map.isNight ? '#0F172A' : '#BAE6FD',
+      emissiveIntensity: map.isNight ? 0.18 : 0.04,
+      roughness: 0.96,
       metalness: 0.0,
       transparent: true,
-      opacity: map.isNight ? 0.56 : 0.84,
+      opacity: map.isNight ? 0.56 : 0.78,
       flatShading: true,
     })
   );
@@ -2202,10 +2203,11 @@ export function buildMountainEnvironment(
     new THREE.MeshPhysicalMaterial({
       color: map.snowBaseColor,
       normalMap: snowNormalTex,
-      normalScale: new THREE.Vector2(0.3, 0.25),
-      roughness: 0.64,
-      metalness: 0.04,
-      clearcoat: 0.2,
+      normalScale: new THREE.Vector2(0.32, 0.26),
+      roughness: 0.68,
+      metalness: 0.03,
+      clearcoat: 0.12,
+      envMapIntensity: 0.24,
     })
   );
   const lipStripMat = track(
@@ -2428,7 +2430,7 @@ export function buildMountainEnvironment(
       new THREE.MeshPhysicalMaterial({
         color: '#FACC15',
         emissive: '#F59E0B',
-        emissiveIntensity: map.isNight ? 1.35 : 0.65,
+        emissiveIntensity: map.isNight ? 1.55 : 1.35,
         roughness: 0.16,
         metalness: 0.85,
         clearcoat: 0.9,
@@ -2438,7 +2440,7 @@ export function buildMountainEnvironment(
       new THREE.MeshPhysicalMaterial({
         color: '#38BDF8',
         emissive: '#0EA5E9',
-        emissiveIntensity: map.isNight ? 1.25 : 0.55,
+        emissiveIntensity: map.isNight ? 1.45 : 1.25,
         roughness: 0.18,
         metalness: 0.8,
         clearcoat: 0.9,

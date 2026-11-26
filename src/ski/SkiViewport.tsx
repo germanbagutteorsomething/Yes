@@ -369,7 +369,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     setWebglError(null);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = map.isNight ? 1.2 : 1.08;
+    renderer.toneMappingExposure = map.isNight ? 1.08 : 0.92;
     renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -411,7 +411,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     // Camera (wide far clip for limitless high-altitude panoramic flights)
     const camera = new THREE.PerspectiveCamera(64, width / height, 0.2, 1800);
 
-    // GPU Post-Processing (Selective Bloom + Tone Mapping Output; skipped on software WebGL)
+    // GPU Post-Processing (Selective HDR Bloom + ACES Output; threshold stays well above lit snow)
     let composer: EffectComposer | null = null;
     let bloomPass: UnrealBloomPass | null = null;
     let outputPass: OutputPass | null = null;
@@ -422,9 +422,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       composer.addPass(new RenderPass(scene, camera));
       bloomPass = new UnrealBloomPass(
         new THREE.Vector2(width, height),
-        map.isNight ? 0.52 : 0.24,
-        0.42,
-        0.86
+        map.isNight ? 0.26 : 0.08,
+        map.isNight ? 0.30 : 0.20,
+        map.isNight ? 1.05 : 1.95
       );
       composer.addPass(bloomPass);
       outputPass = new OutputPass();
@@ -432,10 +432,17 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     }
 
     // 3-Point Warm/Cool Alpine Lighting Rig
-    const hemiLight = new THREE.HemisphereLight(map.ambientSky, map.ambientGround, map.isNight ? 0.95 : 1.05);
+    const hemiLight = new THREE.HemisphereLight(
+      map.ambientSky,
+      map.ambientGround,
+      map.isNight ? 0.85 : 0.72
+    );
     scene.add(hemiLight);
 
-    const sunLight = new THREE.DirectionalLight(map.sunColor, map.sunIntensity);
+    const sunLight = new THREE.DirectionalLight(
+      map.sunColor,
+      map.sunIntensity * (map.isNight ? 0.92 : 0.76)
+    );
     sunLight.castShadow = !isSoftwareGl;
     sunLight.shadow.mapSize.width = 2048;
     sunLight.shadow.mapSize.height = 2048;
@@ -451,7 +458,10 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     scene.add(sunLight);
     scene.add(sunLight.target);
 
-    const rimLight = new THREE.DirectionalLight(map.isNight ? '#38BDF8' : '#E0F2FE', 0.56);
+    const rimLight = new THREE.DirectionalLight(
+      map.isNight ? '#38BDF8' : '#BAE6FD',
+      map.isNight ? 0.45 : 0.28
+    );
     rimLight.position.set(-22, 20, 26);
     scene.add(rimLight);
 
