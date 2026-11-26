@@ -147,6 +147,7 @@ export interface SkiHudSnapshot {
   isGrinding: boolean;
   isBailing: boolean;
   airtime: number;
+  altitudeMeters: number;
   spinDeg: number;
   flipDeg: number;
   grab: SkiGrabType;

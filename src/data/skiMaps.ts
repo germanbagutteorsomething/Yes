@@ -360,12 +360,12 @@ export function getBaseTerrainHeight(map: SkiMapConfig, x: number, z: number): n
       y += bank * 2.2;
     }
   } else {
-    // Gentle natural chute walls outside main groomer edge
+    // Sweeping natural alpine chute walls outside main groomer edge (uncapped vertical ridge climb)
     const edgeStart = map.halfWidth - 4;
     const absX = Math.abs(x);
     if (absX > edgeStart) {
       const overflow = absX - edgeStart;
-      y += Math.min(14, overflow * overflow * 0.14);
+      y += overflow * overflow * 0.125;
     }
   }
 

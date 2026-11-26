@@ -24,6 +24,7 @@ export interface SkierRig {
   skisGroup: THREE.Group;
   scarfSegments: THREE.Mesh[];
   boostWakeGroup: THREE.Group;
+  airContrailGroup: THREE.Group;
   fpvEyeAnchor: THREE.Object3D;
   fpvLookAnchor: THREE.Object3D;
   setFirstPerson: (enabled: boolean) => void;
@@ -76,16 +77,17 @@ export function createSnowTexture(
 }
 
 export function createSnowNormalTexture(maxAnisotropy: number): THREE.DataTexture {
-  const size = 256;
+  const size = 512;
   const data = new Uint8Array(size * size * 4);
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const rib = Math.cos((x / size) * Math.PI * 32);
-      const drift = Math.sin(x * 0.14 + Math.sin(y * 0.08) * 1.6);
-      const grain = Math.sin(x * 0.43 + y * 0.31) * Math.cos(x * 0.19 - y * 0.57);
-      const nx = THREE.MathUtils.clamp(rib * 0.38 + drift * 0.16 + grain * 0.14, -1, 1);
-      const ny = THREE.MathUtils.clamp(grain * 0.2 + drift * 0.08, -1, 1);
+      const rib = Math.cos((x / size) * Math.PI * 40);
+      const sastrugi = Math.sin(x * 0.08 + Math.sin(y * 0.045) * 2.1) * 0.65;
+      const drift = Math.sin(x * 0.16 + Math.cos(y * 0.09) * 1.4);
+      const grain = Math.sin(x * 0.52 + y * 0.37) * Math.cos(x * 0.27 - y * 0.61);
+      const nx = THREE.MathUtils.clamp(rib * 0.34 + sastrugi * 0.18 + drift * 0.14 + grain * 0.12, -1, 1);
+      const ny = THREE.MathUtils.clamp(grain * 0.22 + sastrugi * 0.12 + drift * 0.08, -1, 1);
       const nz = Math.sqrt(Math.max(0.1, 1 - nx * nx - ny * ny));
 
       const idx = (y * size + x) * 4;
@@ -99,7 +101,7 @@ export function createSnowNormalTexture(maxAnisotropy: number): THREE.DataTextur
   const tex = new THREE.DataTexture(data, size, size);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(16, 260);
+  tex.repeat.set(20, 280);
   tex.anisotropy = Math.min(8, maxAnisotropy || 1);
   tex.needsUpdate = true;
   return tex;
@@ -460,10 +462,10 @@ function createFloodGlowTexture(): THREE.CanvasTexture {
 
 export function createSkyDome(map: SkiMapConfig): {
   mesh: THREE.Mesh;
-  update: (elapsedSec: number) => void;
+  update: (elapsedSec: number, altitudeMeters?: number) => void;
   dispose: () => void;
 } {
-  const geo = new THREE.SphereGeometry(340, 36, 24);
+  const geo = new THREE.SphereGeometry(1250, 44, 30);
   const topCol = new THREE.Color(map.skyColor);
   const horCol = new THREE.Color(map.horizonColor);
   const sunCol = new THREE.Color(map.sunColor);
@@ -483,6 +485,7 @@ export function createSkyDome(map: SkiMapConfig): {
       uSunDir: { value: sunDir },
       uIsNight: { value: map.isNight ? 1.0 : 0.0 },
       uTime: { value: 0 },
+      uAltitude: { value: 0 },
     },
     vertexShader: `
       varying vec3 vWorldDir;
@@ -498,6 +501,7 @@ export function createSkyDome(map: SkiMapConfig): {
       uniform vec3 uSunDir;
       uniform float uIsNight;
       uniform float uTime;
+      uniform float uAltitude;
       varying vec3 vWorldDir;
 
       float hash3(vec3 p) {
@@ -534,61 +538,80 @@ export function createSkyDome(map: SkiMapConfig): {
 
       void main() {
         vec3 dir = normalize(vWorldDir);
-        float h = clamp(dir.y * 1.35 + 0.06, 0.0, 1.0);
-        vec3 sky = mix(uHorizonColor, uTopColor, pow(h, 0.62));
+        float h = clamp(dir.y * 1.38 + 0.08, 0.0, 1.0);
+        float stratoMix = smoothstep(32.0, 280.0, uAltitude);
+        vec3 stratoZenith = vec3(0.03, 0.07, 0.19);
+        vec3 zenithCol = mix(uTopColor, stratoZenith, stratoMix * (1.0 - uIsNight * 0.4));
+        vec3 sky = mix(uHorizonColor, zenithCol, pow(h, 0.58));
 
+        // Atmospheric Rayleigh horizon alpenglow band near the sun
         float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
-        float halo = pow(sunDot, mix(12.0, 26.0, uIsNight));
-        float corona = pow(sunDot, 4.5) * 0.24;
-        float disc = smoothstep(mix(0.9962, 0.998, uIsNight), mix(0.9988, 0.9994, uIsNight), sunDot);
+        float horizonGlow = exp(-abs(dir.y) * 9.0) * pow(sunDot, 2.2) * (1.0 - uIsNight * 0.7);
+        sky += uSunColor * horizonGlow * 0.34;
+
+        float halo = pow(sunDot, mix(10.0, 26.0, uIsNight));
+        float corona = pow(sunDot, 4.0) * 0.28;
+        float disc = smoothstep(mix(0.9960, 0.9980, uIsNight), mix(0.9988, 0.9994, uIsNight), sunDot);
         float azim = atan(dir.x, dir.z);
-        float sunRays = pow(sunDot, 3.0) * (0.5 + 0.5 * sin(azim * 14.0 + dir.y * 9.0)) * (1.0 - uIsNight) * 0.14;
-        sky += uSunColor * (halo * mix(0.58, 0.28, uIsNight) + corona * (1.0 - uIsNight) + sunRays);
-        sky += mix(uSunColor, vec3(1.0), 0.72) * disc * mix(1.5, 0.98, uIsNight);
+        float sunRays = pow(sunDot, 3.2) * (0.5 + 0.5 * sin(azim * 16.0 + dir.y * 11.0)) * (1.0 - uIsNight) * 0.16;
+        sky += uSunColor * (halo * mix(0.62, 0.30, uIsNight) + corona * (1.0 - uIsNight) + sunRays);
+        sky += mix(uSunColor, vec3(1.0), 0.78) * disc * mix(1.65, 1.05, uIsNight);
 
-        // Drifting alpine cirrus cloud bands across upper sky
-        if (dir.y > 0.04) {
-          vec2 cloudUv = dir.xz / (dir.y + 0.22);
+        // Drifting two-tier alpine cirrus & sunlit cumulus cloud bands
+        if (dir.y > 0.03) {
+          vec2 cloudUv = dir.xz / (dir.y + 0.20);
           cloudUv += vec2(uTime * 0.008, uTime * 0.004);
-          float cNoise = fbm(cloudUv * 1.45);
-          float cloudMask = smoothstep(0.52, 0.78, cNoise) * smoothstep(0.04, 0.22, dir.y) * (1.0 - smoothstep(0.55, 0.92, dir.y));
-          vec3 cloudCol = mix(vec3(0.98, 0.99, 1.0), uSunColor, 0.35 * pow(sunDot, 2.0));
+          float cNoise = fbm(cloudUv * 1.38);
+          float cDetail = fbm(cloudUv * 2.9 - vec2(uTime * 0.004, 0.0));
+          float cMix = cNoise * 0.72 + cDetail * 0.28;
+          float cloudMask = smoothstep(0.50, 0.77, cMix) * smoothstep(0.03, 0.20, dir.y) * (1.0 - smoothstep(0.58, 0.94, dir.y));
+          float cloudSunLit = smoothstep(0.45, 0.85, cMix) * pow(sunDot, 1.8);
+          vec3 cloudCol = mix(vec3(0.92, 0.96, 1.0), uSunColor * 1.08, 0.38 * cloudSunLit + 0.2 * pow(sunDot, 2.0));
           cloudCol = mix(cloudCol, vec3(0.14, 0.24, 0.42), uIsNight * 0.82);
-          sky = mix(sky, cloudCol, cloudMask * mix(0.48, 0.22, uIsNight));
+          float cloudAltFade = 1.0 - smoothstep(140.0, 320.0, uAltitude) * 0.55;
+          sky = mix(sky, cloudCol, cloudMask * mix(0.55, 0.24, uIsNight) * cloudAltFade);
         }
 
-        // Crisp starfield + waving multi-band Aurora Borealis on night runs
-        if (uIsNight > 0.5 && dir.y > 0.06) {
-          vec3 grid = floor(dir * 205.0);
+        // Crisp starfield (night runs OR high-altitude stratosphere flight) + Aurora Borealis on night runs
+        float starVisibility = max(uIsNight, stratoMix * smoothstep(0.15, 0.55, dir.y));
+        if (starVisibility > 0.05 && dir.y > 0.05) {
+          vec3 grid = floor(dir * 225.0);
           float s = hash3(grid);
-          if (s > 0.9942) {
-            float b = (s - 0.9942) / 0.0058;
-            float twinkle = 0.72 + 0.28 * sin(uTime * 2.5 + s * 90.0);
-            sky += vec3(0.78, 0.9, 1.0) * b * twinkle * smoothstep(0.06, 0.32, dir.y) * 0.95;
+          if (s > 0.9938) {
+            float b = (s - 0.9938) / 0.0062;
+            float twinkle = 0.72 + 0.28 * sin(uTime * 2.6 + s * 95.0);
+            sky += vec3(0.80, 0.92, 1.0) * b * twinkle * smoothstep(0.05, 0.30, dir.y) * starVisibility * 0.98;
           }
-          float wave1 = sin(dir.x * 5.2 + dir.z * 3.1 + uTime * 0.35);
-          float wave2 = cos(dir.x * 8.4 - dir.z * 4.5 + uTime * 0.5);
-          float auroraCurtain = smoothstep(0.12, 0.88, (wave1 * 0.5 + wave2 * 0.5) * 0.5 + 0.5);
-          float band = smoothstep(0.10, 0.28, dir.y) * (1.0 - smoothstep(0.34, 0.68, dir.y));
-          vec3 auroraGreen = vec3(0.12, 0.85, 0.62);
-          vec3 auroraViolet = vec3(0.38, 0.45, 0.95);
-          vec3 auroraCol = mix(auroraGreen, auroraViolet, smoothstep(0.24, 0.54, dir.y));
-          sky += auroraCol * auroraCurtain * band * 0.46;
+          if (uIsNight > 0.5) {
+            float wave1 = sin(dir.x * 5.2 + dir.z * 3.1 + uTime * 0.35);
+            float wave2 = cos(dir.x * 8.4 - dir.z * 4.5 + uTime * 0.5);
+            float auroraCurtain = smoothstep(0.10, 0.88, (wave1 * 0.5 + wave2 * 0.5) * 0.5 + 0.5);
+            float band = smoothstep(0.10, 0.28, dir.y) * (1.0 - smoothstep(0.34, 0.70, dir.y));
+            vec3 auroraGreen = vec3(0.14, 0.88, 0.65);
+            vec3 auroraViolet = vec3(0.42, 0.48, 0.96);
+            vec3 auroraCol = mix(auroraGreen, auroraViolet, smoothstep(0.24, 0.54, dir.y));
+            sky += auroraCol * auroraCurtain * band * 0.52;
+          }
         }
 
-        // Two-tier atmospheric distant alpine range silhouette along the horizon
-        if (dir.y < 0.24 && dir.y > -0.18) {
+        // Three-tier atmospheric distant alpine range silhouette along the horizon
+        if (dir.y < 0.26 && dir.y > -0.24) {
           float angle = atan(dir.z, dir.x);
-          float farPeak = 0.055 + 0.075 * abs(sin(angle * 4.0 + 0.7)) + 0.042 * fbm(vec2(angle * 3.2, 1.4));
-          float nearPeak = 0.018 + 0.052 * abs(sin(angle * 6.5 - 1.2)) + 0.03 * fbm(vec2(angle * 5.4, 4.1));
-          vec3 farCol = mix(uHorizonColor * 0.78 + vec3(0.08, 0.13, 0.22), uSunColor * 0.45, pow(sunDot, 3.0) * 0.45);
-          vec3 nearCol = mix(uHorizonColor * 0.62 + vec3(0.06, 0.1, 0.18), vec3(0.75, 0.86, 0.96), (1.0 - uIsNight) * 0.22);
-          farCol = mix(farCol, vec3(0.04, 0.08, 0.16), uIsNight * 0.65);
-          nearCol = mix(nearCol, vec3(0.03, 0.06, 0.13), uIsNight * 0.72);
+          float farPeak = 0.065 + 0.085 * abs(sin(angle * 4.0 + 0.7)) + 0.048 * fbm(vec2(angle * 3.2, 1.4));
+          float midPeak = 0.036 + 0.062 * abs(sin(angle * 5.5 + 2.1)) + 0.036 * fbm(vec2(angle * 4.4, 2.7));
+          float nearPeak = 0.014 + 0.044 * abs(sin(angle * 7.2 - 1.2)) + 0.026 * fbm(vec2(angle * 5.8, 4.1));
+          vec3 farCol = mix(uHorizonColor * 0.82 + vec3(0.08, 0.14, 0.24), uSunColor * 0.50, pow(sunDot, 3.0) * 0.45);
+          vec3 midCol = mix(uHorizonColor * 0.70 + vec3(0.07, 0.12, 0.20), vec3(0.84, 0.91, 0.99), (1.0 - uIsNight) * 0.20);
+          vec3 nearCol = mix(uHorizonColor * 0.56 + vec3(0.05, 0.09, 0.17), vec3(0.76, 0.87, 0.96), (1.0 - uIsNight) * 0.24);
+          farCol = mix(farCol, vec3(0.04, 0.08, 0.17), uIsNight * 0.66);
+          midCol = mix(midCol, vec3(0.035, 0.07, 0.15), uIsNight * 0.70);
+          nearCol = mix(nearCol, vec3(0.025, 0.055, 0.12), uIsNight * 0.75);
           float farMask = 1.0 - smoothstep(farPeak - 0.006, farPeak + 0.008, dir.y);
-          float nearMask = 1.0 - smoothstep(nearPeak - 0.005, nearPeak + 0.007, dir.y);
-          sky = mix(sky, farCol, farMask * 0.72);
-          sky = mix(sky, nearCol, nearMask * 0.86);
+          float midMask = 1.0 - smoothstep(midPeak - 0.005, midPeak + 0.007, dir.y);
+          float nearMask = 1.0 - smoothstep(nearPeak - 0.004, nearPeak + 0.006, dir.y);
+          sky = mix(sky, farCol, farMask * 0.70);
+          sky = mix(sky, midCol, midMask * 0.80);
+          sky = mix(sky, nearCol, nearMask * 0.90);
         }
 
         gl_FragColor = vec4(sky, 1.0);
@@ -602,8 +625,9 @@ export function createSkyDome(map: SkiMapConfig): {
 
   return {
     mesh,
-    update: (elapsedSec: number) => {
+    update: (elapsedSec: number, altitudeMeters = 0) => {
       mat.uniforms.uTime.value = elapsedSec;
+      mat.uniforms.uAltitude.value = altitudeMeters;
     },
     dispose: () => {
       geo.dispose();
@@ -781,14 +805,14 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
 
   // Turbo Boost Icy-Cyan Jet-Wake Blades (hidden at idle, flare up when boosting)
   const boostWakeGroup = new THREE.Group();
-  const wakeBladeGeo = track(new THREE.ConeGeometry(0.085, 1.6, 8));
+  const wakeBladeGeo = track(new THREE.ConeGeometry(0.09, 1.75, 8));
   wakeBladeGeo.rotateX(Math.PI / 2);
-  wakeBladeGeo.translate(0, 0, -0.8);
+  wakeBladeGeo.translate(0, 0, -0.88);
   const wakeMat = track(
     new THREE.MeshBasicMaterial({
       color: '#38BDF8',
       transparent: true,
-      opacity: 0.72,
+      opacity: 0.78,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     })
@@ -801,6 +825,29 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
   boostWakeGroup.scale.set(0.001, 0.001, 0.001);
   boostWakeGroup.visible = false;
   skisGroup.add(boostWakeGroup);
+
+  // High-Speed & High-Altitude Aerodynamic Wingtip Contrails behind ski tips
+  const airContrailGroup = new THREE.Group();
+  const contrailGeo = track(new THREE.ConeGeometry(0.032, 2.6, 6));
+  contrailGeo.rotateX(Math.PI / 2);
+  contrailGeo.translate(0, 0, -1.3);
+  const contrailMat = track(
+    new THREE.MeshBasicMaterial({
+      color: '#E0F2FE',
+      transparent: true,
+      opacity: 0.42,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+  );
+  [-0.27, 0.27].forEach((xOffset) => {
+    const trail = new THREE.Mesh(contrailGeo, contrailMat);
+    trail.position.set(xOffset, 0.07, -0.82);
+    airContrailGroup.add(trail);
+  });
+  airContrailGroup.scale.set(0.001, 0.001, 0.001);
+  airContrailGroup.visible = false;
+  skisGroup.add(airContrailGroup);
 
   // Articulated Anatomical Legs + Sculpted Multi-Buckle Ski Boots + Knees
   const bootLowerGeo = track(new THREE.BoxGeometry(0.135, 0.11, 0.29));
@@ -1084,6 +1131,7 @@ export function createSkierRig(gear: SkiGearStyle): SkierRig {
     skisGroup,
     scarfSegments,
     boostWakeGroup,
+    airContrailGroup,
     fpvEyeAnchor,
     fpvLookAnchor,
     setFirstPerson,
@@ -1352,6 +1400,15 @@ export function updateSkierPose(
     const pulse = 0.88 + Math.sin(elapsedSec * 36) * 0.14;
     rig.boostWakeGroup.scale.set(curWake, curWake, curWake * pulse);
   }
+
+  // High-speed & airborne aerodynamic contrail ribbons
+  const wantsContrail = (isAirborne && speedRatio > 0.35) || isBoosting || speedRatio > 0.72;
+  const targetTrail = wantsContrail ? THREE.MathUtils.clamp(speedRatio * 1.1, 0.45, 1.25) : 0.001;
+  const curTrail = THREE.MathUtils.damp(rig.airContrailGroup.scale.z, targetTrail, 10, dt);
+  rig.airContrailGroup.visible = curTrail > 0.05;
+  if (rig.airContrailGroup.visible) {
+    rig.airContrailGroup.scale.set(1, 1, curTrail);
+  }
 }
 
 export interface BuiltParkScene {
@@ -1474,10 +1531,10 @@ export function buildMountainEnvironment(
 
   const zMin = range ? range.zStart - (range.zStart === 0 ? 35 : 0) : -35;
   const zMax = range ? range.zEnd : map.lengthMeters + 125;
-  const totalWidth = (map.halfWidth + 46) * 2;
+  const totalWidth = (map.halfWidth + 84) * 2;
   const totalLength = zMax - zMin;
-  const segX = 72;
-  const segZ = Math.min(460, Math.max(48, Math.round(totalLength / 3.5)));
+  const segX = 96;
+  const segZ = Math.min(480, Math.max(52, Math.round(totalLength / 3.2)));
 
   const terrainGeo = track(new THREE.PlaneGeometry(totalWidth, totalLength, segX, segZ));
   terrainGeo.rotateX(-Math.PI / 2);
@@ -1498,10 +1555,10 @@ export function buildMountainEnvironment(
 
     const bankBlend = map.hasSuperpipe
       ? THREE.MathUtils.clamp((Math.abs(vx) - 5.5) / 8, 0, 1)
-      : THREE.MathUtils.clamp((Math.abs(vx) - (map.halfWidth - 3)) / 10, 0, 1);
+      : THREE.MathUtils.clamp((Math.abs(vx) - (map.halfWidth - 3)) / 12, 0, 1);
     const centerGroom = Math.exp(-(vx * vx) / Math.max(24, map.halfWidth * 1.4));
 
-    tmpColor.copy(snowColor).lerp(pisteTint, (1 - bankBlend) * (0.14 + centerGroom * 0.12));
+    tmpColor.copy(snowColor).lerp(pisteTint, (1 - bankBlend) * (0.16 + centerGroom * 0.14));
     tmpColor.lerp(bankColor, bankBlend * 0.9);
     colors[i * 3] = tmpColor.r;
     colors[i * 3 + 1] = tmpColor.g;
@@ -1519,66 +1576,84 @@ export function buildMountainEnvironment(
   const snowSparkleUniforms = {
     uTime: { value: 0 },
     uSparkleColor: { value: new THREE.Color(map.isNight ? '#BAE6FD' : '#FFFBEB') },
+    uRockTint: { value: new THREE.Color(map.isNight ? '#1E293B' : '#475569') },
+    uIceTint: { value: new THREE.Color(map.isNight ? '#38BDF8' : '#7DD3FC') },
   };
 
   const terrainMat = track(
     new THREE.MeshPhysicalMaterial({
       map: snowTex,
       normalMap: snowNormalTex,
-      normalScale: new THREE.Vector2(0.5, 0.38),
+      normalScale: new THREE.Vector2(0.58, 0.44),
       vertexColors: true,
-      roughness: 0.62,
-      metalness: 0.02,
-      clearcoat: 0.26,
-      clearcoatRoughness: 0.34,
-      sheen: 0.48,
-      sheenRoughness: 0.46,
+      roughness: 0.58,
+      metalness: 0.03,
+      clearcoat: 0.30,
+      clearcoatRoughness: 0.30,
+      sheen: 0.55,
+      sheenRoughness: 0.42,
       sheenColor: new THREE.Color(map.isNight ? '#7DD3FC' : '#E0F2FE'),
     })
   );
 
-  // Inject real-time sparkling crystal snow glints + ice sheen via onBeforeCompile
+  // Inject real-time SSS snow translucency, slope granite strata, ice sheen & diamond-dust sparkles
   terrainMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = snowSparkleUniforms.uTime;
     shader.uniforms.uSparkleColor = snowSparkleUniforms.uSparkleColor;
+    shader.uniforms.uRockTint = snowSparkleUniforms.uRockTint;
+    shader.uniforms.uIceTint = snowSparkleUniforms.uIceTint;
 
     shader.vertexShader =
-      `varying vec3 vSnowWorldPos;\n` +
+      `varying vec3 vSnowWorldPos;\nvarying vec3 vSnowWorldNormal;\n` +
       shader.vertexShader.replace(
         '#include <begin_vertex>',
         `
         #include <begin_vertex>
         vSnowWorldPos = transformed;
+        vSnowWorldNormal = normalize(normal);
         `
       );
 
     shader.fragmentShader =
-      `uniform float uTime;\nuniform vec3 uSparkleColor;\nvarying vec3 vSnowWorldPos;\n` +
+      `uniform float uTime;\nuniform vec3 uSparkleColor;\nuniform vec3 uRockTint;\nuniform vec3 uIceTint;\nvarying vec3 vSnowWorldPos;\nvarying vec3 vSnowWorldNormal;\n` +
       shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        `
+        #include <color_fragment>
+        float slopeFlatness = clamp(vSnowWorldNormal.y, 0.0, 1.0);
+        float strataNoise = sin(vSnowWorldPos.y * 1.45 + vSnowWorldPos.x * 0.22) * 0.5 + 0.5;
+        float steepCliffMask = smoothstep(0.78, 0.52, slopeFlatness);
+        float windIceMask = smoothstep(0.89, 0.72, slopeFlatness) * (1.0 - steepCliffMask);
+        diffuseColor.rgb = mix(diffuseColor.rgb, uIceTint, windIceMask * 0.24);
+        diffuseColor.rgb = mix(diffuseColor.rgb, uRockTint * (0.78 + 0.35 * strataNoise), steepCliffMask * 0.65);
+        `
+      ).replace(
         '#include <opaque_fragment>',
         `
         vec3 snowViewDir = normalize(cameraPosition - vSnowWorldPos);
-        vec2 sCell = floor(vSnowWorldPos.xz * 7.2);
-        vec2 sLocal = fract(vSnowWorldPos.xz * 7.2) - 0.5;
+        float distCam = length(cameraPosition - vSnowWorldPos);
+        vec2 sCell = floor(vSnowWorldPos.xz * 7.8);
+        vec2 sLocal = fract(vSnowWorldPos.xz * 7.8) - 0.5;
         float sRnd = fract(sin(dot(sCell, vec2(127.1, 311.7))) * 43758.5453);
         float sRnd2 = fract(sin(dot(sCell, vec2(269.5, 183.3))) * 43758.5453);
-        float sTwinkle = pow(max(0.0, sin(sRnd * 6.2831 + snowViewDir.x * 10.0 + snowViewDir.z * 7.5 + uTime * 2.4)), 12.0);
+        float sTwinkle = pow(max(0.0, sin(sRnd * 6.2831 + snowViewDir.x * 11.0 + snowViewDir.z * 8.0 + uTime * 2.6)), 11.0);
         float sDot = smoothstep(0.38, 0.04, length(sLocal));
-        float sFade = 1.0 - smoothstep(16.0, 78.0, length(cameraPosition - vSnowWorldPos));
-        float sparkle = step(0.58, sRnd2) * sTwinkle * sDot * sFade;
-        float sunIceGlint = pow(max(0.0, snowViewDir.z * 0.72 + snowViewDir.y * 0.45), 6.0) * sFade * 0.08;
-        outgoingLight += uSparkleColor * (sparkle * 1.35 + sunIceGlint);
+        float sFade = 1.0 - smoothstep(18.0, 96.0, distCam);
+        float sparkle = step(0.54, sRnd2) * sTwinkle * sDot * sFade;
+        float sssWrap = pow(1.0 - max(0.0, dot(snowViewDir, normalize(vSnowWorldNormal))), 2.4) * sFade;
+        float sunIceGlint = pow(max(0.0, snowViewDir.z * 0.72 + snowViewDir.y * 0.45), 5.5) * sFade * 0.10;
+        outgoingLight += uSparkleColor * (sparkle * 1.48 + sunIceGlint) + uIceTint * (sssWrap * 0.14);
         #include <opaque_fragment>
         `
       );
   };
-  terrainMat.customProgramCacheKey = () => `ski-crystal-snow-v2-${map.isNight ? 'night' : 'day'}`;
+  terrainMat.customProgramCacheKey = () => `ski-crystal-snow-v3-${map.isNight ? 'night' : 'day'}`;
 
   const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
   terrainMesh.receiveShadow = true;
   group.add(terrainMesh);
 
-  // 1b. Multi-Layered Sculpted Alpine Mountain Massifs & Valley Cliff Buttresses
+  // 1b. Multi-Layered Sculpted Alpine Mountain Massifs, Towering Glacier Spires & Valley Cliffs
   const massifGeoA = track(
     createMountainMassifGeometry(
       1.7,
@@ -1596,8 +1671,8 @@ export function buildMountainEnvironment(
   const massifMat = track(
     new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.84,
-      metalness: 0.04,
+      roughness: 0.82,
+      metalness: 0.05,
       flatShading: true,
     })
   );
@@ -1607,33 +1682,43 @@ export function buildMountainEnvironment(
   const ridgeStartZ = range ? Math.max(20, range.zStart + 20) : 45;
   const ridgeEndZ = range ? range.zEnd : map.lengthMeters + 180;
 
-  for (let z = ridgeStartZ; z < ridgeEndZ; z += 58) {
+  for (let z = ridgeStartZ; z < ridgeEndZ; z += 52) {
     [-1, 1].forEach((side, sIdx) => {
       // Inner valley foothills / granite shoulders closer to treeline
       ridgeSpotsB.push({
-        x: side * (map.halfWidth + 32 + ((z * 9 + sIdx * 11) % 18)),
+        x: side * (map.halfWidth + 46 + ((z * 9 + sIdx * 11) % 22)),
         z: z + ((z * 5) % 18),
-        sx: 18 + ((z * 7) % 14),
-        sy: 24 + ((z * 11) % 18),
+        sx: 22 + ((z * 7) % 16),
+        sy: 30 + ((z * 11) % 22),
         rot: (z * 0.43 + sIdx) % Math.PI,
       });
       // Towering background alpine massifs
       ridgeSpotsA.push({
-        x: side * (map.halfWidth + 68 + ((z * 13 + sIdx * 17) % 38)),
+        x: side * (map.halfWidth + 92 + ((z * 13 + sIdx * 17) % 44)),
         z: z + 18 + ((z * 7) % 22),
-        sx: 42 + ((z * 11) % 26),
-        sy: 58 + ((z * 19) % 42),
+        sx: 52 + ((z * 11) % 30),
+        sy: 78 + ((z * 19) % 52),
         rot: (z * 0.37) % Math.PI,
       });
+      // Monumental far glacial spires framing high-altitude flights
+      if (z % 104 < 52) {
+        ridgeSpotsA.push({
+          x: side * (map.halfWidth + 168 + ((z * 17 + sIdx * 19) % 48)),
+          z: z + 34,
+          sx: 78 + ((z * 13) % 32),
+          sy: 128 + ((z * 23) % 48),
+          rot: (z * 0.71 + sIdx) % Math.PI,
+        });
+      }
     });
   }
   if (!range?.omitFinish) {
-    for (let i = -4; i <= 4; i++) {
+    for (let i = -5; i <= 5; i++) {
       ridgeSpotsA.push({
-        x: i * 44,
-        z: map.lengthMeters + 185 + Math.abs(i) * 16,
-        sx: 56 + (Math.abs(i) % 3) * 16,
-        sy: 82 + (4 - Math.abs(i)) * 16,
+        x: i * 50,
+        z: map.lengthMeters + 210 + Math.abs(i) * 18,
+        sx: 64 + (Math.abs(i) % 3) * 18,
+        sy: 105 + (5 - Math.abs(i)) * 18,
         rot: i * 0.7,
       });
     }
@@ -1651,9 +1736,9 @@ export function buildMountainEnvironment(
       const baseY =
         getBaseTerrainHeight(
           map,
-          sp.x * 0.35,
+          sp.x * 0.25,
           range?.omitFinish ? sp.z : Math.min(map.lengthMeters + 40, sp.z)
-        ) - 12;
+        ) - 14;
       dummy.position.set(sp.x, baseY + sp.sy * 0.46, sp.z);
       dummy.rotation.set(0, sp.rot, 0);
       dummy.scale.set(sp.sx, sp.sy, sp.sx * 0.92);
@@ -1667,6 +1752,53 @@ export function buildMountainEnvironment(
 
   spawnMassifInstanced(massifGeoA, ridgeSpotsA);
   spawnMassifInstanced(massifGeoB, ridgeSpotsB);
+
+  // 1b-1. Volumetric 3D Stylized Alpine Cloud Deck (drifting over valleys so sky-high launches soar above the clouds!)
+  const cloudPuffGeo = track(new THREE.IcosahedronGeometry(1, 1));
+  const cloudMat = track(
+    new THREE.MeshStandardMaterial({
+      color: map.isNight ? '#1E3A5F' : '#F8FAFC',
+      emissive: map.isNight ? '#0F172A' : '#E0F2FE',
+      emissiveIntensity: map.isNight ? 0.22 : 0.16,
+      roughness: 0.95,
+      metalness: 0.0,
+      transparent: true,
+      opacity: map.isNight ? 0.56 : 0.84,
+      flatShading: true,
+    })
+  );
+  const cloudItems: { baseX: number; baseY: number; baseZ: number; sx: number; sy: number; sz: number; speed: number }[] = [];
+  for (let cz = ridgeStartZ; cz < ridgeEndZ; cz += 95) {
+    const side = (Math.floor(cz / 95) % 2 === 0 ? -1 : 1);
+    const cx = side * (map.halfWidth + 28 + ((cz * 13) % 52));
+    const cy = getBaseTerrainHeight(map, 0, cz) + 48 + ((cz * 7) % 44);
+    for (let p = 0; p < 3; p++) {
+      cloudItems.push({
+        baseX: cx + (p - 1) * 9.5,
+        baseY: cy + (p === 1 ? 2.4 : 0),
+        baseZ: cz + (p - 1) * 4.5,
+        sx: p === 1 ? 14 : 10,
+        sy: p === 1 ? 5.2 : 3.8,
+        sz: p === 1 ? 9.5 : 7.5,
+        speed: 1.4 + (cz % 3) * 0.45,
+      });
+    }
+  }
+  let cloudInst: THREE.InstancedMesh | null = null;
+  if (cloudItems.length > 0) {
+    cloudInst = track(new THREE.InstancedMesh(cloudPuffGeo, cloudMat, cloudItems.length));
+    cloudInst.frustumCulled = false;
+    const cDummy = new THREE.Object3D();
+    for (let i = 0; i < cloudItems.length; i++) {
+      const c = cloudItems[i];
+      cDummy.position.set(c.baseX, c.baseY, c.baseZ);
+      cDummy.scale.set(c.sx, c.sy, c.sz);
+      cDummy.updateMatrix();
+      cloudInst.setMatrixAt(i, cDummy.matrix);
+    }
+    cloudInst.instanceMatrix.needsUpdate = true;
+    group.add(cloudInst);
+  }
 
   // 1b-2. Steep Flanking Granite Cliff Outcrops right beside the outer treeline
   const cliffGeo = track(createSculptedRockGeometry(3.2, 6.7));
@@ -1708,7 +1840,8 @@ export function buildMountainEnvironment(
     group.add(cliffInst);
   }
 
-  // 1c. Alpine Timber Start Gate Cabin (at Start Corral only)
+  // 1c. Alpine Timber Start Gate Cabin + Chimney Smoke Puffs (at Start Corral only)
+  const smokePuffs: { mesh: THREE.Mesh; phase: number; baseX: number; baseY: number; baseZ: number }[] = [];
   if (!range || range.zStart === 0) {
     const cabinX = -Math.min(13.5, map.halfWidth - 6);
     const cabinZ = -7;
@@ -1747,6 +1880,14 @@ export function buildMountainEnvironment(
     roofMesh.castShadow = true;
     cabinGroup.add(roofMesh);
 
+    // Stone chimney
+    const chimneyMesh = new THREE.Mesh(
+      track(new THREE.BoxGeometry(0.65, 1.8, 0.65)),
+      track(new THREE.MeshStandardMaterial({ color: '#475569', roughness: 0.9 }))
+    );
+    chimneyMesh.position.set(1.2, 4.5, -0.6);
+    cabinGroup.add(chimneyMesh);
+
     const winGeo = track(new THREE.BoxGeometry(1.1, 0.95, 0.12));
     [-1.25, 1.25].forEach((wx) => {
       const win = new THREE.Mesh(winGeo, windowGlowMat);
@@ -1762,6 +1903,25 @@ export function buildMountainEnvironment(
     cabinGroup.add(doorMesh);
 
     group.add(cabinGroup);
+
+    const smokeGeo = track(new THREE.IcosahedronGeometry(0.32, 0));
+    const smokeMat = track(
+      new THREE.MeshStandardMaterial({
+        color: '#F1F5F9',
+        transparent: true,
+        opacity: 0.42,
+        roughness: 0.95,
+      })
+    );
+    for (let s = 0; s < 5; s++) {
+      const puff = new THREE.Mesh(smokeGeo, smokeMat);
+      const sx = cabinX + 1.05;
+      const sy = cabinY + 5.6;
+      const sz = cabinZ - 0.8;
+      puff.position.set(sx, sy, sz);
+      group.add(puff);
+      smokePuffs.push({ mesh: puff, phase: s / 5, baseX: sx, baseY: sy, baseZ: sz });
+    }
   }
 
   // 1d. Orange Diamond Safety Netting Fencing along Piste Edges
@@ -2078,6 +2238,8 @@ export function buildMountainEnvironment(
   const flagPoleGeo = track(new THREE.CylinderGeometry(0.055, 0.055, 1.95, 6));
   const flagBannerGeo = track(new THREE.PlaneGeometry(0.7, 0.38));
 
+  const animatedFlags: { mesh: THREE.Mesh; phase: number; baseY: number }[] = [];
+
   for (const k of layout.kickers) {
     const kGeo = track(new THREE.BoxGeometry(k.width, 1, k.length, 6, 1, 12));
     const kPos = kGeo.attributes.position;
@@ -2107,7 +2269,7 @@ export function buildMountainEnvironment(
     lip.rotation.x = -0.32;
     group.add(lip);
 
-    [-k.width * 0.5 - 0.16, k.width * 0.5 + 0.16].forEach((sideX) => {
+    [-k.width * 0.5 - 0.16, k.width * 0.5 + 0.16].forEach((sideX, fIdx) => {
       const fx = k.x + sideX;
       const fz = k.z - 0.3;
       const fy = getBaseTerrainHeight(map, fx, fz) + k.height;
@@ -2118,6 +2280,7 @@ export function buildMountainEnvironment(
       const banner = new THREE.Mesh(flagBannerGeo, flagBannerMat);
       banner.position.set(fx + (sideX > 0 ? -0.34 : 0.34), fy + 1.58, fz);
       group.add(banner);
+      animatedFlags.push({ mesh: banner, phase: k.z * 0.2 + fIdx * 1.4, baseY: fy + 1.58 });
     });
   }
 
@@ -2495,6 +2658,7 @@ export function buildMountainEnvironment(
     });
   }
 
+  const cloudDummy = new THREE.Object3D();
   const update = (elapsedSec: number, dt: number) => {
     snowSparkleUniforms.uTime.value = elapsedSec;
 
@@ -2503,6 +2667,39 @@ export function buildMountainEnvironment(
       entry.group.rotation.y = elapsedSec * 2.1 + entry.phase;
       entry.group.position.y = entry.baseY + Math.sin(elapsedSec * 2.8 + entry.phase) * 0.18;
     });
+
+    // Flutter kicker guide flags in alpine wind
+    for (let i = 0; i < animatedFlags.length; i++) {
+      const fl = animatedFlags[i];
+      fl.mesh.rotation.y = Math.sin(elapsedSec * 6.5 + fl.phase) * 0.26;
+      fl.mesh.position.y = fl.baseY + Math.sin(elapsedSec * 4.2 + fl.phase) * 0.03;
+    }
+
+    // Drift 3D alpine valley cloud puffs gently across mountain ridges
+    if (cloudInst) {
+      for (let i = 0; i < cloudItems.length; i++) {
+        const c = cloudItems[i];
+        const driftX = Math.sin(elapsedSec * 0.06 * c.speed + i * 0.7) * 8.5;
+        const bobY = Math.cos(elapsedSec * 0.18 + i) * 0.65;
+        cloudDummy.position.set(c.baseX + driftX, c.baseY + bobY, c.baseZ);
+        cloudDummy.scale.set(c.sx, c.sy, c.sz);
+        cloudDummy.updateMatrix();
+        cloudInst.setMatrixAt(i, cloudDummy.matrix);
+      }
+      cloudInst.instanceMatrix.needsUpdate = true;
+    }
+
+    // Rise & dissipate chimney smoke above start lodge
+    for (let i = 0; i < smokePuffs.length; i++) {
+      const sp = smokePuffs[i];
+      const t = (elapsedSec * 0.28 + sp.phase) % 1;
+      sp.mesh.position.set(
+        sp.baseX + Math.sin(elapsedSec * 1.4 + i) * 0.25 + t * 0.9,
+        sp.baseY + t * 3.8,
+        sp.baseZ - t * 0.6
+      );
+      sp.mesh.scale.setScalar((0.6 + t * 1.35) * (1 - t * 0.35));
+    }
 
     // Move chairlift cabins smoothly along the haul cables
     if (animatedChairs.length > 0 && cableMaxZ > cableMinZ) {

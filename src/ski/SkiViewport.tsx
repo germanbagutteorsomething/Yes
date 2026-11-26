@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import {
   ENDLESS_CHUNK_LENGTH,
   generateEndlessChunk,
@@ -365,7 +369,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     setWebglError(null);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = map.isNight ? 1.15 : 1.05;
+    renderer.toneMappingExposure = map.isNight ? 1.2 : 1.08;
     renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -392,7 +396,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     // Scene + Atmosphere + Procedural Sky Dome + RoomEnvironment
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(map.skyColor);
-    scene.fog = new THREE.FogExp2(map.horizonColor, map.fogDensity);
+    const baseFogDensity = map.fogDensity;
+    const sceneFog = new THREE.FogExp2(map.horizonColor, baseFogDensity);
+    scene.fog = sceneFog;
 
     const skyDome = createSkyDome(map);
     scene.add(skyDome.mesh);
@@ -402,11 +408,31 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     scene.environment = envTex;
     pmremGenerator.dispose();
 
-    // Camera
-    const camera = new THREE.PerspectiveCamera(64, width / height, 0.2, 460);
+    // Camera (wide far clip for limitless high-altitude panoramic flights)
+    const camera = new THREE.PerspectiveCamera(64, width / height, 0.2, 1800);
+
+    // GPU Post-Processing (Selective Bloom + Tone Mapping Output; skipped on software WebGL)
+    let composer: EffectComposer | null = null;
+    let bloomPass: UnrealBloomPass | null = null;
+    let outputPass: OutputPass | null = null;
+    if (!isSoftwareGl) {
+      composer = new EffectComposer(renderer);
+      composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      composer.setSize(width, height);
+      composer.addPass(new RenderPass(scene, camera));
+      bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(width, height),
+        map.isNight ? 0.52 : 0.24,
+        0.42,
+        0.86
+      );
+      composer.addPass(bloomPass);
+      outputPass = new OutputPass();
+      composer.addPass(outputPass);
+    }
 
     // 3-Point Warm/Cool Alpine Lighting Rig
-    const hemiLight = new THREE.HemisphereLight(map.ambientSky, map.ambientGround, map.isNight ? 0.9 : 1.0);
+    const hemiLight = new THREE.HemisphereLight(map.ambientSky, map.ambientGround, map.isNight ? 0.95 : 1.05);
     scene.add(hemiLight);
 
     const sunLight = new THREE.DirectionalLight(map.sunColor, map.sunIntensity);
@@ -414,8 +440,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     sunLight.shadow.mapSize.width = 2048;
     sunLight.shadow.mapSize.height = 2048;
     sunLight.shadow.camera.near = 2;
-    sunLight.shadow.camera.far = 96;
-    const shadowBound = 28;
+    sunLight.shadow.camera.far = 260;
+    const shadowBound = 32;
     sunLight.shadow.camera.left = -shadowBound;
     sunLight.shadow.camera.right = shadowBound;
     sunLight.shadow.camera.top = shadowBound;
@@ -425,7 +451,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     scene.add(sunLight);
     scene.add(sunLight.target);
 
-    const rimLight = new THREE.DirectionalLight(map.isNight ? '#38BDF8' : '#E0F2FE', 0.52);
+    const rimLight = new THREE.DirectionalLight(map.isNight ? '#38BDF8' : '#E0F2FE', 0.56);
     rimLight.position.set(-22, 20, 26);
     scene.add(rimLight);
 
@@ -678,6 +704,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       wasOnKicker: false,
       lastKickerSlope: 0,
       airtime: 0,
+      altitudeMeters: 0,
       airSpinRad: 0,
       airFlipRad: 0,
       airSpinVel: 0,
@@ -794,6 +821,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         isGrinding: Boolean(state.grindingRail),
         isBailing: state.bailTimer > 0,
         airtime: state.airtime,
+        altitudeMeters: Math.max(0, Math.round(state.altitudeMeters)),
         spinDeg: Math.round(THREE.MathUtils.radToDeg(Math.abs(state.airSpinRad))),
         flipDeg: Math.round(THREE.MathUtils.radToDeg(Math.abs(state.airFlipRad))),
         grab,
@@ -951,6 +979,12 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
+      if (composer) {
+        composer.setSize(w, h);
+      }
+      if (bloomPass) {
+        bloomPass.resolution.set(w, h);
+      }
     };
     window.addEventListener('resize', handleResize);
     const resizeObs = new ResizeObserver(handleResize);
@@ -1258,11 +1292,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           state.x += state.vx * dt;
           state.z += state.vz * dt;
 
-          // Keep skier inside outer mountain canyon walls
-          const maxLat = map.halfWidth + 4.5;
+          // Smooth wide-mountain backcountry boundary (no tight invisible chute clip)
+          const maxLat = map.halfWidth + 28;
           if (Math.abs(state.x) > maxLat) {
             state.x = Math.sign(state.x) * maxLat;
-            state.heading *= -0.4;
+            state.heading *= -0.45;
             if (!useLegacy) state.vx *= -0.35;
           }
 
@@ -1376,15 +1410,47 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           state.wasOnKicker = nextTerrain.isOnKicker;
           state.lastKickerSlope = nextTerrain.kickerSlopeLift;
         } else {
-          // 3. Airborne Freestyle Tricks & Gravity
+          // 3. Airborne Freestyle Tricks, Uncapped Sky-Boost & Gravity
           state.airtime += dt;
+          if (state.boostSfxCooldown > 0) state.boostSfxCooldown = Math.max(0, state.boostSfxCooldown - dt);
+          const wantsAirBoost = inp.boostHeld && state.bailTimer <= 0;
+          if (wantsAirBoost && state.boostCharge > (state.isBoosting ? 1 : 8)) {
+            if (!state.isBoosting && state.boostSfxCooldown <= 0) {
+              playSkiSound('boost', soundRef.current);
+              state.boostSfxCooldown = 0.55;
+            }
+            state.isBoosting = true;
+            state.boostCharge = Math.max(0, state.boostCharge - 16 * dt);
+            state.vy += 26.5 * dt;
+            state.vz = Math.min(58, state.vz + 8.5 * dt);
+            if (Math.random() < 0.85) {
+              [-0.2, 0.2].forEach((offset) => {
+                spawnParticle(
+                  state.x + offset,
+                  state.y - 0.1,
+                  state.z - 0.5,
+                  (Math.random() - 0.5) * 1.4,
+                  -2.5 - Math.random() * 2.2,
+                  state.vz * 0.2,
+                  'boost'
+                );
+              });
+            }
+          } else {
+            state.isBoosting = false;
+            if (state.bailTimer <= 0) {
+              state.boostCharge = Math.min(100, state.boostCharge + 3.5 * dt);
+            }
+          }
+
           const airGravity = useLegacy ? 18.2 : inp.grab !== 'none' ? 16.5 : 17.6;
           state.vy -= airGravity * dt;
           state.x += state.vx * dt;
           state.z += state.vz * dt;
           state.y += state.vy * dt;
 
-          const maxLat = map.halfWidth + 4.5;
+          // Wide backcountry lateral airspace (no tight invisible vertical walls)
+          const maxLat = map.halfWidth + 68;
           if (Math.abs(state.x) > maxLat) {
             state.x = Math.sign(state.x) * maxLat;
             state.vx *= -0.3;
@@ -1504,8 +1570,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             if (!useLegacy && spinErr <= 52 && flipErr <= 52 && impactVy > 4.5) {
               const landNorm = getTerrainSlopeNormal(map, layout, state.x, state.z);
               const downhillFactor = THREE.MathUtils.clamp(-landNorm.nz * 3.2, 0.25, 1.15);
-              const speedSurge = Math.min(6.2, (impactVy - 3.5) * 0.34 * downhillFactor);
-              state.vz = Math.min(48, state.vz + speedSurge);
+              const speedSurge = Math.min(8.5, (impactVy - 3.5) * 0.34 * downhillFactor);
+              state.vz = Math.min(56, state.vz + speedSurge);
             }
 
             const didMeaningfulTrick =
@@ -1619,32 +1685,35 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           }
         }
 
-        // 4. Obstacle Collisions, Near-Miss Close Calls, Gates & Collectible Air Rings
+        // 4. Obstacle Collisions (3D height-aware so high-altitude air clears pines & rocks), Near-Misses, Gates & Rings
         const curSpeedSq = state.vx * state.vx + state.vz * state.vz;
         if (state.bailTimer <= 0 && state.invulnTimer <= 0) {
           for (const tree of layout.trees) {
             const dz = Math.abs(tree.z - state.z);
             const dx = Math.abs(tree.x - state.x);
-            if (dz < 1.25 && dx < 1.08) {
-              state.x += state.x >= tree.x ? 1.5 : -1.5;
-              triggerBail('Clipped an alpine pine');
-              break;
-            } else if (
-              curSpeedSq > 280 &&
-              !state.nearMissedObstacles.has(tree.id) &&
-              dz < 1.8 &&
-              dx < 2.25
-            ) {
-              state.nearMissedObstacles.add(tree.id);
-              state.closeCalls += 1;
-              state.boostCharge = Math.min(100, state.boostCharge + 18);
-              const ccPts = 300 * state.comboMultiplier;
-              state.flowScoreTotal += ccPts;
-              state.score += ccPts;
-              if (state.comboScore > 0) state.comboTimer = COMBO_WINDOW_SEC;
-              triggerCallout('CLOSE CALL!', `+${ccPts.toLocaleString()} · +18% Boost`, 'boost');
-              playSkiSound('closecall', soundRef.current);
-              checkMedalUnlock();
+            if (dz < 1.8 && dx < 2.25) {
+              const ty = getBaseTerrainHeight(map, tree.x, tree.z);
+              const treeTopY = ty + 6.25 * tree.scale;
+              if (dz < 1.25 && dx < 1.08 && state.y < treeTopY) {
+                state.x += state.x >= tree.x ? 1.5 : -1.5;
+                triggerBail('Clipped an alpine pine');
+                break;
+              } else if (
+                curSpeedSq > 280 &&
+                !state.nearMissedObstacles.has(tree.id) &&
+                state.y < treeTopY + 1.2
+              ) {
+                state.nearMissedObstacles.add(tree.id);
+                state.closeCalls += 1;
+                state.boostCharge = Math.min(100, state.boostCharge + 18);
+                const ccPts = 300 * state.comboMultiplier;
+                state.flowScoreTotal += ccPts;
+                state.score += ccPts;
+                if (state.comboScore > 0) state.comboTimer = COMBO_WINDOW_SEC;
+                triggerCallout('CLOSE CALL!', `+${ccPts.toLocaleString()} · +18% Boost`, 'boost');
+                playSkiSound('closecall', soundRef.current);
+                checkMedalUnlock();
+              }
             }
           }
         }
@@ -1794,8 +1863,14 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         }
       }
 
-      // Update Environment Animations (Sky clouds/aurora, Snow crystal glints, Chairlifts, Rotating Rings)
-      skyDome.update(elapsedSec);
+      // Compute altitude above local snowpack & update atmosphere/environment
+      const curTerrainY = getTerrainAndRampHeight(map, layout, state.x, state.z).height;
+      const curAltitude = Math.max(0, state.y - curTerrainY);
+      state.altitudeMeters = curAltitude;
+      sceneFog.density = baseFogDensity / (1 + curAltitude * 0.016);
+
+      // Update Environment Animations (Sky clouds/aurora/stratosphere, Snow glints, Chairlifts, Flags, Smoke, Rings)
+      skyDome.update(elapsedSec, curAltitude);
       if (parkScene) {
         parkScene.update(elapsedSec, dt);
       } else {
@@ -1905,8 +1980,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       }
 
       // Contact Shadow positioned flush on terrain directly below skier
-      const shadowTerrainY = getTerrainAndRampHeight(map, layout, state.x, state.z).height;
-      const heightAboveSnow = Math.max(0, state.y - shadowTerrainY);
+      const shadowTerrainY = curTerrainY;
+      const heightAboveSnow = curAltitude;
       skier.shadowMesh.position.set(state.x, shadowTerrainY + 0.04, state.z);
       const shadowScale = Math.max(0.45, 1 - heightAboveSnow * 0.055);
       skier.shadowMesh.scale.setScalar(shadowScale);
@@ -1969,9 +2044,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       }
       flurryMesh.instanceMatrix.needsUpdate = true;
 
-      // Move directional shadow frustum cleanly with skier
-      sunLight.position.set(state.x + 20, state.y + 36, state.z + 10);
-      sunLight.target.position.set(state.x, state.y, state.z + 14);
+      // Move directional shadow frustum cleanly with skier & snowpack across any altitude
+      sunLight.position.set(state.x + 22, Math.max(state.y, shadowTerrainY) + 42, state.z + 10);
+      sunLight.target.position.set(state.x, shadowTerrainY, state.z + 14);
       sunLight.target.updateMatrixWorld();
 
       // Smooth Exponential Chase Camera OR First-Person Helmet/Goggle Cam
@@ -2025,15 +2100,18 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         camera.lookAt(_lookTarget);
       } else {
         camera.up.set(0, 1, 0);
-        const distBack = camMode === 'low' ? 6.2 : camMode === 'wide' ? 12.2 : 8.8;
-        const heightUp = camMode === 'low' ? 2.5 : camMode === 'wide' ? 5.6 : 4.1;
+        const altPullBack = Math.min(18, heightAboveSnow * 0.12);
+        const altPullUp = Math.min(11, heightAboveSnow * 0.075);
+        const distBack = (camMode === 'low' ? 6.2 : camMode === 'wide' ? 12.2 : 8.8) + altPullBack;
+        const heightUp = (camMode === 'low' ? 2.5 : camMode === 'wide' ? 5.6 : 4.1) + altPullUp;
 
         _camTarget.set(
           state.x - state.vx * 0.08 + shakeX,
           Math.max(shadowTerrainY + 1.8, state.y + heightUp) + shakeY,
           state.z - distBack
         );
-        _lookTarget.set(state.x + state.vx * 0.07, state.y + 1.0, state.z + 14);
+        const lookDownBias = Math.min(14, heightAboveSnow * 0.16);
+        _lookTarget.set(state.x + state.vx * 0.07, state.y + 1.0 - lookDownBias, state.z + 14);
 
         camera.position.x = THREE.MathUtils.damp(camera.position.x, _camTarget.x, 8.5, dt);
         camera.position.y = THREE.MathUtils.damp(camera.position.y, _camTarget.y, 7.5, dt);
@@ -2094,7 +2172,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         onHudRef.current(buildSnapshot(liveLabel, livePoints, inp.grab, speedKmh));
       }
 
-      renderer.render(scene, camera);
+      if (composer && !isSoftwareGl) {
+        composer.render();
+      } else {
+        renderer.render(scene, camera);
+      }
 
       if (isSoftwareGl) afterDraw(tick);
       else frameId = requestAnimationFrame(tick);
@@ -2131,6 +2213,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       windMat.dispose();
       windMesh.dispose();
       envTex.dispose();
+      bloomPass?.dispose();
+      outputPass?.dispose();
+      composer?.dispose();
       renderer.dispose();
     };
   }, [gearId, inputRef, mapId, runSeed]);

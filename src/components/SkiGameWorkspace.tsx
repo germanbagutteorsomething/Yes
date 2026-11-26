@@ -71,6 +71,7 @@ const INITIAL_HUD: SkiHudSnapshot = {
   comboMultiplier: 1,
   comboTimeRatio: 0,
   speedKmh: 0,
+  altitudeMeters: 0,
   distanceMeters: 0,
   lengthMeters: 1100,
   progressPct: 0,
@@ -1001,7 +1002,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                   </span>
                 </div>
                 <div className="col-span-2 pt-0.5 text-[11px] text-stone-500 dark:text-stone-400">
-                  Tip: Hold Spin + Flip diagonally off any kicker to throw a <strong>Cork / Rodeo</strong>, and skim trees or fly through Air Rings to charge Boost!
+                  Tip: Hold Spin + Flip diagonally off any kicker to throw a <strong>Cork / Rodeo</strong>, hold <strong>Boost</strong> mid-air for uncapped Sky-Boost lift, and skim trees or fly through Air Rings to recharge Boost!
                 </div>
               </div>
             )}
@@ -1092,8 +1093,15 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
               {hud.boostCharge}%
             </span>
           </div>
-          <div className="flex items-center justify-between text-[10px] font-mono text-stone-300 tabular-nums">
-            <span>{hud.distanceMeters.toLocaleString()}m</span>
+          <div className="flex items-center justify-between gap-2 text-[10px] font-mono text-stone-300 tabular-nums">
+            <span>
+              {hud.distanceMeters.toLocaleString()}m
+              {hud.altitudeMeters > 1 && (
+                <span className="ml-1.5 text-sky-300 font-semibold">
+                  ALT {hud.altitudeMeters.toLocaleString()}m
+                </span>
+              )}
+            </span>
             {hud.ghostDeltaMeters !== null ? (
               <span
                 className={
