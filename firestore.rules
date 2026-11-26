@@ -1,0 +1,260 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAuthorizedPlayer() {
+      return isSignedIn()
+        && (request.auth.token.firebase.sign_in_provider == 'anonymous' || request.auth.token.email_verified == true);
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 4 && id.size() <= 32 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUid(uid) {
+      return uid is string && uid.size() >= 1 && uid.size() <= 128 && uid.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'nickname', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'nickname', 'updatedAt'])
+        && isValidUid(data.uid)
+        && data.uid == request.auth.uid
+        && data.nickname is string && data.nickname.size() >= 1 && data.nickname.size() <= 32
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidChessGame(data) {
+      return data.keys().hasAll([
+          'id', 'status', 'visibility', 'hostUid', 'hostName', 'guestUid', 'guestName',
+          'hostColor', 'whiteUid', 'blackUid', 'variant', 'crazyhouseSetup', 'timeControlId',
+          'baseMs', 'incrementMs', 'perMove', 'startFen', 'fen', 'turn', 'ply',
+          'lastMoveSan', 'lastMoveLan', 'lastMoveFrom', 'lastMoveTo', 'lastMoveColor',
+          'lastMoveIsCheck', 'lastMoveIsCheckmate', 'lastMoveIsCapture',
+          'lastMoveIsCastle', 'lastMoveIsPromotion', 'moves',
+          'whiteClockMs', 'blackClockMs', 'drawOfferBy', 'winner', 'endReason',
+          'endHeadline', 'endDetail', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'status', 'visibility', 'hostUid', 'hostName', 'guestUid', 'guestName',
+          'hostColor', 'whiteUid', 'blackUid', 'variant', 'crazyhouseSetup', 'timeControlId',
+          'baseMs', 'incrementMs', 'perMove', 'startFen', 'fen', 'turn', 'ply',
+          'lastMoveSan', 'lastMoveLan', 'lastMoveFrom', 'lastMoveTo', 'lastMoveColor',
+          'lastMoveIsCheck', 'lastMoveIsCheckmate', 'lastMoveIsCapture',
+          'lastMoveIsCastle', 'lastMoveIsPromotion', 'moves',
+          'whiteClockMs', 'blackClockMs', 'drawOfferBy', 'winner', 'endReason',
+          'endHeadline', 'endDetail', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.status in ['open', 'active', 'finished', 'aborted']
+        && data.visibility in ['public', 'link']
+        && isValidUid(data.hostUid)
+        && data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 40
+        && data.guestUid is string && data.guestUid.size() <= 128
+        && data.guestName is string && data.guestName.size() <= 40
+        && data.hostColor in ['w', 'b']
+        && data.whiteUid is string && data.whiteUid.size() <= 128
+        && data.blackUid is string && data.blackUid.size() <= 128
+        && data.variant is string && data.variant.size() >= 1 && data.variant.size() <= 32
+        && data.crazyhouseSetup in ['classic', '960', 'starter']
+        && data.timeControlId is string && data.timeControlId.size() >= 1 && data.timeControlId.size() <= 24
+        && data.baseMs is int && data.baseMs >= 0 && data.baseMs <= 3600000
+        && data.incrementMs is int && data.incrementMs >= 0 && data.incrementMs <= 120000
+        && data.perMove is bool
+        && data.startFen is string && data.startFen.size() >= 10 && data.startFen.size() <= 120
+        && data.fen is string && data.fen.size() >= 10 && data.fen.size() <= 120
+        && data.turn in ['w', 'b']
+        && data.ply is int && data.ply >= 0 && data.ply <= 400
+        && data.lastMoveSan is string && data.lastMoveSan.size() <= 20
+        && data.lastMoveLan is string && data.lastMoveLan.size() <= 20
+        && data.lastMoveFrom is string && data.lastMoveFrom.size() <= 4
+        && data.lastMoveTo is string && data.lastMoveTo.size() <= 4
+        && data.lastMoveColor in ['', 'w', 'b']
+        && data.lastMoveIsCheck is bool
+        && data.lastMoveIsCheckmate is bool
+        && data.lastMoveIsCapture is bool
+        && data.lastMoveIsCastle is bool
+        && data.lastMoveIsPromotion is bool
+        && data.moves is list && data.moves.size() <= 400
+        && (data.moves.size() == 0 || data.moves[0] is string)
+        && data.whiteClockMs is int && data.whiteClockMs >= 0 && data.whiteClockMs <= 3600000
+        && data.blackClockMs is int && data.blackClockMs >= 0 && data.blackClockMs <= 3600000
+        && data.drawOfferBy in ['', 'w', 'b']
+        && data.winner in ['', 'w', 'b', 'draw']
+        && data.endReason in [
+          '', 'checkmate', 'variant-win', 'stalemate', 'threefold',
+          'insufficient', 'fifty-move', 'resignation', 'agreement', 'timeout', 'aborted'
+        ]
+        && data.endHeadline is string && data.endHeadline.size() <= 100
+        && data.endDetail is string && data.endDetail.size() <= 180
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function hasImmutableGameFields() {
+      return incoming().id == existing().id
+        && incoming().hostUid == existing().hostUid
+        && incoming().hostName == existing().hostName
+        && incoming().hostColor == existing().hostColor
+        && incoming().visibility == existing().visibility
+        && incoming().variant == existing().variant
+        && incoming().crazyhouseSetup == existing().crazyhouseSetup
+        && incoming().timeControlId == existing().timeControlId
+        && incoming().baseMs == existing().baseMs
+        && incoming().incrementMs == existing().incrementMs
+        && incoming().perMove == existing().perMove
+        && incoming().startFen == existing().startFen
+        && incoming().createdAt == existing().createdAt;
+    }
+
+    function isParticipant() {
+      return request.auth.uid == existing().whiteUid || request.auth.uid == existing().blackUid;
+    }
+
+    function isActiveMover() {
+      return (existing().turn == 'w' && request.auth.uid == existing().whiteUid)
+        || (existing().turn == 'b' && request.auth.uid == existing().blackUid);
+    }
+
+    function isJoinAction() {
+      return existing().status == 'open'
+        && existing().guestUid == ''
+        && request.auth.uid != existing().hostUid
+        && incoming().status == 'active'
+        && incoming().guestUid == request.auth.uid
+        && incoming().guestName.size() >= 1
+        && incoming().whiteUid == (existing().hostColor == 'w' ? existing().hostUid : request.auth.uid)
+        && incoming().blackUid == (existing().hostColor == 'b' ? existing().hostUid : request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'guestUid', 'guestName', 'whiteUid', 'blackUid', 'status', 'updatedAt'
+        ]);
+    }
+
+    function isMoveAction() {
+      return existing().status == 'active'
+        && isActiveMover()
+        && incoming().ply == existing().ply + 1
+        && incoming().moves.size() == existing().ply + 1
+        && (
+          (incoming().status == 'active' && incoming().winner == '' && incoming().endReason == '')
+          || (
+            incoming().status == 'finished'
+            && incoming().winner in ['w', 'b', 'draw']
+            && incoming().endReason in [
+              'checkmate', 'variant-win', 'stalemate', 'threefold', 'insufficient', 'fifty-move'
+            ]
+          )
+        )
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'fen', 'turn', 'ply', 'moves',
+          'lastMoveSan', 'lastMoveLan', 'lastMoveFrom', 'lastMoveTo', 'lastMoveColor',
+          'lastMoveIsCheck', 'lastMoveIsCheckmate', 'lastMoveIsCapture',
+          'lastMoveIsCastle', 'lastMoveIsPromotion',
+          'whiteClockMs', 'blackClockMs', 'drawOfferBy',
+          'status', 'winner', 'endReason', 'endHeadline', 'endDetail', 'updatedAt'
+        ]);
+    }
+
+    function isDrawOfferAction() {
+      return existing().status == 'active'
+        && isParticipant()
+        && incoming().status == 'active'
+        && incoming().diff(existing()).affectedKeys().hasOnly(['drawOfferBy', 'updatedAt']);
+    }
+
+    function isFinishAction() {
+      return existing().status == 'active'
+        && isParticipant()
+        && incoming().status == 'finished'
+        && incoming().winner in ['w', 'b', 'draw']
+        && incoming().endReason in ['resignation', 'agreement', 'timeout']
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'winner', 'endReason', 'endHeadline', 'endDetail',
+          'drawOfferBy', 'whiteClockMs', 'blackClockMs', 'updatedAt'
+        ]);
+    }
+
+    match /users/{userId} {
+      allow get: if isAuthorizedPlayer()
+        && userId is string && userId.size() >= 1 && userId.size() <= 128 && userId.matches('^[a-zA-Z0-9_\\-]+$')
+        && request.auth.uid == userId;
+      allow list: if false;
+      allow create: if isAuthorizedPlayer()
+        && userId is string && userId.size() >= 1 && userId.size() <= 128 && userId.matches('^[a-zA-Z0-9_\\-]+$')
+        && request.auth.uid == userId
+        && isValidUserProfile(incoming());
+      allow update: if isAuthorizedPlayer()
+        && userId is string && userId.size() >= 1 && userId.size() <= 128 && userId.matches('^[a-zA-Z0-9_\\-]+$')
+        && request.auth.uid == userId
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().diff(existing()).affectedKeys().hasOnly(['nickname', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /chessGames/{gameId} {
+      allow get: if isAuthorizedPlayer()
+        && isValidId(gameId)
+        && (
+          resource.data.status == 'open'
+          || resource.data.visibility == 'public'
+          || resource.data.hostUid == request.auth.uid
+          || resource.data.guestUid == request.auth.uid
+        );
+
+      allow list: if isAuthorizedPlayer()
+        && (
+          (resource.data.visibility == 'public' && resource.data.status == 'open')
+          || resource.data.hostUid == request.auth.uid
+          || resource.data.guestUid == request.auth.uid
+        );
+
+      allow create: if isAuthorizedPlayer()
+        && isValidId(gameId)
+        && isValidChessGame(incoming())
+        && incoming().id == gameId
+        && incoming().hostUid == request.auth.uid
+        && incoming().guestUid == ''
+        && incoming().guestName == ''
+        && incoming().status == 'open'
+        && incoming().ply == 0
+        && incoming().moves.size() == 0
+        && incoming().winner == ''
+        && incoming().endReason == ''
+        && incoming().drawOfferBy == ''
+        && incoming().whiteUid == (incoming().hostColor == 'w' ? request.auth.uid : '')
+        && incoming().blackUid == (incoming().hostColor == 'b' ? request.auth.uid : '')
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isAuthorizedPlayer()
+        && isValidId(gameId)
+        && isValidChessGame(incoming())
+        && !(existing().status in ['finished', 'aborted'])
+        && hasImmutableGameFields()
+        && incoming().updatedAt == request.time
+        && (isJoinAction() || isMoveAction() || isDrawOfferAction() || isFinishAction());
+
+      allow delete: if isAuthorizedPlayer()
+        && isValidId(gameId)
+        && resource.data.status == 'open'
+        && resource.data.hostUid == request.auth.uid;
+    }
+  }
+}

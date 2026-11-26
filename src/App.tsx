@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type PieceSymbol, type Square } from 'chess.js';
+import { onAuthStateChanged, type User } from 'firebase/auth';
 import {
   Archive,
   ArrowUpDown,
@@ -9,9 +10,9 @@ import {
   CircleDot,
   Cpu,
   Crown,
-  FileDown,
   Flag,
   Gamepad2,
+  Globe,
   Handshake,
   Lightbulb,
   Loader2,
@@ -38,14 +39,37 @@ import { GamesHub } from './components/GamesHub';
 import { MatchAnalysisPanel } from './components/MatchAnalysisPanel';
 import { MoveHistoryPanel } from './components/MoveHistoryPanel';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { OnlineChessPanel } from './components/OnlineChessPanel';
 import { PlayerBar } from './components/PlayerBar';
 import { PoolGameWorkspace } from './components/PoolGameWorkspace';
 import { PuzzlesWorkspace } from './components/PuzzlesWorkspace';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { SkiGameWorkspace } from './components/SkiGameWorkspace';
 import { detectOpening } from './data/openings';
+import { auth, signInGuestAnonymously, signInWithGoogle, signOutFirebase } from './firebase';
 import { getBotMove } from './engine/botService';
+import {
+  cancelOnlineChallenge,
+  createOnlineChallenge,
+  decodeMoveRecordToken,
+  fetchOnlineGameById,
+  finishOnlineGame,
+  getDeterministicRematchId,
+  joinOnlineChallenge,
+  loadUserNickname,
+  requestOrJoinRematch,
+  saveUserNickname,
+  sendOnlineDrawOffer,
+  submitOnlineMove,
+  subscribeToMyOnlineGames,
+  subscribeToOpenLobby,
+  subscribeToOnlineGame,
+  sanitizeRoomCode,
+  type OnlineChessGame,
+  type OnlineVisibility,
+} from './engine/onlineChessService';
 import { stockfishService } from './engine/stockfishService';
+
 import { getVariantEngineMove, getVariantHintMove } from './engine/variantAi';
 import {
   BOT_PROFILES,
@@ -331,6 +355,304 @@ export default function App() {
     total: number;
   }>({ completed: 0, total: 0 });
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+
+  // Online Multiplayer State
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [onlineNickname, setOnlineNickname] = useState<string>('Player');
+  const [activeOnlineGame, setActiveOnlineGame] = useState<OnlineChessGame | null>(null);
+  const [pendingInviteGame, setPendingInviteGame] = useState<OnlineChessGame | null>(null);
+  const [openLobbyGames, setOpenLobbyGames] = useState<OnlineChessGame[]>([]);
+  const [myOnlineGames, setMyOnlineGames] = useState<OnlineChessGame[]>([]);
+  const [rematchRoom, setRematchRoom] = useState<OnlineChessGame | null>(null);
+  const [onlineBusy, setOnlineBusy] = useState<boolean>(false);
+  const [onlineError, setOnlineError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (!mounted) return;
+      if (u) {
+        setFirebaseUser(u);
+        setAuthReady(true);
+        const nick = await loadUserNickname(u);
+        if (mounted) setOnlineNickname(nick);
+      } else {
+        try {
+          const guest = await signInGuestAnonymously();
+          if (mounted) {
+            setFirebaseUser(guest);
+            setAuthReady(true);
+            const nick = await loadUserNickname(guest);
+            if (mounted) setOnlineNickname(nick);
+          }
+        } catch {
+          if (mounted) {
+            setFirebaseUser(null);
+            setAuthReady(true);
+          }
+        }
+      }
+    });
+    return () => {
+      mounted = false;
+      unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get('room');
+    if (roomParam) {
+      const clean = sanitizeRoomCode(roomParam);
+      if (clean.length >= 4) {
+        fetchOnlineGameById(clean)
+          .then((g) => {
+            if (g) {
+              setPendingInviteGame(g);
+              setActiveGame('chess');
+              setActiveView('play');
+              setSidebarTab('setup');
+            }
+          })
+          .catch(() => {});
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!firebaseUser) {
+      setOpenLobbyGames([]);
+      setMyOnlineGames([]);
+      return;
+    }
+    const unsubLobby = subscribeToOpenLobby((games) => setOpenLobbyGames(games), () => {});
+    const unsubMy = subscribeToMyOnlineGames(firebaseUser.uid, (games) => setMyOnlineGames(games), () => {});
+    return () => {
+      unsubLobby();
+      unsubMy();
+    };
+  }, [firebaseUser]);
+
+  useEffect(() => {
+    if (!activeOnlineGame?.id) return;
+    const unsub = subscribeToOnlineGame(
+      activeOnlineGame.id,
+      (updated) => {
+        if (!updated) {
+          setActiveOnlineGame(null);
+          return;
+        }
+        setActiveOnlineGame(updated);
+      },
+      () => {}
+    );
+    return () => unsub();
+  }, [activeOnlineGame?.id]);
+
+  useEffect(() => {
+    if (!activeOnlineGame || activeOnlineGame.status !== 'finished') {
+      setRematchRoom(null);
+      return;
+    }
+    const rematchId = getDeterministicRematchId(activeOnlineGame.id);
+    const unsub = subscribeToOnlineGame(rematchId, (rm) => setRematchRoom(rm), () => {});
+    return () => unsub();
+  }, [activeOnlineGame]);
+
+  useEffect(() => {
+    if (gameMode !== 'online' || !activeOnlineGame) return;
+    const g = activeOnlineGame;
+    if (variant !== g.variant) setVariant(g.variant);
+    if (crazyhouseSetup !== g.crazyhouseSetup) setCrazyhouseSetup(g.crazyhouseSetup);
+    if (startFen !== g.startFen) setStartFen(g.startFen);
+
+    const myColor = firebaseUser
+      ? g.whiteUid === firebaseUser.uid
+        ? 'w'
+        : g.blackUid === firebaseUser.uid
+        ? 'b'
+        : null
+      : null;
+    if (myColor) {
+      setHumanColor(myColor);
+      setFlipped(myColor === 'b');
+    }
+
+    const replay =
+      g.variant === 'crazyhouse'
+        ? replayCrazyhouseChess(g.startFen, g.moves.map(decodeMoveRecordToken))
+        : (() => {
+            const r = new Chess(g.startFen);
+            for (const t of g.moves) {
+              const rec = decodeMoveRecordToken(t);
+              try {
+                r.move(rec.lan);
+              } catch {
+                try {
+                  r.move(rec.san);
+                } catch {
+                  break;
+                }
+              }
+            }
+            return r;
+          })();
+
+    chessRef.current = replay;
+    const decodedMoves = g.moves.map(decodeMoveRecordToken);
+    setFen(replay.fen());
+    setMoves(decodedMoves);
+    setTurn(replay.turn());
+    setIsCheck(replay.isCheck());
+    setClocksMs({ w: g.whiteClockMs, b: g.blackClockMs });
+
+    if (g.status === 'finished') {
+      const winnerName = g.winner === 'w' ? 'White' : g.winner === 'b' ? 'Black' : 'Draw';
+      setGameResult({
+        winner: (g.winner === 'w' || g.winner === 'b' || g.winner === 'draw' ? g.winner : 'draw'),
+        reason: (g.endReason as any) || 'agreement',
+        headline: g.endHeadline || `${winnerName} wins online match`,
+        detail: g.endDetail || `Finished via ${g.endReason}`,
+      });
+    } else {
+      setGameResult(null);
+    }
+  }, [activeOnlineGame, gameMode, firebaseUser]);
+
+  const handleCreateOnlineChallenge = async (visibility: OnlineVisibility) => {
+    if (!firebaseUser) return;
+    setOnlineBusy(true);
+    setOnlineError(null);
+    try {
+      const created = await createOnlineChallenge({
+        user: firebaseUser,
+        nickname: onlineNickname,
+        visibility,
+        sideChoice,
+        variant,
+        crazyhouseSetup,
+        timeControlId,
+      });
+      setActiveOnlineGame(created);
+      setGameMode('online');
+      setActiveGame('chess');
+      setActiveView('play');
+    } catch (err) {
+      setOnlineError(err instanceof Error ? err.message : 'Failed to create challenge.');
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleJoinOnlineByCode = async (code: string) => {
+    if (!firebaseUser) return;
+    setOnlineBusy(true);
+    setOnlineError(null);
+    try {
+      const joined = await joinOnlineChallenge(code, firebaseUser, onlineNickname);
+      setActiveOnlineGame(joined);
+      setGameMode('online');
+      setActiveGame('chess');
+      setActiveView('play');
+      setPendingInviteGame(null);
+    } catch (err) {
+      setOnlineError(err instanceof Error ? err.message : 'Failed to join room.');
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleAcceptOnlineChallenge = async (gameId: string) => {
+    await handleJoinOnlineByCode(gameId);
+  };
+
+  const handleCancelOnlineChallenge = async (gameId: string) => {
+    setOnlineBusy(true);
+    try {
+      await cancelOnlineChallenge(gameId);
+      setActiveOnlineGame(null);
+    } catch (err) {
+      setOnlineError(err instanceof Error ? err.message : 'Failed to cancel.');
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleOpenExistingOnlineGame = (game: OnlineChessGame) => {
+    setActiveOnlineGame(game);
+    setGameMode('online');
+    setActiveGame('chess');
+    setActiveView('play');
+    setPendingInviteGame(null);
+  };
+
+  const handleSignInGuest = async () => {
+    setOnlineBusy(true);
+    setOnlineError(null);
+    try {
+      const guest = await signInGuestAnonymously();
+      setFirebaseUser(guest);
+      const nick = await loadUserNickname(guest);
+      setOnlineNickname(nick);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('admin-restricted-operation') || msg.includes('CONFIGURATION_NOT_FOUND')) {
+        setOnlineError(
+          'Anonymous sign-in must be enabled in Firebase Console (Authentication → Sign-in method → Anonymous → Enable).'
+        );
+      } else {
+        setOnlineError(`Guest login notice: ${msg}`);
+      }
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleLeaveActiveOnlineRoom = () => {
+    setActiveOnlineGame(null);
+    setPendingInviteGame(null);
+  };
+
+  const handleRequestOnlineRematch = async () => {
+    if (!firebaseUser || !activeOnlineGame) return;
+    setOnlineBusy(true);
+    try {
+      const rm = await requestOrJoinRematch(activeOnlineGame, firebaseUser, onlineNickname);
+      setActiveOnlineGame(rm);
+    } catch (err) {
+      setOnlineError(err instanceof Error ? err.message : 'Failed to request rematch.');
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleAcceptOnlineDraw = async () => {
+    if (!activeOnlineGame) return;
+    try {
+      await finishOnlineGame({
+        gameId: activeOnlineGame.id,
+        winner: 'draw',
+        reason: 'agreement',
+        headline: 'Draw by Agreement',
+        detail: 'Both players agreed to a draw.',
+        whiteClockMs: clocksMs.w,
+        blackClockMs: clocksMs.b,
+      });
+    } catch (err) {
+      setOnlineError(err instanceof Error ? err.message : 'Accept draw failed');
+    }
+  };
+
+  const handleDeclineOnlineDraw = async () => {
+    if (!activeOnlineGame) return;
+    try {
+      await sendOnlineDrawOffer(activeOnlineGame.id, '');
+    } catch (err) {
+      setOnlineError(err instanceof Error ? err.message : 'Decline draw failed');
+    }
+  };
 
   // Archive & progress persistence
   const [savedMatches, setSavedMatches] = useState<SavedMatch[]>(() => loadSavedMatches());
@@ -675,6 +997,20 @@ export default function App() {
       silentOnIllegal = false
     ): boolean => {
       const chess = chessRef.current;
+      if (gameMode === 'online') {
+        if (!activeOnlineGame || activeOnlineGame.status !== 'active') return false;
+        const myColor = firebaseUser
+          ? activeOnlineGame.whiteUid === firebaseUser.uid
+            ? 'w'
+            : activeOnlineGame.blackUid === firebaseUser.uid
+            ? 'b'
+            : null
+          : null;
+        if (!myColor || chess.turn() !== myColor) {
+          if (!silentOnIllegal) playChessSound('illegal', soundEnabled);
+          return false;
+        }
+      }
       try {
         const legal = isVariantMoveLegal(chess, from, to, variant);
         if (legal.length === 0) {
@@ -697,6 +1033,21 @@ export default function App() {
           isPromotion: move.isPromotion(),
         };
         syncFromChess(record);
+
+        if (gameMode === 'online' && activeOnlineGame) {
+          const nextTurn = chess.turn();
+          const res = evaluateGameEnd(chess, variant, [...moves, record], startFen, crazyhouseSetup);
+          void submitOnlineMove({
+            game: activeOnlineGame,
+            move: record,
+            nextFen: chess.fen(),
+            nextTurn,
+            whiteClockMs: clocksMs.w,
+            blackClockMs: clocksMs.b,
+            result: res,
+          }).catch((err) => setOnlineError(err instanceof Error ? err.message : 'Move sync failed'));
+        }
+
         return true;
       } catch {
         if (!silentOnIllegal) {
@@ -705,7 +1056,7 @@ export default function App() {
         return false;
       }
     },
-    [moves.length, soundEnabled, syncFromChess, variant]
+    [activeOnlineGame, clocksMs.b, clocksMs.w, crazyhouseSetup, firebaseUser, gameMode, moves, soundEnabled, startFen, syncFromChess, variant]
   );
 
   const executeCrazyhouseDrop = useCallback(
@@ -713,6 +1064,20 @@ export default function App() {
       if (variant !== 'crazyhouse') return false;
       const chess = chessRef.current;
       const active = chess.turn();
+      if (gameMode === 'online') {
+        if (!activeOnlineGame || activeOnlineGame.status !== 'active') return false;
+        const myColor = firebaseUser
+          ? activeOnlineGame.whiteUid === firebaseUser.uid
+            ? 'w'
+            : activeOnlineGame.blackUid === firebaseUser.uid
+            ? 'b'
+            : null
+          : null;
+        if (!myColor || active !== myColor) {
+          if (!silentOnIllegal) playChessSound('illegal', soundEnabled);
+          return false;
+        }
+      }
       const chState = computeCrazyhouseState(startFen, moves, crazyhouseSetup);
       if ((chState[active]?.[piece] ?? 0) <= 0) {
         if (!silentOnIllegal) playChessSound('illegal', soundEnabled);
@@ -741,9 +1106,24 @@ export default function App() {
         isPromotion: false,
       };
       syncFromChess(record);
+
+      if (gameMode === 'online' && activeOnlineGame) {
+        const nextTurn = chess.turn();
+        const res = evaluateGameEnd(chess, variant, [...moves, record], startFen, crazyhouseSetup);
+        void submitOnlineMove({
+          game: activeOnlineGame,
+          move: record,
+          nextFen: chess.fen(),
+          nextTurn,
+          whiteClockMs: clocksMs.w,
+          blackClockMs: clocksMs.b,
+          result: res,
+        }).catch((err) => setOnlineError(err instanceof Error ? err.message : 'Drop sync failed'));
+      }
+
       return true;
     },
-    [crazyhouseSetup, moves, soundEnabled, startFen, syncFromChess, variant]
+    [activeOnlineGame, clocksMs.b, clocksMs.w, crazyhouseSetup, firebaseUser, gameMode, moves, soundEnabled, startFen, syncFromChess, variant]
   );
 
   const handleSubmitSanMove = useCallback(
@@ -2225,6 +2605,53 @@ export default function App() {
 
             {/* Right Column: Unified Tabbed Play Studio */}
             <aside className="space-y-3">
+              {(gameMode === 'online' || pendingInviteGame) && (
+                <OnlineChessPanel
+                  authReady={authReady}
+                  user={firebaseUser}
+                  nickname={onlineNickname}
+                  onSaveNickname={async (name) => {
+                    if (!firebaseUser) return;
+                    const saved = await saveUserNickname(firebaseUser, name);
+                    setOnlineNickname(saved);
+                  }}
+                  onSignIn={async () => {
+                    try {
+                      const u = await signInWithGoogle();
+                      setFirebaseUser(u);
+                    } catch (err) {
+                      setOnlineError(err instanceof Error ? err.message : 'Google sign-in failed');
+                    }
+                  }}
+                  onSignInGuest={handleSignInGuest}
+                  onSignOut={async () => {
+                    await signOutFirebase();
+                    setFirebaseUser(null);
+                    setActiveOnlineGame(null);
+                  }}
+                  activeGame={activeOnlineGame}
+                  pendingInviteGame={pendingInviteGame}
+                  openLobbyGames={openLobbyGames}
+                  myOnlineGames={myOnlineGames}
+                  variant={variant}
+                  crazyhouseSetup={crazyhouseSetup}
+                  timeControlId={timeControlId}
+                  sideChoice={sideChoice}
+                  isBusy={onlineBusy}
+                  errorMsg={onlineError}
+                  onClearError={() => setOnlineError(null)}
+                  onCreateChallenge={handleCreateOnlineChallenge}
+                  onJoinByCode={handleJoinOnlineByCode}
+                  onAcceptChallenge={handleAcceptOnlineChallenge}
+                  onCancelChallenge={handleCancelOnlineChallenge}
+                  onOpenExistingGame={handleOpenExistingOnlineGame}
+                  onLeaveActiveRoom={handleLeaveActiveOnlineRoom}
+                  onRequestRematch={handleRequestOnlineRematch}
+                  rematchRoom={rematchRoom}
+                  onAcceptDrawOffer={handleAcceptOnlineDraw}
+                  onDeclineDrawOffer={handleDeclineOnlineDraw}
+                />
+              )}
               {/* Post-Game Summary Card */}
               {gameResult && (
                 <section
@@ -2455,7 +2882,7 @@ export default function App() {
                     <label className="block text-xs font-semibold text-stone-700 dark:text-stone-300 mb-2">
                       Game Mode
                     </label>
-                    <div className="grid grid-cols-2 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-1">
+                    <div className="grid grid-cols-3 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-1">
                       <button
                         type="button"
                         onClick={() => {
@@ -2463,7 +2890,7 @@ export default function App() {
                             startNewGame({ mode: 'stockfish' });
                           }
                         }}
-                        className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                        className={`flex items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
                           gameMode === 'stockfish'
                             ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
                             : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
@@ -2479,7 +2906,7 @@ export default function App() {
                             startNewGame({ mode: 'two-player' });
                           }
                         }}
-                        className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                        className={`flex items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
                           gameMode === 'two-player'
                             ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
                             : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
@@ -2487,6 +2914,23 @@ export default function App() {
                       >
                         <Users className="w-3.5 h-3.5" aria-hidden="true" />
                         <span>2 Players</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGameMode('online');
+                          setActiveGame('chess');
+                          setActiveView('play');
+                          setSidebarTab('setup');
+                        }}
+                        className={`flex items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                          gameMode === 'online'
+                            ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                            : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                        }`}
+                      >
+                        <Globe className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Online</span>
                       </button>
                     </div>
                   </div>
@@ -2908,20 +3352,6 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-
-                  {typeof window !== 'undefined' && !window.__EMBEDDED_STOCKFISH_ASM__ && (
-                    <a
-                      href="./squareeight-chess.html"
-                      download="squareeight-chess.html"
-                      className="flex items-center justify-between rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-800/50 px-3 py-2 text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                    >
-                      <span>Download Standalone HTML</span>
-                      <FileDown
-                        className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0"
-                        aria-hidden="true"
-                      />
-                    </a>
-                  )}
                 </section>
               )}
 

@@ -51,7 +51,7 @@ export const ArchiveWorkspace: React.FC<ArchiveWorkspaceProps> = ({
 
     for (const m of matches) {
       if (m.winner === 'draw') draws += 1;
-      else if (m.mode === 'stockfish') {
+      else if (m.mode === 'stockfish' || m.mode === 'online') {
         if (m.winner === m.humanColor) wins += 1;
         else losses += 1;
       } else {

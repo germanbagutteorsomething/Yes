@@ -1,0 +1,259 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public-safe player display settings owned exclusively by the signed-in user.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "nickname": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "nickname", "updatedAt"]
+    },
+    "ChessGame": {
+      "title": "ChessGame",
+      "description": "Real-time multiplayer chess match or open challenge room synchronized across players.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "active", "finished", "aborted"]
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["public", "link"]
+        },
+        "hostUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "hostName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "guestUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "guestName": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "hostColor": {
+          "type": "string",
+          "enum": ["w", "b"]
+        },
+        "whiteUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "blackUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "variant": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "crazyhouseSetup": {
+          "type": "string",
+          "enum": ["classic", "960", "starter"]
+        },
+        "timeControlId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "baseMs": {
+          "type": "integer"
+        },
+        "incrementMs": {
+          "type": "integer"
+        },
+        "perMove": {
+          "type": "boolean"
+        },
+        "startFen": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 120
+        },
+        "fen": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 120
+        },
+        "turn": {
+          "type": "string",
+          "enum": ["w", "b"]
+        },
+        "ply": {
+          "type": "integer"
+        },
+        "lastMoveSan": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "lastMoveLan": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "lastMoveFrom": {
+          "type": "string",
+          "maxLength": 4
+        },
+        "lastMoveTo": {
+          "type": "string",
+          "maxLength": 4
+        },
+        "lastMoveColor": {
+          "type": "string",
+          "enum": ["", "w", "b"]
+        },
+        "lastMoveIsCheck": {
+          "type": "boolean"
+        },
+        "lastMoveIsCheckmate": {
+          "type": "boolean"
+        },
+        "lastMoveIsCapture": {
+          "type": "boolean"
+        },
+        "lastMoveIsCastle": {
+          "type": "boolean"
+        },
+        "lastMoveIsPromotion": {
+          "type": "boolean"
+        },
+        "moves": {
+          "type": "array"
+        },
+        "whiteClockMs": {
+          "type": "integer"
+        },
+        "blackClockMs": {
+          "type": "integer"
+        },
+        "drawOfferBy": {
+          "type": "string",
+          "enum": ["", "w", "b"]
+        },
+        "winner": {
+          "type": "string",
+          "enum": ["", "w", "b", "draw"]
+        },
+        "endReason": {
+          "type": "string",
+          "enum": [
+            "",
+            "checkmate",
+            "variant-win",
+            "stalemate",
+            "threefold",
+            "insufficient",
+            "fifty-move",
+            "resignation",
+            "agreement",
+            "timeout",
+            "aborted"
+          ]
+        },
+        "endHeadline": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "endDetail": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "visibility",
+        "hostUid",
+        "hostName",
+        "guestUid",
+        "guestName",
+        "hostColor",
+        "whiteUid",
+        "blackUid",
+        "variant",
+        "crazyhouseSetup",
+        "timeControlId",
+        "baseMs",
+        "incrementMs",
+        "perMove",
+        "startFen",
+        "fen",
+        "turn",
+        "ply",
+        "lastMoveSan",
+        "lastMoveLan",
+        "lastMoveFrom",
+        "lastMoveTo",
+        "lastMoveColor",
+        "lastMoveIsCheck",
+        "lastMoveIsCheckmate",
+        "lastMoveIsCapture",
+        "lastMoveIsCastle",
+        "lastMoveIsPromotion",
+        "moves",
+        "whiteClockMs",
+        "blackClockMs",
+        "drawOfferBy",
+        "winner",
+        "endReason",
+        "endHeadline",
+        "endDetail",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Stores a signed-in user's own non-PII online chess nickname."
+    },
+    "/chessGames/{gameId}": {
+      "schema": {
+        "$ref": "#/entities/ChessGame"
+      },
+      "description": "Online chess challenge rooms, invite-code games, open lobby challenges, and live turn-validated matches."
+    }
+  }
+}

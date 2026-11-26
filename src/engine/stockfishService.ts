@@ -24,12 +24,6 @@ export interface CandidateMove {
   mate: number | null;
 }
 
-declare global {
-  interface Window {
-    __EMBEDDED_STOCKFISH_ASM__?: string;
-  }
-}
-
 const PIECE_VAL: Record<PieceSymbol, number> = {
   p: 1,
   n: 3,
@@ -292,15 +286,6 @@ class StockfishEngineService {
   private multiPvMap: Map<number, CandidateMove> = new Map();
 
   private createWorker(): Worker {
-    const embeddedAsm =
-      typeof window !== 'undefined' ? window.__EMBEDDED_STOCKFISH_ASM__ : undefined;
-
-    if (embeddedAsm) {
-      const blob = new Blob([embeddedAsm], { type: 'application/javascript' });
-      this.workerBlobUrl = URL.createObjectURL(blob);
-      return new Worker(this.workerBlobUrl);
-    }
-
     const workerUrl = new URL(
       './stockfish/stockfish-19-lite-single.js',
       window.location.href

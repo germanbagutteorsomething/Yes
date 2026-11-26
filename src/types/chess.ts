@@ -1,7 +1,7 @@
 import type { Square } from 'chess.js';
 
 export type AppView = 'play' | 'puzzles' | 'endgames' | 'archive';
-export type GameMode = 'stockfish' | 'two-player';
+export type GameMode = 'stockfish' | 'two-player' | 'online';
 export type OpponentKind = 'stockfish' | 'bot';
 export type PlayerColor = 'w' | 'b';
 export type SideChoice = 'w' | 'b' | 'random';
