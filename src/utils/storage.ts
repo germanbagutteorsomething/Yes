@@ -6,6 +6,7 @@ import type {
   StockfishLevelNumber,
 } from '../types/chess';
 import type { SkiGhostSample, SkiMapId, StoredSkiProgress } from '../types/ski';
+import type { StoredHeistProgress } from '../types/heist';
 
 const MATCHES_KEY = 'squareeight_matches_v1';
 const DEFEATED_BOTS_KEY = 'squareeight_defeated_bots_v1';
@@ -156,6 +157,7 @@ export function loadSkiProgress(): StoredSkiProgress {
     selectedGearId: raw.selectedGearId ?? 'alpine-orange',
     ghostEnabled: raw.ghostEnabled ?? true,
     endlessImmortal: raw.endlessImmortal ?? false,
+    altitudeLimitMeters: raw.altitudeLimitMeters ?? 35,
     records: raw.records ?? {},
   };
 }
@@ -186,6 +188,13 @@ export function setSkiGhostEnabled(ghostEnabled: boolean): StoredSkiProgress {
 export function setSkiEndlessImmortal(endlessImmortal: boolean): StoredSkiProgress {
   const cur = loadSkiProgress();
   const next: StoredSkiProgress = { ...cur, endlessImmortal };
+  safeWriteJson(SKI_PROGRESS_KEY, next);
+  return next;
+}
+
+export function setSkiAltitudeLimit(altitudeLimitMeters: number): StoredSkiProgress {
+  const cur = loadSkiProgress();
+  const next: StoredSkiProgress = { ...cur, altitudeLimitMeters };
   safeWriteJson(SKI_PROGRESS_KEY, next);
   return next;
 }
@@ -262,4 +271,37 @@ export function recordSkiRunResult(params: {
   return { progress: next, isNewBest, newlyCompletedObjectives };
 }
 
+const HEIST_PROGRESS_KEY = 'squareeight_heist_progress_v1';
 
+export function loadHeistProgress(): StoredHeistProgress {
+  const raw = safeReadJson<Partial<StoredHeistProgress>>(HEIST_PROGRESS_KEY, {});
+  return {
+    bestScore: raw.bestScore ?? 0,
+    bestCash: raw.bestCash ?? 0,
+    bestSurvivalSec: raw.bestSurvivalSec ?? 0,
+    bestHeists: raw.bestHeists ?? 0,
+    bestCopsDown: raw.bestCopsDown ?? 0,
+    runsPlayed: raw.runsPlayed ?? 0,
+  };
+}
+
+export function recordHeistRunResult(params: {
+  score: number;
+  cash: number;
+  survivalSec: number;
+  heistsCompleted: number;
+  copsDown: number;
+}): { progress: StoredHeistProgress; isNewBest: boolean } {
+  const prev = loadHeistProgress();
+  const isNewBest = params.score > prev.bestScore;
+  const next: StoredHeistProgress = {
+    bestScore: Math.max(prev.bestScore, params.score),
+    bestCash: Math.max(prev.bestCash, params.cash),
+    bestSurvivalSec: Math.max(prev.bestSurvivalSec, params.survivalSec),
+    bestHeists: Math.max(prev.bestHeists, params.heistsCompleted),
+    bestCopsDown: Math.max(prev.bestCopsDown, params.copsDown),
+    runsPlayed: prev.runsPlayed + 1,
+  };
+  safeWriteJson(HEIST_PROGRESS_KEY, next);
+  return { progress: next, isNewBest };
+}

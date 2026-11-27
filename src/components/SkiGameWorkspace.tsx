@@ -22,8 +22,10 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  DEFAULT_SKI_ALTITUDE_LIMIT_METERS,
   getSkiGearById,
   getSkiMapById,
+  SKI_ALTITUDE_LIMITS,
   SKI_GEAR_STYLES,
   SKI_MAPS,
   SKI_PARK_OBJECTIVES,
@@ -51,6 +53,7 @@ import {
   loadSkiProgress,
   recordSkiRunResult,
   saveSkiSelection,
+  setSkiAltitudeLimit,
   setSkiEndlessImmortal,
   setSkiGhostEnabled,
 } from '../utils/storage';
@@ -72,6 +75,8 @@ const INITIAL_HUD: SkiHudSnapshot = {
   comboTimeRatio: 0,
   speedKmh: 0,
   altitudeMeters: 0,
+  altitudeLimitMeters: DEFAULT_SKI_ALTITUDE_LIMIT_METERS,
+  nearAltitudeLimit: false,
   distanceMeters: 0,
   lengthMeters: 1100,
   progressPct: 0,
@@ -104,7 +109,7 @@ const INITIAL_HUD: SkiHudSnapshot = {
   flowScoreTotal: 0,
   gatesCleared: 0,
   totalGates: 0,
-  boostCharge: 50,
+  boostCharge: 35,
   isBoosting: false,
   ringsCollected: 0,
   closeCalls: 0,
@@ -172,6 +177,8 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
   const [finishEarlyNonce, setFinishEarlyNonce] = useState<number>(0);
   const [cameraMode, setCameraMode] = useState<SkiCameraMode>('chase');
   const [hud, setHud] = useState<SkiHudSnapshot>(INITIAL_HUD);
+  const [graphicsQuality, setGraphicsQuality] = useState<'low' | 'medium' | 'high'>('medium');
+  const [slowMo, setSlowMo] = useState<boolean>(false);
   const [isNewBest, setIsNewBest] = useState<boolean>(false);
   const [newObjectivesThisRun, setNewObjectivesThisRun] = useState<string[]>([]);
   const [runEndedByWipeout, setRunEndedByWipeout] = useState<boolean>(false);
@@ -179,6 +186,18 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
   const [arcadeState, setArcadeState] = useState(() => loadArcadeState());
   const [unlockNotice, setUnlockNotice] = useState<string | null>(null);
   const [touchHudOverride, setTouchHudOverride] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      if (e.code === 'KeyM' && !e.repeat) {
+        setSlowMo((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
   const [isTouchViewport, setIsTouchViewport] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
     const coarse = window.matchMedia?.('(pointer: coarse)')?.matches ?? false;
@@ -245,6 +264,14 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
 
   const activeMap = useMemo(() => getSkiMapById(mapId), [mapId]);
   const activeGear = useMemo(() => getSkiGearById(gearId), [gearId]);
+  const activeAltitudeLimit =
+    progress.altitudeLimitMeters ?? DEFAULT_SKI_ALTITUDE_LIMIT_METERS;
+  const activeAltitudeMeta = useMemo(
+    () =>
+      SKI_ALTITUDE_LIMITS.find((l) => l.meters === activeAltitudeLimit) ??
+      SKI_ALTITUDE_LIMITS[1],
+    [activeAltitudeLimit]
+  );
   const currentMapBest = progress.records[mapId]?.bestScore ?? 0;
 
   const resetStickVisual = useCallback(() => {
@@ -287,6 +314,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
       setProgress(saveSkiSelection(targetMapId, gearId));
       setHud({
         ...INITIAL_HUD,
+        altitudeLimitMeters: activeAltitudeLimit,
         lengthMeters: targetMap.lengthMeters,
         isEndless: Boolean(targetMap.isEndless),
       });
@@ -296,7 +324,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
       setRunSeed((n) => n + 1);
       setPhase('playing');
     },
-    [clearInputs, gearId, mapId]
+    [activeAltitudeLimit, clearInputs, gearId, mapId]
   );
 
   const handleSelectGear = useCallback(
@@ -331,6 +359,15 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
 
   const handleToggleEndlessImmortal = useCallback(() => {
     setProgress((prev) => setSkiEndlessImmortal(!prev.endlessImmortal));
+  }, []);
+
+  const handleCycleAltitudeLimit = useCallback(() => {
+    setProgress((prev) => {
+      const cur = prev.altitudeLimitMeters ?? DEFAULT_SKI_ALTITUDE_LIMIT_METERS;
+      const idx = SKI_ALTITUDE_LIMITS.findIndex((l) => l.meters === cur);
+      const next = SKI_ALTITUDE_LIMITS[(idx + 1) % SKI_ALTITUDE_LIMITS.length];
+      return setSkiAltitudeLimit(next.meters);
+    });
   }, []);
 
   const handleFinishEndlessRun = useCallback(() => {
@@ -598,6 +635,41 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                   <span>Immortal: {progress.endlessImmortal ? 'On' : 'Off'}</span>
                 </button>
               )}
+
+              <button
+                type="button"
+                onClick={() =>
+                  setGraphicsQuality((q) => (q === 'medium' ? 'high' : q === 'high' ? 'low' : 'medium'))
+                }
+                title="Graphics Quality preset (Low, Medium, High)"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 px-3 py-2.5 text-xs font-semibold text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700 whitespace-nowrap"
+              >
+                <span>GFX: {graphicsQuality.toUpperCase()}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSlowMo((s) => !s)}
+                title="Slow-Mo (M): 0.35x game speed to time jumps & tricks precisely"
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                  slowMo
+                    ? 'border-purple-600/50 dark:border-purple-500/50 bg-purple-50 dark:bg-purple-950/40 text-purple-800 dark:text-purple-200'
+                    : 'border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-600 dark:text-stone-400'
+                }`}
+              >
+                <Zap className="w-4 h-4" />
+                <span>Slow-Mo: {slowMo ? 'On' : 'Off'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleCycleAltitudeLimit}
+                title={`Altitude Ceiling: ${activeAltitudeMeta.label}`}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-sky-600/40 dark:border-sky-500/40 bg-sky-50/70 dark:bg-sky-950/35 px-3 py-2.5 text-xs font-semibold text-sky-800 dark:text-sky-200 hover:bg-sky-100 dark:hover:bg-sky-950/60 transition-colors whitespace-nowrap"
+              >
+                <Mountain className="w-4 h-4" aria-hidden="true" />
+                <span>Alt Limit: {activeAltitudeLimit}m</span>
+              </button>
 
               <button
                 type="button"
@@ -1002,7 +1074,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                   </span>
                 </div>
                 <div className="col-span-2 pt-0.5 text-[11px] text-stone-500 dark:text-stone-400">
-                  Tip: Hold Spin + Flip diagonally off any kicker to throw a <strong>Cork / Rodeo</strong>, hold <strong>Boost</strong> mid-air for uncapped Sky-Boost lift, and skim trees or fly through Air Rings to recharge Boost!
+                  Tip: Hold Spin + Flip diagonally off any kicker to throw a <strong>Cork / Rodeo</strong>, hold <strong>Boost</strong> for a quick burst of speed & glide within the <strong>{activeAltitudeLimit}m Altitude Limit</strong>, and hit rails, gates & Air Rings to recharge!
                 </div>
               </div>
             )}
@@ -1032,6 +1104,9 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
         endlessImmortal={Boolean(progress.endlessImmortal)}
         finishEarlyNonce={finishEarlyNonce}
         legacyPhysics={legacyPhysics}
+        graphicsQuality={graphicsQuality}
+        slowMo={slowMo}
+        altitudeLimitMeters={activeAltitudeLimit}
         inputRef={inputRef}
         onHudUpdate={setHud}
         onFinishRun={handleFinishRun}
@@ -1082,7 +1157,7 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                 className={`h-full transition-[width] duration-75 ${
                   hud.isBoosting
                     ? 'bg-cyan-300'
-                    : hud.boostCharge >= 20
+                    : hud.boostCharge >= 15
                       ? 'bg-sky-400'
                       : 'bg-stone-500'
                 }`}
@@ -1096,11 +1171,17 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
           <div className="flex items-center justify-between gap-2 text-[10px] font-mono text-stone-300 tabular-nums">
             <span>
               {hud.distanceMeters.toLocaleString()}m
-              {hud.altitudeMeters > 1 && (
-                <span className="ml-1.5 text-sky-300 font-semibold">
-                  ALT {hud.altitudeMeters.toLocaleString()}m
-                </span>
-              )}
+              <span
+                className={`ml-1.5 font-semibold ${
+                  hud.nearAltitudeLimit
+                    ? 'text-amber-300'
+                    : hud.altitudeMeters > 1
+                      ? 'text-sky-300'
+                      : 'text-stone-400'
+                }`}
+              >
+                ALT {hud.altitudeMeters}/{activeAltitudeLimit}m
+              </span>
             </span>
             {hud.ghostDeltaMeters !== null ? (
               <span
@@ -1179,6 +1260,20 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
             >
               <Gamepad2 className="w-3.5 h-3.5" aria-hidden="true" />
               <span className="hidden md:inline">Touch</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSlowMo((s) => !s)}
+              title="Slow-Mo Toggle (M)"
+              className={`inline-flex h-9 px-2.5 items-center justify-center gap-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap ${
+                slowMo
+                  ? 'border-purple-400/70 bg-purple-950/85 text-purple-200'
+                  : 'border-white/15 bg-stone-950/80 text-white hover:bg-stone-900'
+              }`}
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>Slow-Mo: {slowMo ? 'On' : 'Off'}</span>
             </button>
 
             <button
@@ -1385,11 +1480,11 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                     onPointerDown={handleBoostDown}
                     onPointerUp={handleBoostUp}
                     onPointerCancel={handleBoostUp}
-                    disabled={hud.boostCharge < 12 && !hud.isBoosting}
+                    disabled={hud.boostCharge < 15 && !hud.isBoosting}
                     className={`h-16 w-[74px] sm:h-[70px] sm:w-20 rounded-2xl border-2 text-xs font-extrabold tracking-wide shadow-lg transition-transform touch-none select-none ${
                       boostPressedUi || hud.isBoosting
                         ? 'scale-95 border-cyan-200 bg-cyan-500 text-stone-950'
-                        : hud.boostCharge >= 12
+                        : hud.boostCharge >= 15
                           ? 'border-cyan-400/60 bg-cyan-700/90 text-white hover:bg-cyan-600'
                           : 'border-white/15 bg-stone-900/75 text-stone-500'
                     }`}
@@ -1491,6 +1586,14 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
                   </span>
                 </button>
               )}
+              <button
+                type="button"
+                onClick={handleCycleAltitudeLimit}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-sky-500/40 bg-sky-950/50 py-2.5 px-4 text-xs font-semibold text-sky-200 hover:bg-sky-900/60 transition-colors"
+              >
+                <Mountain className="w-3.5 h-3.5" />
+                <span>Altitude Limit: {activeAltitudeMeta.label}</span>
+              </button>
               <button
                 type="button"
                 onClick={() =>

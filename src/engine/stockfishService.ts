@@ -271,6 +271,11 @@ class StockfishEngineService {
   private workerBlobUrl: string | null = null;
   private readyPromise: Promise<void> | null = null;
   private isReady = false;
+  private isSearching = false;
+  private drainPromise: Promise<void> | null = null;
+  private drainResolve: (() => void) | null = null;
+  private lastMultiPv: number | null = null;
+  private lastSkillLevel: number | null = null;
   private activeRequestId = 0;
   private pendingResolve:
     | ((result: {
@@ -293,6 +298,33 @@ class StockfishEngineService {
     return new Worker(workerUrl);
   }
 
+  private requestStopAndDrain(): Promise<void> {
+    if (!this.worker || !this.isReady) {
+      return Promise.resolve();
+    }
+    if (this.drainPromise) {
+      return this.drainPromise;
+    }
+    this.drainPromise = new Promise<void>((resolve) => {
+      const timeout = window.setTimeout(() => {
+        this.isSearching = false;
+        this.drainResolve = null;
+        this.drainPromise = null;
+        resolve();
+      }, 2000);
+      this.drainResolve = () => {
+        window.clearTimeout(timeout);
+        this.isSearching = false;
+        this.drainResolve = null;
+        this.drainPromise = null;
+        resolve();
+      };
+      this.worker?.postMessage('stop');
+      this.worker?.postMessage('isready');
+    });
+    return this.drainPromise;
+  }
+
   private init(): Promise<void> {
     if (this.isReady && this.worker) {
       return Promise.resolve();
@@ -305,6 +337,8 @@ class StockfishEngineService {
       try {
         const worker = this.createWorker();
         this.worker = worker;
+        this.lastMultiPv = null;
+        this.lastSkillLevel = null;
 
         let uciOk = false;
 
@@ -325,10 +359,22 @@ class StockfishEngineService {
             return;
           }
 
-          if (line === 'readyok' && !this.isReady) {
-            this.isReady = true;
-            window.clearTimeout(timeout);
-            resolve();
+          if (line === 'readyok') {
+            if (!this.isReady) {
+              this.isReady = true;
+              window.clearTimeout(timeout);
+              resolve();
+              return;
+            }
+            this.drainResolve?.();
+            return;
+          }
+
+          if (this.drainPromise) {
+            // Ignore info/bestmove lines belonging to an aborted/stopped search
+            if (line.startsWith('bestmove ')) {
+              this.isSearching = false;
+            }
             return;
           }
 
@@ -356,6 +402,7 @@ class StockfishEngineService {
           }
 
           if (line.startsWith('bestmove ')) {
+            this.isSearching = false;
             const parts = line.split(/\s+/);
             const uciMove = parts[1];
             const resolver = this.pendingResolve;
@@ -432,12 +479,18 @@ class StockfishEngineService {
       throw new Error('Search cancelled');
     }
 
+    if (this.isSearching || this.drainPromise) {
+      await this.requestStopAndDrain();
+      if (signal?.aborted || requestId !== this.activeRequestId) {
+        throw new Error('Search cancelled');
+      }
+    }
+
     const worker = this.worker;
     if (!worker) {
       throw new Error('Stockfish worker unavailable');
     }
 
-    worker.postMessage('stop');
     this.lastInfoScore = { cp: 0, mate: null };
     this.multiPvMap.clear();
 
@@ -457,7 +510,9 @@ class StockfishEngineService {
         if (this.pendingId === requestId) {
           this.pendingResolve = null;
           this.pendingReject = null;
-          worker.postMessage('stop');
+          if (this.isSearching) {
+            void this.requestStopAndDrain();
+          }
         }
         reject(new Error('Search cancelled'));
       };
@@ -474,14 +529,22 @@ class StockfishEngineService {
         reject(err);
       };
 
-      worker.postMessage(`setoption name MultiPV value ${options.multiPv ?? 1}`);
-      worker.postMessage(`setoption name Skill Level value ${options.skillLevel}`);
+      const targetMultiPv = options.multiPv ?? 1;
+      if (this.lastMultiPv !== targetMultiPv) {
+        this.lastMultiPv = targetMultiPv;
+        worker.postMessage(`setoption name MultiPV value ${targetMultiPv}`);
+      }
+      if (this.lastSkillLevel !== options.skillLevel) {
+        this.lastSkillLevel = options.skillLevel;
+        worker.postMessage(`setoption name Skill Level value ${options.skillLevel}`);
+      }
       if (lanHistory.length > 0) {
         worker.postMessage(`${basePosition} moves ${lanHistory.join(' ')}`);
       } else {
         worker.postMessage(basePosition);
       }
 
+      this.isSearching = true;
       const goCmd = options.depth
         ? `go depth ${options.depth} movetime ${options.movetime}`
         : `go movetime ${options.movetime}`;
@@ -690,8 +753,8 @@ class StockfishEngineService {
     this.activeRequestId += 1;
     this.pendingResolve = null;
     this.pendingReject = null;
-    if (this.worker && this.isReady) {
-      this.worker.postMessage('stop');
+    if (this.worker && this.isReady && this.isSearching) {
+      void this.requestStopAndDrain();
     }
   }
 
@@ -699,6 +762,12 @@ class StockfishEngineService {
     this.activeRequestId += 1;
     this.pendingResolve = null;
     this.pendingReject = null;
+    this.drainResolve?.();
+    this.drainResolve = null;
+    this.drainPromise = null;
+    this.isSearching = false;
+    this.lastMultiPv = null;
+    this.lastSkillLevel = null;
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;

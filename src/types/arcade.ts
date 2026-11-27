@@ -1,6 +1,6 @@
 import type { BoardTheme } from './chess';
 
-export type ArcadeGameId = 'chess' | 'ski' | 'pool';
+export type ArcadeGameId = 'chess' | 'ski' | 'pool' | 'heist';
 
 export type DailyChallengeMetric =
   | 'puzzlesSolved'
@@ -8,7 +8,9 @@ export type DailyChallengeMetric =
   | 'skiRuns'
   | 'skiBestScore'
   | 'poolWins'
-  | 'poolBallsPotted';
+  | 'poolBallsPotted'
+  | 'heistRuns'
+  | 'heistBestScore';
 
 export interface DailyChallengeDefinition {
   id: string;
@@ -46,6 +48,8 @@ export interface DailyProgressCounters {
   skiBestScore: number;
   poolWins: number;
   poolBallsPotted: number;
+  heistRuns: number;
+  heistBestScore: number;
 }
 
 export interface StoredArcadeState {

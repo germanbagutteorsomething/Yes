@@ -52,6 +52,9 @@ interface SkiViewportProps {
   endlessImmortal?: boolean;
   finishEarlyNonce?: number;
   legacyPhysics?: boolean;
+  graphicsQuality?: 'low' | 'medium' | 'high';
+  slowMo?: boolean;
+  altitudeLimitMeters?: number;
   inputRef: React.MutableRefObject<SkiInputState>;
   onHudUpdate: (snapshot: SkiHudSnapshot) => void;
   onFinishRun: (payload: SkiRunCompletionPayload) => void;
@@ -176,6 +179,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
   endlessImmortal = false,
   finishEarlyNonce = 0,
   legacyPhysics = false,
+  graphicsQuality = 'medium',
+  slowMo = false,
+  altitudeLimitMeters = 35,
   inputRef,
   onHudUpdate,
   onFinishRun,
@@ -201,6 +207,12 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
   finishEarlyNonceRef.current = finishEarlyNonce;
   const legacyPhysicsRef = useRef(legacyPhysics);
   legacyPhysicsRef.current = legacyPhysics;
+  const graphicsQualityRef = useRef(graphicsQuality);
+  graphicsQualityRef.current = graphicsQuality;
+  const slowMoRef = useRef(slowMo);
+  slowMoRef.current = slowMo;
+  const altitudeLimitRef = useRef(altitudeLimitMeters);
+  altitudeLimitRef.current = altitudeLimitMeters;
   const onHudRef = useRef(onHudUpdate);
   onHudRef.current = onHudUpdate;
   const onFinishRef = useRef(onFinishRun);
@@ -366,12 +378,19 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       return;
     }
 
+    const quality = graphicsQualityRef.current;
+    const enableShadows = !isSoftwareGl && quality !== 'low';
+    const enableBloom = !isSoftwareGl && quality !== 'low';
+    const shadowMapSize = quality === 'high' ? 2048 : 1024;
+    const pixelRatio = isSoftwareGl ? 1 : quality === 'low' ? 1 : quality === 'medium' ? Math.min(window.devicePixelRatio, 1.5) : Math.min(window.devicePixelRatio, 2);
+    const particleCount = quality === 'low' ? 70 : quality === 'medium' ? 150 : 240;
+
     setWebglError(null);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = map.isNight ? 1.08 : 0.92;
-    renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = !isSoftwareGl;
+    renderer.setPixelRatio(pixelRatio);
+    renderer.shadowMap.enabled = enableShadows;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const width = container.clientWidth || 960;
@@ -415,9 +434,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     let composer: EffectComposer | null = null;
     let bloomPass: UnrealBloomPass | null = null;
     let outputPass: OutputPass | null = null;
-    if (!isSoftwareGl) {
+    if (enableBloom && !isSoftwareGl) {
       composer = new EffectComposer(renderer);
-      composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      composer.setPixelRatio(pixelRatio);
       composer.setSize(width, height);
       composer.addPass(new RenderPass(scene, camera));
       bloomPass = new UnrealBloomPass(
@@ -443,9 +462,9 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       map.sunColor,
       map.sunIntensity * (map.isNight ? 0.92 : 0.76)
     );
-    sunLight.castShadow = !isSoftwareGl;
-    sunLight.shadow.mapSize.width = 2048;
-    sunLight.shadow.mapSize.height = 2048;
+    sunLight.castShadow = enableShadows;
+    sunLight.shadow.mapSize.width = shadowMapSize;
+    sunLight.shadow.mapSize.height = shadowMapSize;
     sunLight.shadow.camera.near = 2;
     sunLight.shadow.camera.far = 260;
     const shadowBound = 32;
@@ -536,13 +555,12 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     }
 
     // Sculpted Powder Puff + Rail Spark + Turbo Boost Particle Pool (InstancedMesh)
-    const PARTICLE_COUNT = 240;
     const partGeo = new THREE.IcosahedronGeometry(0.11, 0);
     const partMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF' });
-    const particleMesh = new THREE.InstancedMesh(partGeo, partMat, PARTICLE_COUNT);
+    const particleMesh = new THREE.InstancedMesh(partGeo, partMat, particleCount);
     particleMesh.frustumCulled = false;
     particleMesh.instanceColor = new THREE.InstancedBufferAttribute(
-      new Float32Array(PARTICLE_COUNT * 3),
+      new Float32Array(particleCount * 3),
       3
     );
 
@@ -613,7 +631,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       };
     });
     scene.add(windMesh);
-    const particles: SnowParticle[] = Array.from({ length: PARTICLE_COUNT }, () => ({
+    const particles: SnowParticle[] = Array.from({ length: particleCount }, () => ({
       active: false,
       x: 0,
       y: -999,
@@ -629,7 +647,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     const snowTintColor = new THREE.Color('#FFFFFF');
     const sparkTintColor = new THREE.Color('#FACC15');
     const boostTintColor = new THREE.Color('#38BDF8');
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
+    for (let i = 0; i < particleCount; i++) {
       _dummy.position.set(0, -999, 0);
       _dummy.scale.setScalar(0);
       _dummy.updateMatrix();
@@ -651,7 +669,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       tone: SnowParticle['tone']
     ) => {
       const p = particles[particleCursor];
-      particleCursor = (particleCursor + 1) % PARTICLE_COUNT;
+      particleCursor = (particleCursor + 1) % particleCount;
       p.active = true;
       p.x = px;
       p.y = py;
@@ -747,7 +765,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       railScoreTotal: 0,
       flowScoreTotal: 0,
       gatesCleared: 0,
-      boostCharge: 50,
+      boostCharge: 35,
       isBoosting: false,
       boostSfxCooldown: 0,
       ringsCollected: 0,
@@ -832,6 +850,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         isBailing: state.bailTimer > 0,
         airtime: state.airtime,
         altitudeMeters: Math.max(0, Math.round(state.altitudeMeters)),
+        altitudeLimitMeters: altitudeLimitRef.current,
+        nearAltitudeLimit: state.altitudeMeters >= altitudeLimitRef.current * 0.85,
         spinDeg: Math.round(THREE.MathUtils.radToDeg(Math.abs(state.airSpinRad))),
         flipDeg: Math.round(THREE.MathUtils.radToDeg(Math.abs(state.airFlipRad))),
         grab,
@@ -1031,7 +1051,8 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       const now = performance.now();
       const rawDt = (now - lastTime) / 1000;
       lastTime = now;
-      const dt = Math.min(0.05, Math.max(0.001, rawDt));
+      const timeScale = slowMoRef.current ? 0.35 : 1.0;
+      const dt = Math.min(0.05, Math.max(0.001, rawDt)) * timeScale;
       elapsedSec += dt;
 
       if (finishEarlyNonceRef.current !== handledFinishNonce) {
@@ -1121,7 +1142,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           state.grindSparkCooldown -= dt;
           if (state.grindSparkCooldown <= 0) {
             state.grindSparkCooldown = 0.04;
-            state.boostCharge = Math.min(100, state.boostCharge + 1.2);
+            state.boostCharge = Math.min(100, state.boostCharge + 0.45);
             playSkiSound('grind', soundRef.current);
             spawnParticle(
               state.x + (Math.random() - 0.5) * 0.28,
@@ -1180,13 +1201,13 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
 
           if (state.boostSfxCooldown > 0) state.boostSfxCooldown = Math.max(0, state.boostSfxCooldown - dt);
           const wantsBoost = inp.boostHeld && state.bailTimer <= 0 && brakeAmount < 0.2;
-          if (wantsBoost && state.boostCharge > (state.isBoosting ? 1 : 12)) {
+          if (wantsBoost && state.boostCharge > (state.isBoosting ? 1 : 15)) {
             if (!state.isBoosting && state.boostSfxCooldown <= 0) {
               playSkiSound('boost', soundRef.current);
               state.boostSfxCooldown = 0.55;
             }
             state.isBoosting = true;
-            state.boostCharge = Math.max(0, state.boostCharge - 32 * dt);
+            state.boostCharge = Math.max(0, state.boostCharge - 42 * dt);
           } else {
             state.isBoosting = false;
           }
@@ -1219,10 +1240,10 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             const gravityAccel =
               map.slopePitch * 23.5 +
               tuckAmount * 10.5 +
-              (state.isBoosting ? 22.0 : 0) -
+              (state.isBoosting ? 12.5 : 0) -
               brakeAmount * 18;
-            const drag = 0.011 * state.vz * state.vz * (tucking || state.isBoosting ? 0.62 : 1.0);
-            const maxForwardSpeed = state.isBoosting ? 46.5 : tucking ? 37.5 : 31.5;
+            const drag = 0.011 * state.vz * state.vz * (state.isBoosting ? 0.78 : tucking ? 0.64 : 1.0);
+            const maxForwardSpeed = state.isBoosting ? 41.5 : tucking ? 37.5 : 31.5;
             forwardSpeed = THREE.MathUtils.clamp(
               forwardSpeed + (gravityAccel - drag) * dt,
               brakeAmount > 0.35 ? 7.5 : 13.5,
@@ -1253,12 +1274,12 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             const gravityAccel =
               slopeDrive * 36.5 +
               tuckAmount * 11.2 +
-              (state.isBoosting ? 24.0 : 0) -
+              (state.isBoosting ? 13.5 : 0) -
               brakeAmount * 21.0;
             const aeroDrag =
-              0.0095 * vForward * Math.abs(vForward) * (tucking || state.isBoosting ? 0.56 : 1.0);
+              0.0095 * vForward * Math.abs(vForward) * (state.isBoosting ? 0.76 : tucking ? 0.60 : 1.0);
             const snowFriction = brakeAmount > 0.2 ? 3.5 * brakeAmount : 0.45;
-            const maxProSpeed = state.isBoosting ? 49.0 : tucking ? 40.0 : 34.0;
+            const maxProSpeed = state.isBoosting ? 43.0 : tucking ? 40.0 : 34.0;
 
             vForward = THREE.MathUtils.clamp(
               vForward + (gravityAccel - aeroDrag - snowFriction) * dt,
@@ -1288,11 +1309,11 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
               : THREE.MathUtils.damp(state.ollieCharge, 0, 12, dt);
           }
 
-          // Continuous Carving & Speed Flow Score (doubled during Turbo Boost)
+          // Continuous Carving & Speed Flow Score (boosted by 1.35x during Turbo Boost)
           const curKmh = forwardSpeed * 3.6;
           if (state.bailTimer <= 0 && curKmh > 52) {
             const carveBonus = driftIntensity > 0.25 ? 1.35 : 1.0;
-            const boostFlowMult = state.isBoosting ? 2.0 : 1.0;
+            const boostFlowMult = state.isBoosting ? 1.35 : 1.0;
             const flowPts = (curKmh - 42) * 0.9 * carveBonus * boostFlowMult * dt;
             state.flowScoreTotal += flowPts;
             state.score += flowPts;
@@ -1420,19 +1441,27 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           state.wasOnKicker = nextTerrain.isOnKicker;
           state.lastKickerSlope = nextTerrain.kickerSlopeLift;
         } else {
-          // 3. Airborne Freestyle Tricks, Uncapped Sky-Boost & Gravity
+          // 3. Airborne Freestyle Tricks, Controlled Air-Glide Boost & Altitude Ceiling
           state.airtime += dt;
+          const altLimit = Math.max(10, altitudeLimitRef.current);
+          const preAirAlt = Math.max(0, state.y - groundY);
+          const ceilingFade = THREE.MathUtils.clamp(
+            1 - Math.max(0, preAirAlt - altLimit * 0.72) / (altLimit * 0.28),
+            0,
+            1
+          );
+
           if (state.boostSfxCooldown > 0) state.boostSfxCooldown = Math.max(0, state.boostSfxCooldown - dt);
           const wantsAirBoost = inp.boostHeld && state.bailTimer <= 0;
-          if (wantsAirBoost && state.boostCharge > (state.isBoosting ? 1 : 8)) {
+          if (wantsAirBoost && state.boostCharge > (state.isBoosting ? 1 : 15)) {
             if (!state.isBoosting && state.boostSfxCooldown <= 0) {
               playSkiSound('boost', soundRef.current);
               state.boostSfxCooldown = 0.55;
             }
             state.isBoosting = true;
-            state.boostCharge = Math.max(0, state.boostCharge - 16 * dt);
-            state.vy += 26.5 * dt;
-            state.vz = Math.min(58, state.vz + 8.5 * dt);
+            state.boostCharge = Math.max(0, state.boostCharge - 44 * dt);
+            state.vy += 12.0 * ceilingFade * dt;
+            state.vz = Math.min(44, state.vz + 5.0 * dt);
             if (Math.random() < 0.85) {
               [-0.2, 0.2].forEach((offset) => {
                 spawnParticle(
@@ -1448,13 +1477,14 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             }
           } else {
             state.isBoosting = false;
-            if (state.bailTimer <= 0) {
-              state.boostCharge = Math.min(100, state.boostCharge + 3.5 * dt);
-            }
           }
 
           const airGravity = useLegacy ? 18.2 : inp.grab !== 'none' ? 16.5 : 17.6;
           state.vy -= airGravity * dt;
+          // Soft ceiling cushion above 85% of altitude limit
+          if (preAirAlt > altLimit * 0.85 && state.vy > 0) {
+            state.vy = THREE.MathUtils.damp(state.vy, 0, 8, dt);
+          }
           state.x += state.vx * dt;
           state.z += state.vz * dt;
           state.y += state.vy * dt;
@@ -1610,7 +1640,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
                 const snappedHalfTurns = Math.round(Math.abs(spinDeg) / 180);
                 const isSwitch = snappedHalfTurns % 2 === 1;
                 if (isSwitch) state.switchLandings += 1;
-                state.boostCharge = Math.min(100, state.boostCharge + (isBoltsStomp ? 30 : 20));
+                state.boostCharge = Math.min(100, state.boostCharge + (isBoltsStomp ? 20 : 12));
                 const earnedPreview = Math.round(totalTrickPts * state.comboMultiplier);
                 state.comboTrickBase += totalTrickPts;
                 state.comboScore += totalTrickPts;
@@ -1715,12 +1745,12 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
               ) {
                 state.nearMissedObstacles.add(tree.id);
                 state.closeCalls += 1;
-                state.boostCharge = Math.min(100, state.boostCharge + 18);
+                state.boostCharge = Math.min(100, state.boostCharge + 12);
                 const ccPts = 300 * state.comboMultiplier;
                 state.flowScoreTotal += ccPts;
                 state.score += ccPts;
                 if (state.comboScore > 0) state.comboTimer = COMBO_WINDOW_SEC;
-                triggerCallout('CLOSE CALL!', `+${ccPts.toLocaleString()} · +18% Boost`, 'boost');
+                triggerCallout('CLOSE CALL!', `+${ccPts.toLocaleString()} · +12% Boost`, 'boost');
                 playSkiSound('closecall', soundRef.current);
                 checkMedalUnlock();
               }
@@ -1750,12 +1780,12 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             ) {
               state.nearMissedObstacles.add(rock.id);
               state.closeCalls += 1;
-              state.boostCharge = Math.min(100, state.boostCharge + 18);
+              state.boostCharge = Math.min(100, state.boostCharge + 12);
               const ccPts = 300 * state.comboMultiplier;
               state.flowScoreTotal += ccPts;
               state.score += ccPts;
               if (state.comboScore > 0) state.comboTimer = COMBO_WINDOW_SEC;
-              triggerCallout('CLOSE CALL!', `+${ccPts.toLocaleString()} · +18% Boost`, 'boost');
+              triggerCallout('CLOSE CALL!', `+${ccPts.toLocaleString()} · +12% Boost`, 'boost');
               playSkiSound('closecall', soundRef.current);
               checkMedalUnlock();
             }
@@ -1770,7 +1800,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           ) {
             state.passedGates.add(gate.id);
             state.gatesCleared += 1;
-            state.boostCharge = Math.min(100, state.boostCharge + 20);
+            state.boostCharge = Math.min(100, state.boostCharge + 14);
             const gatePreview = gate.bonus * state.comboMultiplier;
             state.comboGateBase += gate.bonus;
             state.comboScore += gate.bonus;
@@ -1797,7 +1827,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
           ) {
             state.collectedRings.add(rg.id);
             state.ringsCollected += 1;
-            state.boostCharge = Math.min(100, state.boostCharge + 26);
+            state.boostCharge = Math.min(100, state.boostCharge + 18);
             if (parkScene) {
               parkScene.collectRing(rg.id);
             } else {
@@ -1809,7 +1839,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
             state.comboTimer = COMBO_WINDOW_SEC;
             triggerCallout(
               rg.kind === 'air' ? 'AIR RING!' : 'ALPINE RING!',
-              `+${rgPts.toLocaleString()} · +26% Boost`,
+              `+${rgPts.toLocaleString()} · +18% Boost`,
               'ring'
             );
             playSkiSound('ring', soundRef.current);
@@ -1873,9 +1903,18 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         }
       }
 
-      // Compute altitude above local snowpack & update atmosphere/environment
+      // Compute altitude above local snowpack & enforce active Altitude Limit
       const curTerrainY = getTerrainAndRampHeight(map, layout, state.x, state.z).height;
-      const curAltitude = Math.max(0, state.y - curTerrainY);
+      const activeAltLimit = Math.max(10, altitudeLimitRef.current);
+      let curAltitude = Math.max(0, state.y - curTerrainY);
+      if (curAltitude > activeAltLimit) {
+        state.y = curTerrainY + activeAltLimit;
+        if (state.vy > 0) state.vy = -1.2;
+        curAltitude = activeAltLimit;
+        if (state.calloutTimer <= 0) {
+          triggerCallout('ALTITUDE LIMIT', `${activeAltLimit}m Ceiling Reached`, 'sketchy');
+        }
+      }
       state.altitudeMeters = curAltitude;
       sceneFog.density = baseFogDensity / (1 + curAltitude * 0.016);
 
@@ -2002,7 +2041,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
 
       // Update Particle Pool (zero allocations)
       let particlesDirty = false;
-      for (let i = 0; i < PARTICLE_COUNT; i++) {
+      for (let i = 0; i < particleCount; i++) {
         const p = particles[i];
         if (!p.active) continue;
         particlesDirty = true;

@@ -148,6 +148,8 @@ export interface SkiHudSnapshot {
   isBailing: boolean;
   airtime: number;
   altitudeMeters: number;
+  altitudeLimitMeters: number;
+  nearAltitudeLimit: boolean;
   spinDeg: number;
   flipDeg: number;
   grab: SkiGrabType;
@@ -218,5 +220,6 @@ export interface StoredSkiProgress {
   selectedGearId: string;
   ghostEnabled: boolean;
   endlessImmortal?: boolean;
+  altitudeLimitMeters?: number;
   records: Partial<Record<SkiMapId, SkiMapRecord>>;
 }

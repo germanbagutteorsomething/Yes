@@ -13,6 +13,16 @@ import type {
   SkiGateFeature,
 } from '../types/ski';
 
+export const SKI_ALTITUDE_LIMITS: { meters: number; label: string }[] = [
+  { meters: 20, label: '20m · Park Low' },
+  { meters: 35, label: '35m · Alpine' },
+  { meters: 65, label: '65m · Big Air' },
+  { meters: 150, label: '150m · High Peak' },
+  { meters: 500, label: '500m · Max' },
+];
+
+export const DEFAULT_SKI_ALTITUDE_LIMIT_METERS = 35;
+
 export const SKI_MAPS: SkiMapConfig[] = [
   {
     id: 'the-yard',
@@ -207,9 +217,9 @@ export const SKI_TRICK_BOOK: SkiTrickGuideEntry[] = [
   {
     name: 'Turbo Boost & Air Rings',
     category: 'Style',
-    points: '+300 Ring · 2x Flow',
+    points: '+300 Ring · 1.35x Flow',
     controls: 'Hold B / F (or Touch BOOST) + fly through floating Rings',
-    tip: 'Clean tricks, rails, and glowing Air Rings charge Boost. Close-skimming past trees at speed triggers Close Call bonuses!',
+    tip: 'Clean tricks, rails, gates, and Air Rings charge Boost. Boost gives a quick burst of speed and glide—respect the altitude ceiling when boosting mid-air.',
   },
 ];
 

@@ -106,15 +106,44 @@ const POOL_CHALLENGE_POOL: Omit<DailyChallengeDefinition, 'id'>[] = [
   },
 ];
 
+const HEIST_CHALLENGE_POOL: Omit<DailyChallengeDefinition, 'id'>[] = [
+  {
+    game: 'heist',
+    title: 'Quick Getaway',
+    description: 'Complete 2 heist runs in Metro Heist 3D',
+    metric: 'heistRuns',
+    target: 2,
+    rewardXp: 75,
+  },
+  {
+    game: 'heist',
+    title: 'Most Wanted',
+    description: 'Score 4,500+ pts in a single Metro Heist run',
+    metric: 'heistBestScore',
+    target: 4500,
+    rewardXp: 95,
+  },
+  {
+    game: 'heist',
+    title: 'High-Heat Legend',
+    description: 'Score 8,000+ pts in a single Metro Heist run',
+    metric: 'heistBestScore',
+    target: 8000,
+    rewardXp: 130,
+  },
+];
+
 export function getDailyChallenges(dateKey = getTodayDateKey()): DailyChallengeDefinition[] {
   const seed = hashSeed(`sq8-daily-${dateKey}`);
   const c = CHESS_CHALLENGE_POOL[seed % CHESS_CHALLENGE_POOL.length];
   const s = SKI_CHALLENGE_POOL[(seed >>> 4) % SKI_CHALLENGE_POOL.length];
   const p = POOL_CHALLENGE_POOL[(seed >>> 8) % POOL_CHALLENGE_POOL.length];
+  const h = HEIST_CHALLENGE_POOL[(seed >>> 12) % HEIST_CHALLENGE_POOL.length];
   return [
     { ...c, id: `${dateKey}-chess` },
     { ...s, id: `${dateKey}-ski` },
     { ...p, id: `${dateKey}-pool` },
+    { ...h, id: `${dateKey}-heist` },
   ];
 }
 
@@ -125,6 +154,8 @@ const EMPTY_COUNTERS: DailyProgressCounters = {
   skiBestScore: 0,
   poolWins: 0,
   poolBallsPotted: 0,
+  heistRuns: 0,
+  heistBestScore: 0,
 };
 
 export function loadArcadeState(): StoredArcadeState {
@@ -219,6 +250,8 @@ export function recordDailyProgress(updates: {
   skiScore?: number;
   addPoolWins?: number;
   addPoolBallsPotted?: number;
+  addHeistRuns?: number;
+  heistScore?: number;
   bonusXp?: number;
 }): StoredArcadeState {
   const cur = loadArcadeState();
@@ -230,6 +263,8 @@ export function recordDailyProgress(updates: {
     skiBestScore: Math.max(c.skiBestScore, updates.skiScore ?? 0),
     poolWins: c.poolWins + (updates.addPoolWins ?? 0),
     poolBallsPotted: c.poolBallsPotted + (updates.addPoolBallsPotted ?? 0),
+    heistRuns: (c.heistRuns ?? 0) + (updates.addHeistRuns ?? 0),
+    heistBestScore: Math.max(c.heistBestScore ?? 0, updates.heistScore ?? 0),
   };
 
   const withBonus: StoredArcadeState = {
@@ -330,5 +365,6 @@ export function getChallengeMetricValue(
 export function getGameLabel(game: ArcadeGameId): string {
   if (game === 'chess') return 'Chess';
   if (game === 'ski') return 'Cork7 Ski';
-  return '8-Ball Pool';
+  if (game === 'pool') return '8-Ball Pool';
+  return 'Metro Heist';
 }

@@ -4,6 +4,7 @@ import {
   ArrowRight,
   CheckCircle2,
   CircleDot,
+  Crosshair,
   Crown,
   Flame,
   Lock,
@@ -15,6 +16,7 @@ import {
   Unlock,
 } from 'lucide-react';
 import chessHubCover from '../assets/images/chess_hub_cover_1795596698719.jpg';
+import heistHubCover from '../assets/images/heist_hub_cover_1795769785788.jpg';
 import poolHubCover from '../assets/images/pool_hub_cover_1795612322722.jpg';
 import skiHubCover from '../assets/images/ski_hub_cover_1795596698560.jpg';
 import { SKI_MAPS } from '../data/skiMaps';
@@ -32,6 +34,7 @@ import {
   loadCompletedEndgames,
   loadDefeatedBots,
   loadDefeatedLevels,
+  loadHeistProgress,
   loadPuzzleState,
   loadSavedMatches,
   loadSkiProgress,
@@ -41,16 +44,19 @@ interface GamesHubProps {
   onSelectChess: (chessView?: AppView) => void;
   onSelectSki: (mapId?: SkiMapId) => void;
   onSelectPool: () => void;
+  onSelectHeist: () => void;
 }
 
 export const GamesHub: React.FC<GamesHubProps> = ({
   onSelectChess,
   onSelectSki,
   onSelectPool,
+  onSelectHeist,
 }) => {
   const [chessImgError, setChessImgError] = useState(false);
   const [skiImgError, setSkiImgError] = useState(false);
   const [poolImgError, setPoolImgError] = useState(false);
+  const [heistImgError, setHeistImgError] = useState(false);
   const [arcade, setArcade] = useState<StoredArcadeState>(() => loadArcadeState());
   const [unlockFeedback, setUnlockFeedback] = useState<string | null>(null);
 
@@ -63,6 +69,7 @@ export const GamesHub: React.FC<GamesHubProps> = ({
     const bots = loadDefeatedBots();
     const levels = loadDefeatedLevels();
     const ski = loadSkiProgress();
+    const heist = loadHeistProgress();
 
     let bestSkiScore = 0;
     let totalSkiScore = 0;
@@ -88,6 +95,7 @@ export const GamesHub: React.FC<GamesHubProps> = ({
       totalSkiRuns,
       skiMedalsEarned,
       skiRecords: ski.records,
+      heist,
     };
   }, []);
 
@@ -110,7 +118,7 @@ export const GamesHub: React.FC<GamesHubProps> = ({
           <div className="flex items-center gap-2 text-xs text-stone-500 dark:text-stone-400">
             <span>SquareEight Arcade</span>
             <span aria-hidden="true">·</span>
-            <span>3 Games</span>
+            <span>4 Games</span>
             <span aria-hidden="true">·</span>
             <span>Offline Ready</span>
           </div>
@@ -118,8 +126,8 @@ export const GamesHub: React.FC<GamesHubProps> = ({
             Choose a Game to Play
           </h1>
           <p className="text-sm text-stone-600 dark:text-stone-400 max-w-2xl">
-            Compete in Stockfish Chess and 3-Min Puzzle Rush, drop into five 3D Cork7 Ski runs
-            including Endless Backcountry, or break the rack in 8-Ball Pool.
+            Compete in Stockfish Chess, carve five 3D Cork7 Ski runs, break the rack in 8-Ball
+            Pool, or outrun 5-Star Metro PD chases in Metro Heist 3D.
           </p>
         </div>
 
@@ -136,8 +144,8 @@ export const GamesHub: React.FC<GamesHubProps> = ({
         </div>
       </section>
 
-      {/* Three Equal Showcase Cards */}
-      <section className="grid grid-cols-1 gap-6 lg:grid-cols-3 items-stretch">
+      {/* Four Equal Showcase Cards */}
+      <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4 items-stretch">
         {/* Card 1: SquareEight Chess */}
         <article className="flex flex-col rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 overflow-hidden">
           <div className="relative aspect-video w-full bg-stone-800 overflow-hidden">
@@ -354,6 +362,71 @@ export const GamesHub: React.FC<GamesHubProps> = ({
             </div>
           </div>
         </article>
+
+        {/* Card 4: Metro Heist 3D */}
+        <article className="flex flex-col rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 overflow-hidden">
+          <div className="relative aspect-video w-full bg-stone-800 overflow-hidden">
+            {!heistImgError ? (
+              <img
+                src={heistHubCover}
+                alt="Crimson getaway muscle car escaping police cruisers past a neon city bank"
+                referrerPolicy="no-referrer"
+                onError={() => setHeistImgError(true)}
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-rose-950 via-stone-900 to-stone-950 text-rose-300">
+                <Crosshair className="w-12 h-12 opacity-70" aria-hidden="true" />
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-1 flex-col justify-between p-5 space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-xs text-stone-500 dark:text-stone-400 font-mono tabular-nums">
+                <span>3D Action</span>
+                <span aria-hidden="true">·</span>
+                <span>4 Guns</span>
+                <span aria-hidden="true">·</span>
+                <span>5★ Cop Chase</span>
+              </div>
+              <h2 className="font-display text-xl font-bold text-stone-900 dark:text-stone-100">
+                Metro Heist 3D
+              </h2>
+              <p className="text-xs sm:text-sm text-stone-600 dark:text-stone-400 leading-relaxed">
+                Smash-and-grab bank robberies, driveable getaway cars, 4 weapons, and relentless
+                1★–5★ police chases with persistent highscores.
+              </p>
+            </div>
+
+            <div className="space-y-3 pt-2 border-t border-stone-200/80 dark:border-stone-800/80">
+              <div className="grid grid-cols-2 gap-1.5 text-center">
+                <div className="rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50/70 dark:bg-stone-800/70 px-2.5 py-1.5">
+                  <div className="text-[10px] text-stone-500 dark:text-stone-400">Best Score</div>
+                  <div className="font-mono text-xs font-bold text-amber-600 dark:text-amber-400 tabular-nums">
+                    {summary.heist.bestScore > 0 ? summary.heist.bestScore.toLocaleString() : '—'}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50/70 dark:bg-stone-800/70 px-2.5 py-1.5">
+                  <div className="text-[10px] text-stone-500 dark:text-stone-400">Best Cash</div>
+                  <div className="font-mono text-xs font-bold text-emerald-700 dark:text-emerald-400 tabular-nums">
+                    {summary.heist.bestCash > 0 ? `$${summary.heist.bestCash.toLocaleString()}` : '—'}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={onSelectHeist}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-rose-600 py-2.5 px-4 text-xs sm:text-sm font-semibold text-white hover:bg-rose-700 transition-colors whitespace-nowrap"
+              >
+                <Crosshair className="w-4 h-4" aria-hidden="true" />
+                <span>Play Metro Heist</span>
+                <ArrowRight className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        </article>
       </section>
 
       {/* Daily Arcade Challenges & XP Unlockables */}
@@ -536,12 +609,12 @@ export const GamesHub: React.FC<GamesHubProps> = ({
         </div>
 
         <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4">
-          <div className="text-xs text-stone-500 dark:text-stone-400">8-Ball Pool &amp; XP</div>
+          <div className="text-xs text-stone-500 dark:text-stone-400">Pool &amp; Metro Heist</div>
           <div className="mt-1 font-mono text-2xl font-bold text-stone-900 dark:text-stone-100 tabular-nums">
-            {arcade.poolStats.wins}
+            {summary.heist.bestScore > 0 ? summary.heist.bestScore.toLocaleString() : arcade.poolStats.wins}
           </div>
           <div className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400 font-mono tabular-nums">
-            {arcade.poolStats.ballsPotted} potted · {arcade.totalChallengesClaimed} dailies
+            {arcade.poolStats.wins} pool wins · {summary.heist.runsPlayed} heists
           </div>
         </div>
       </section>

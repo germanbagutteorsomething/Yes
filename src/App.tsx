@@ -9,6 +9,7 @@ import {
   Bot,
   CircleDot,
   Cpu,
+  Crosshair,
   Crown,
   Flag,
   Gamepad2,
@@ -36,6 +37,7 @@ import { CrazyhousePocketBar } from './components/CrazyhousePocketBar';
 import { EndgamesWorkspace } from './components/EndgamesWorkspace';
 import { EvalBar } from './components/EvalBar';
 import { GamesHub } from './components/GamesHub';
+import { HeistGameWorkspace } from './components/HeistGameWorkspace';
 import { MatchAnalysisPanel } from './components/MatchAnalysisPanel';
 import { MoveHistoryPanel } from './components/MoveHistoryPanel';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -287,7 +289,7 @@ export default function App() {
   const isLoadedArchiveRef = useRef<boolean>(false);
 
   // Top-Level Game Hub & Studio Layout
-  const [activeGame, setActiveGame] = useState<'hub' | 'chess' | 'ski' | 'pool'>('hub');
+  const [activeGame, setActiveGame] = useState<'hub' | 'chess' | 'ski' | 'pool' | 'heist'>('hub');
   const [activeView, setActiveView] = useState<AppView>('play');
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('moves');
   const [requestedSkiMapId, setRequestedSkiMapId] = useState<SkiMapId | null>(null);
@@ -346,6 +348,8 @@ export default function App() {
     w: 300_000,
     b: 300_000,
   });
+  const clocksMsRef = useRef(clocksMs);
+  clocksMsRef.current = clocksMs;
 
   // Match Analysis
   const [analysisResult, setAnalysisResult] = useState<MatchAnalysisResult | null>(null);
@@ -1042,8 +1046,8 @@ export default function App() {
             move: record,
             nextFen: chess.fen(),
             nextTurn,
-            whiteClockMs: clocksMs.w,
-            blackClockMs: clocksMs.b,
+            whiteClockMs: clocksMsRef.current.w,
+            blackClockMs: clocksMsRef.current.b,
             result: res,
           }).catch((err) => setOnlineError(err instanceof Error ? err.message : 'Move sync failed'));
         }
@@ -1056,7 +1060,7 @@ export default function App() {
         return false;
       }
     },
-    [activeOnlineGame, clocksMs.b, clocksMs.w, crazyhouseSetup, firebaseUser, gameMode, moves, soundEnabled, startFen, syncFromChess, variant]
+    [activeOnlineGame, crazyhouseSetup, firebaseUser, gameMode, moves, soundEnabled, startFen, syncFromChess, variant]
   );
 
   const executeCrazyhouseDrop = useCallback(
@@ -1115,16 +1119,21 @@ export default function App() {
           move: record,
           nextFen: chess.fen(),
           nextTurn,
-          whiteClockMs: clocksMs.w,
-          blackClockMs: clocksMs.b,
+          whiteClockMs: clocksMsRef.current.w,
+          blackClockMs: clocksMsRef.current.b,
           result: res,
         }).catch((err) => setOnlineError(err instanceof Error ? err.message : 'Drop sync failed'));
       }
 
       return true;
     },
-    [activeOnlineGame, clocksMs.b, clocksMs.w, crazyhouseSetup, firebaseUser, gameMode, moves, soundEnabled, startFen, syncFromChess, variant]
+    [activeOnlineGame, crazyhouseSetup, firebaseUser, gameMode, moves, soundEnabled, startFen, syncFromChess, variant]
   );
+
+  const executeMoveRef = useRef(executeMove);
+  executeMoveRef.current = executeMove;
+  const executeCrazyhouseDropRef = useRef(executeCrazyhouseDrop);
+  executeCrazyhouseDropRef.current = executeCrazyhouseDrop;
 
   const handleSubmitSanMove = useCallback(
     (sanText: string): boolean => {
@@ -1283,9 +1292,9 @@ export default function App() {
         if (controller.signal.aborted) return;
         setIsEngineThinking(false);
         if (best.dropPiece) {
-          executeCrazyhouseDrop(best.dropPiece, best.to as Square);
+          executeCrazyhouseDropRef.current(best.dropPiece, best.to as Square);
         } else {
-          executeMove(best.from as Square, best.to as Square, best.promotion);
+          executeMoveRef.current(best.from as Square, best.to as Square, best.promotion);
         }
       })
       .catch((err) => {
@@ -1317,8 +1326,6 @@ export default function App() {
     variant,
     currentBot,
     currentLevelConfig,
-    executeCrazyhouseDrop,
-    executeMove,
   ]);
 
   const canInteractWithBoard =
@@ -1327,7 +1334,8 @@ export default function App() {
     viewIndex === null &&
     !gameResult &&
     !isAnalyzing &&
-    (gameMode === 'two-player' || turn === humanColor);
+    (gameMode === 'two-player' ||
+      (turn === humanColor && (gameMode !== 'online' || activeOnlineGame?.status === 'active')));
 
   // Execute queued premove as soon as human's turn returns
   useEffect(() => {
@@ -2124,6 +2132,15 @@ export default function App() {
     setActiveGame('pool');
   }, []);
 
+  const handleSelectHeist = useCallback(() => {
+    engineAbortRef.current?.abort();
+    hintAbortRef.current?.abort();
+    stockfishService.cancelPending();
+    setIsEngineThinking(false);
+    setIsFetchingHint(false);
+    setActiveGame('heist');
+  }, []);
+
   const chessNavItems: { id: AppView; label: string; icon: React.ReactNode }[] = [
     { id: 'play', label: 'Play', icon: <Swords className="w-3.5 h-3.5" aria-hidden="true" /> },
     { id: 'puzzles', label: 'Puzzles', icon: <Puzzle className="w-3.5 h-3.5" aria-hidden="true" /> },
@@ -2132,7 +2149,7 @@ export default function App() {
   ];
 
   const gameNavItems: {
-    id: 'hub' | 'chess' | 'ski' | 'pool';
+    id: 'hub' | 'chess' | 'ski' | 'pool' | 'heist';
     label: string;
     icon: React.ReactNode;
     onClick: () => void;
@@ -2160,6 +2177,12 @@ export default function App() {
       label: '8-Ball Pool',
       icon: <CircleDot className="w-3.5 h-3.5" aria-hidden="true" />,
       onClick: handleSelectPool,
+    },
+    {
+      id: 'heist',
+      label: 'Metro Heist',
+      icon: <Crosshair className="w-3.5 h-3.5" aria-hidden="true" />,
+      onClick: handleSelectHeist,
     },
   ];
 
@@ -2267,7 +2290,7 @@ export default function App() {
                 <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>New Game</span>
               </button>
-            ) : activeGame === 'ski' || activeGame === 'pool' ? (
+            ) : activeGame === 'ski' || activeGame === 'pool' || activeGame === 'heist' ? (
               <button
                 type="button"
                 onClick={handleSelectHub}
@@ -2292,7 +2315,7 @@ export default function App() {
         {/* Mobile Multi-Game Strip */}
         <nav
           aria-label="Mobile games navigation"
-          className="md:hidden border-t border-stone-200/80 dark:border-stone-800/80 grid grid-cols-4 bg-stone-50/70 dark:bg-stone-900"
+          className="md:hidden border-t border-stone-200/80 dark:border-stone-800/80 grid grid-cols-5 bg-stone-50/70 dark:bg-stone-900"
         >
           {gameNavItems.map((item) => {
             const active = activeGame === item.id;
@@ -2352,7 +2375,7 @@ export default function App() {
       {/* Active Game / Hub Workspace */}
       <main
         className={`mx-auto w-full max-w-[1200px] flex-1 ${
-          activeGame === 'ski'
+          activeGame === 'ski' || activeGame === 'heist'
             ? 'px-2 py-2 sm:px-6 sm:py-6'
             : 'px-4 py-4 sm:px-6 sm:py-6'
         }`}
@@ -2362,6 +2385,7 @@ export default function App() {
             onSelectChess={handleSelectChess}
             onSelectSki={handleSelectSki}
             onSelectPool={handleSelectPool}
+            onSelectHeist={handleSelectHeist}
           />
         )}
 
@@ -2379,6 +2403,14 @@ export default function App() {
 
         {activeGame === 'pool' && (
           <PoolGameWorkspace
+            soundEnabled={soundEnabled}
+            onBackToHub={handleSelectHub}
+            onStatsChange={refreshArchiveData}
+          />
+        )}
+
+        {activeGame === 'heist' && (
+          <HeistGameWorkspace
             soundEnabled={soundEnabled}
             onBackToHub={handleSelectHub}
             onStatsChange={refreshArchiveData}

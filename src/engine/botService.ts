@@ -151,56 +151,58 @@ function pickGreedyMove(chess: Chess): EngineBestMove {
   const scored: { move: Move; score: number }[] = [];
 
   for (const move of legalMoves) {
-    const sim = new Chess(chess.fen());
-    const executed = sim.move(move);
+    const executed = chess.move(move);
+    try {
+      if (chess.isCheckmate()) {
+        return toEngineMove(move);
+      }
 
-    if (sim.isCheckmate()) {
-      return toEngineMove(move);
-    }
+      let score = evaluateMaterialBalance(chess, mover);
 
-    let score = evaluateMaterialBalance(sim, mover);
+      // Avoid walking into an immediate forced stalemate when way ahead
+      if (chess.isStalemate() || chess.isThreefoldRepetition()) {
+        score -= 120;
+      }
 
-    // Avoid walking into an immediate forced stalemate when way ahead
-    if (sim.isStalemate() || sim.isThreefoldRepetition()) {
-      score -= 120;
-    }
-
-    // Immediate opponent counter-capture estimate (1-ply quiescence)
-    const oppReplies = sim.moves({ verbose: true });
-    let worstCaptureLoss = 0;
-    for (const reply of oppReplies) {
-      if (reply.captured) {
-        const gain = PIECE_CP[reply.captured];
-        if (gain > worstCaptureLoss) {
-          worstCaptureLoss = gain;
+      // Immediate opponent counter-capture estimate (1-ply quiescence)
+      const oppReplies = chess.moves({ verbose: true });
+      let worstCaptureLoss = 0;
+      for (const reply of oppReplies) {
+        if (reply.captured) {
+          const gain = PIECE_CP[reply.captured];
+          if (gain > worstCaptureLoss) {
+            worstCaptureLoss = gain;
+          }
+        }
+        if (reply.san.endsWith('#')) {
+          score -= 50000;
         }
       }
-      if (reply.san.endsWith('#')) {
-        score -= 50000;
+      score -= worstCaptureLoss * 0.75;
+
+      // Greedy bonuses: captures, checks, promotions, center control
+      if (executed.captured) {
+        score += PIECE_CP[executed.captured] * 0.2 + 20;
       }
-    }
-    score -= worstCaptureLoss * 0.75;
+      if (chess.isCheck()) {
+        score += 35;
+      }
+      if (executed.promotion) {
+        score += PIECE_CP[executed.promotion] * 0.5;
+      }
+      if (CENTER_SQUARES.has(executed.to)) {
+        score += 18;
+      } else if (EXTENDED_CENTER.has(executed.to)) {
+        score += 8;
+      }
+      if (executed.isKingsideCastle() || executed.isQueensideCastle()) {
+        score += 30;
+      }
 
-    // Greedy bonuses: captures, checks, promotions, center control
-    if (executed.captured) {
-      score += PIECE_CP[executed.captured] * 0.2 + 20;
+      scored.push({ move, score });
+    } finally {
+      chess.undo();
     }
-    if (sim.isCheck()) {
-      score += 35;
-    }
-    if (executed.promotion) {
-      score += PIECE_CP[executed.promotion] * 0.5;
-    }
-    if (CENTER_SQUARES.has(executed.to)) {
-      score += 18;
-    } else if (EXTENDED_CENTER.has(executed.to)) {
-      score += 8;
-    }
-    if (executed.isKingsideCastle() || executed.isQueensideCastle()) {
-      score += 30;
-    }
-
-    scored.push({ move, score });
   }
 
   scored.sort((a, b) => b.score - a.score);
