@@ -4,12 +4,15 @@ import {
   ChevronLeft,
   CircleDot,
   Lock,
+  Maximize2,
+  Minimize2,
   RotateCcw,
   Sparkles,
   Target,
   Trophy,
   Users,
 } from 'lucide-react';
+import { useFullscreen } from '../hooks/useFullscreen';
 import { ARCADE_UNLOCKABLES, POOL_CUE_STYLES, type PoolCueStyle } from '../types/arcade';
 import {
   isItemUnlocked,
@@ -117,6 +120,11 @@ export const PoolGameWorkspace: React.FC<PoolGameWorkspaceProps> = ({
     () => loadArcadeState().poolStats.selectedCueId
   );
   const [unlockNote, setUnlockNote] = useState<string | null>(null);
+  const {
+    containerRef: poolFullscreenRef,
+    isFullscreen,
+    toggleFullscreen,
+  } = useFullscreen<HTMLDivElement>();
 
   const [turn, setTurn] = useState<1 | 2>(1);
   const [groups, setGroups] = useState<{ 1: BallGroup; 2: BallGroup }>({ 1: null, 2: null });
@@ -1101,16 +1109,68 @@ export const PoolGameWorkspace: React.FC<PoolGameWorkspaceProps> = ({
               <RotateCcw className="w-3.5 h-3.5" />
               <span>Re-Rack</span>
             </button>
+
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 px-3 py-2 text-xs font-semibold text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors whitespace-nowrap"
+            >
+              {isFullscreen ? (
+                <>
+                  <Minimize2 className="w-3.5 h-3.5" />
+                  <span>Exit Full</span>
+                </>
+              ) : (
+                <>
+                  <Maximize2 className="w-3.5 h-3.5" />
+                  <span>Fullscreen</span>
+                </>
+              )}
+            </button>
           </div>
         </div>
       </section>
 
       {/* Main Table + Side Console */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start">
-        {/* Table Column */}
-        <div className="space-y-3">
+        {/* Table Column (Fullscreen Target) */}
+        <div
+          ref={poolFullscreenRef}
+          className={
+            isFullscreen
+              ? 'fixed inset-0 z-50 flex flex-col justify-between gap-2.5 overflow-y-auto bg-stone-100 dark:bg-stone-950 p-3 sm:p-5'
+              : 'space-y-3'
+          }
+        >
+          {isFullscreen && (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-3 py-2">
+              <span className="font-display text-sm font-bold text-stone-900 dark:text-stone-100">
+                SquareEight 8-Ball Pool
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => resetRack(mode)}
+                  className="inline-flex items-center gap-1 rounded-md bg-emerald-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 whitespace-nowrap"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Re-Rack</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleFullscreen}
+                  className="inline-flex items-center gap-1 rounded-md border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 px-2.5 py-1.5 text-xs font-semibold text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 whitespace-nowrap"
+                >
+                  <Minimize2 className="w-3.5 h-3.5" />
+                  <span>Exit Fullscreen</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Player Turn & Ball Groups Strip */}
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className={`grid grid-cols-2 gap-2.5 ${isFullscreen ? 'mx-auto w-full max-w-[1100px]' : ''}`}>
             <div
               className={`rounded-lg border px-3 py-2 flex items-center justify-between text-xs ${
                 turn === 1 && !winner
@@ -1157,7 +1217,11 @@ export const PoolGameWorkspace: React.FC<PoolGameWorkspaceProps> = ({
           </div>
 
           {/* 2:1 High-DPI Billiards Canvas */}
-          <div className="relative w-full overflow-hidden rounded-2xl border border-stone-300 dark:border-stone-800 bg-stone-950 shadow-sm">
+          <div
+            className={`relative overflow-hidden rounded-2xl border border-stone-300 dark:border-stone-800 bg-stone-950 shadow-sm ${
+              isFullscreen ? 'mx-auto w-full max-w-[min(100%,calc((100dvh-250px)*2))]' : 'w-full'
+            }`}
+          >
             <canvas
               ref={canvasRef}
               onPointerDown={handleTablePointerDown}

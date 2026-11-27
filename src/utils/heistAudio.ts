@@ -225,6 +225,62 @@ class HeistAudioEngine {
     osc.start(now);
     osc.stop(now + 0.58);
   }
+
+  public playPitImpact(enabled: boolean) {
+    if (!enabled) return;
+    const ctx = this.ensureContext();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+
+    // Metallic crunch + tire skid screech
+    const osc = ctx.createOscillator();
+    const oscGain = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(145, now);
+    osc.frequency.exponentialRampToValueAtTime(38, now + 0.22);
+    oscGain.gain.setValueAtTime(0.16, now);
+    oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+    osc.connect(oscGain);
+    oscGain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.24);
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(1950, now);
+    filter.Q.setValueAtTime(3.2, now);
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(0.11, now);
+    nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+    noise.connect(filter);
+    filter.connect(nGain);
+    nGain.connect(ctx.destination);
+    noise.start(now);
+    noise.stop(now + 0.28);
+  }
+
+  public playNitro(enabled: boolean) {
+    if (!enabled) return;
+    const ctx = this.ensureContext();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(320, now);
+    filter.frequency.exponentialRampToValueAtTime(1600, now + 0.18);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.08, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    noise.start(now);
+    noise.stop(now + 0.24);
+  }
 }
 
 export const heistAudio = new HeistAudioEngine();

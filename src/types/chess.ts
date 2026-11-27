@@ -9,8 +9,33 @@ export type BoardTheme = 'tournament' | 'walnut' | 'slate' | 'midnight' | 'royal
 export type PieceSet = 'classic' | 'neo' | 'pixel';
 export type PromotionPiece = 'q' | 'r' | 'b' | 'n';
 export type StockfishLevelNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
-export type BotId = 'randy' | 'gary' | 'tara' | 'sam' | 'bella' | 'mikhail';
+export type BotId =
+  | 'martin'
+  | 'randy'
+  | 'penny'
+  | 'ned'
+  | 'gary'
+  | 'chloe'
+  | 'tara'
+  | 'gambit'
+  | 'fiona'
+  | 'sam'
+  | 'carla'
+  | 'victor'
+  | 'bella'
+  | 'elena'
+  | 'nolan'
+  | 'sasha'
+  | 'mikhail'
+  | 'ivan'
+  | 'leona'
+  | 'garry'
+  | 'anatoly'
+  | 'magnus'
+  | 'judit'
+  | 'zero';
 export type BotPlayStyle = 'random' | 'greedy' | 'aggressive' | 'solid' | 'blitz';
+export type BotTier = 'Casual' | 'Club' | 'Master' | 'Grandmaster';
 
 export type GameVariant =
   | 'standard'
@@ -163,29 +188,32 @@ export interface StockfishLevelConfig {
   level: StockfishLevelNumber;
   name: string;
   eloLabel: string;
+  numericElo: number;
   skillLevel: number;
   depth: number;
   movetime: number;
 }
 
 export const STOCKFISH_LEVELS: StockfishLevelConfig[] = [
-  { level: 1, name: 'Novice', eloLabel: '~400', skillLevel: 0, depth: 1, movetime: 80 },
-  { level: 2, name: 'Beginner', eloLabel: '~650', skillLevel: 1, depth: 2, movetime: 120 },
-  { level: 3, name: 'Casual', eloLabel: '~950', skillLevel: 3, depth: 3, movetime: 180 },
-  { level: 4, name: 'Amateur', eloLabel: '~1200', skillLevel: 5, depth: 5, movetime: 260 },
-  { level: 5, name: 'Club', eloLabel: '~1450', skillLevel: 8, depth: 7, movetime: 360 },
-  { level: 6, name: 'Tournament', eloLabel: '~1700', skillLevel: 11, depth: 9, movetime: 480 },
-  { level: 7, name: 'Intermediate', eloLabel: '~1950', skillLevel: 14, depth: 11, movetime: 620 },
-  { level: 8, name: 'Candidate', eloLabel: '~2150', skillLevel: 16, depth: 13, movetime: 780 },
-  { level: 9, name: 'Master', eloLabel: '~2400', skillLevel: 18, depth: 15, movetime: 980 },
-  { level: 10, name: 'Grandmaster', eloLabel: 'Max', skillLevel: 20, depth: 17, movetime: 1300 },
+  { level: 1, name: 'Novice', eloLabel: '~400', numericElo: 400, skillLevel: 0, depth: 1, movetime: 80 },
+  { level: 2, name: 'Beginner', eloLabel: '~650', numericElo: 650, skillLevel: 1, depth: 2, movetime: 120 },
+  { level: 3, name: 'Casual', eloLabel: '~950', numericElo: 950, skillLevel: 3, depth: 3, movetime: 180 },
+  { level: 4, name: 'Amateur', eloLabel: '~1200', numericElo: 1200, skillLevel: 5, depth: 5, movetime: 260 },
+  { level: 5, name: 'Club', eloLabel: '~1450', numericElo: 1450, skillLevel: 8, depth: 7, movetime: 360 },
+  { level: 6, name: 'Tournament', eloLabel: '~1700', numericElo: 1700, skillLevel: 11, depth: 9, movetime: 480 },
+  { level: 7, name: 'Intermediate', eloLabel: '~1950', numericElo: 1950, skillLevel: 14, depth: 11, movetime: 620 },
+  { level: 8, name: 'Candidate', eloLabel: '~2150', numericElo: 2150, skillLevel: 16, depth: 13, movetime: 780 },
+  { level: 9, name: 'Master', eloLabel: '~2400', numericElo: 2400, skillLevel: 18, depth: 15, movetime: 980 },
+  { level: 10, name: 'Grandmaster', eloLabel: 'Max', numericElo: 2750, skillLevel: 20, depth: 17, movetime: 1300 },
 ];
 
 export interface BotProfile {
   id: BotId;
   name: string;
   eloLabel: string;
+  numericElo: number;
   tagline: string;
+  tier: BotTier;
   style: BotPlayStyle;
   skillLevel: number;
   depth: number;
@@ -194,55 +222,174 @@ export interface BotProfile {
 }
 
 export const BOT_PROFILES: BotProfile[] = [
+  // Casual (~250 - 950)
+  {
+    id: 'martin',
+    name: 'Blunder Ben',
+    eloLabel: '~250',
+    numericElo: 250,
+    tagline: 'Pure Chaos',
+    tier: 'Casual',
+    style: 'random',
+    skillLevel: 0,
+    depth: 1,
+    movetime: 50,
+    minDelayMs: 300,
+  },
   {
     id: 'randy',
     name: 'Random Randy',
-    eloLabel: '~300',
+    eloLabel: '~350',
+    numericElo: 350,
     tagline: 'Unpredictable',
+    tier: 'Casual',
     style: 'random',
     skillLevel: 0,
     depth: 1,
     movetime: 60,
-    minDelayMs: 360,
+    minDelayMs: 320,
+  },
+  {
+    id: 'penny',
+    name: 'Pawn-Push Penny',
+    eloLabel: '~500',
+    numericElo: 500,
+    tagline: 'Loves Advancing Pawns',
+    tier: 'Casual',
+    style: 'greedy',
+    skillLevel: 0,
+    depth: 1,
+    movetime: 80,
+    minDelayMs: 340,
+  },
+  {
+    id: 'ned',
+    name: 'Knight-Hop Ned',
+    eloLabel: '~650',
+    numericElo: 650,
+    tagline: 'Cavalry Fanatic',
+    tier: 'Casual',
+    style: 'greedy',
+    skillLevel: 1,
+    depth: 2,
+    movetime: 90,
+    minDelayMs: 340,
   },
   {
     id: 'gary',
     name: 'Greedy Gary',
     eloLabel: '~750',
+    numericElo: 750,
     tagline: 'Material Hunter',
+    tier: 'Casual',
     style: 'greedy',
     skillLevel: 1,
     depth: 2,
     movetime: 100,
-    minDelayMs: 420,
+    minDelayMs: 360,
   },
+  {
+    id: 'chloe',
+    name: 'Check-Happy Chloe',
+    eloLabel: '~900',
+    numericElo: 900,
+    tagline: 'Never Skips a Check',
+    tier: 'Casual',
+    style: 'greedy',
+    skillLevel: 2,
+    depth: 2,
+    movetime: 120,
+    minDelayMs: 350,
+  },
+
+  // Club (~1100 - 1680)
   {
     id: 'tara',
     name: 'Tactical Tara',
     eloLabel: '~1150',
+    numericElo: 1150,
     tagline: 'Aggressive',
+    tier: 'Club',
     style: 'aggressive',
     skillLevel: 4,
     depth: 4,
+    movetime: 240,
+    minDelayMs: 320,
+  },
+  {
+    id: 'gambit',
+    name: 'Gambit Gus',
+    eloLabel: '~1280',
+    numericElo: 1280,
+    tagline: 'Wild Gambiteer',
+    tier: 'Club',
+    style: 'aggressive',
+    skillLevel: 5,
+    depth: 5,
     movetime: 260,
-    minDelayMs: 380,
+    minDelayMs: 300,
+  },
+  {
+    id: 'fiona',
+    name: 'Fianchetto Fiona',
+    eloLabel: '~1380',
+    numericElo: 1380,
+    tagline: 'Flank Bishop Sniper',
+    tier: 'Club',
+    style: 'solid',
+    skillLevel: 6,
+    depth: 6,
+    movetime: 300,
+    minDelayMs: 300,
   },
   {
     id: 'sam',
     name: 'Solid Sam',
     eloLabel: '~1500',
+    numericElo: 1500,
     tagline: 'Positional',
+    tier: 'Club',
     style: 'solid',
     skillLevel: 8,
     depth: 7,
-    movetime: 380,
-    minDelayMs: 360,
+    movetime: 350,
+    minDelayMs: 320,
   },
+  {
+    id: 'carla',
+    name: 'Counter Carla',
+    eloLabel: '~1600',
+    numericElo: 1600,
+    tagline: 'Sicilian Counterpunch',
+    tier: 'Club',
+    style: 'aggressive',
+    skillLevel: 10,
+    depth: 8,
+    movetime: 360,
+    minDelayMs: 280,
+  },
+  {
+    id: 'victor',
+    name: 'Viper Victor',
+    eloLabel: '~1680',
+    numericElo: 1680,
+    tagline: 'Sharp Trap Setter',
+    tier: 'Club',
+    style: 'aggressive',
+    skillLevel: 11,
+    depth: 8,
+    movetime: 380,
+    minDelayMs: 280,
+  },
+
+  // Master (~1850 - 2320)
   {
     id: 'bella',
     name: 'Blitz Bella',
     eloLabel: '~1850',
+    numericElo: 1850,
     tagline: 'Speed Demon',
+    tier: 'Master',
     style: 'blitz',
     skillLevel: 13,
     depth: 9,
@@ -250,15 +397,149 @@ export const BOT_PROFILES: BotProfile[] = [
     minDelayMs: 140,
   },
   {
+    id: 'elena',
+    name: 'Endgame Elena',
+    eloLabel: '~1950',
+    numericElo: 1950,
+    tagline: 'Endgame Technician',
+    tier: 'Master',
+    style: 'solid',
+    skillLevel: 14,
+    depth: 10,
+    movetime: 480,
+    minDelayMs: 280,
+  },
+  {
+    id: 'nolan',
+    name: 'Nimzo Nolan',
+    eloLabel: '~2050',
+    numericElo: 2050,
+    tagline: 'Classical Blockader',
+    tier: 'Master',
+    style: 'solid',
+    skillLevel: 15,
+    depth: 11,
+    movetime: 540,
+    minDelayMs: 280,
+  },
+  {
+    id: 'sasha',
+    name: 'Sacrifice Sasha',
+    eloLabel: '~2150',
+    numericElo: 2150,
+    tagline: 'Romantic Sacrifices',
+    tier: 'Master',
+    style: 'aggressive',
+    skillLevel: 16,
+    depth: 12,
+    movetime: 640,
+    minDelayMs: 300,
+  },
+  {
     id: 'mikhail',
     name: 'Mikhail',
     eloLabel: '~2250',
+    numericElo: 2250,
     tagline: 'Attacking Master',
+    tier: 'Master',
     style: 'aggressive',
     skillLevel: 17,
+    depth: 13,
+    movetime: 740,
+    minDelayMs: 300,
+  },
+  {
+    id: 'ivan',
+    name: 'Iron Ivan',
+    eloLabel: '~2320',
+    numericElo: 2320,
+    tagline: 'Unbreakable Fortress',
+    tier: 'Master',
+    style: 'solid',
+    skillLevel: 17,
     depth: 14,
-    movetime: 820,
-    minDelayMs: 350,
+    movetime: 780,
+    minDelayMs: 300,
+  },
+
+  // Grandmaster (~2400 - 2750)
+  {
+    id: 'leona',
+    name: 'Lightning Leona',
+    eloLabel: '~2400',
+    numericElo: 2400,
+    tagline: 'Hyper-Bullet GM',
+    tier: 'Grandmaster',
+    style: 'blitz',
+    skillLevel: 18,
+    depth: 13,
+    movetime: 320,
+    minDelayMs: 120,
+  },
+  {
+    id: 'garry',
+    name: 'Titan Garry',
+    eloLabel: '~2500',
+    numericElo: 2500,
+    tagline: 'Relentless Initiative',
+    tier: 'Grandmaster',
+    style: 'aggressive',
+    skillLevel: 19,
+    depth: 15,
+    movetime: 900,
+    minDelayMs: 280,
+  },
+  {
+    id: 'anatoly',
+    name: 'Boa Anatoly',
+    eloLabel: '~2560',
+    numericElo: 2560,
+    tagline: 'Prophylactic Squeeze',
+    tier: 'Grandmaster',
+    style: 'solid',
+    skillLevel: 19,
+    depth: 15,
+    movetime: 960,
+    minDelayMs: 280,
+  },
+  {
+    id: 'magnus',
+    name: 'Apex Magnus',
+    eloLabel: '~2650',
+    numericElo: 2650,
+    tagline: 'Universal Grinder',
+    tier: 'Grandmaster',
+    style: 'solid',
+    skillLevel: 20,
+    depth: 16,
+    movetime: 1080,
+    minDelayMs: 280,
+  },
+  {
+    id: 'judit',
+    name: 'Storm Judit',
+    eloLabel: '~2680',
+    numericElo: 2680,
+    tagline: 'Fearless Tactician',
+    tier: 'Grandmaster',
+    style: 'aggressive',
+    skillLevel: 20,
+    depth: 16,
+    movetime: 1120,
+    minDelayMs: 260,
+  },
+  {
+    id: 'zero',
+    name: 'Alpha Zero',
+    eloLabel: '2750',
+    numericElo: 2750,
+    tagline: 'Supreme Engine Boss',
+    tier: 'Grandmaster',
+    style: 'blitz',
+    skillLevel: 20,
+    depth: 18,
+    movetime: 1300,
+    minDelayMs: 240,
   },
 ];
 
@@ -372,11 +653,18 @@ export interface MoveAnalysis {
   evalAfter: PositionEval;
   cpLoss: number;
   classification: MoveClassification;
+  tacticalTheme?: string;
+  whatWentWrong?: string;
+  whatWasBetter?: string;
+  whyBetter?: string;
+  explanation?: string;
 }
 
 export interface SideAccuracySummary {
   accuracy: number;
   acpl: number;
+  estimatedElo: number;
+  performanceTitle: string;
   book: number;
   brilliant: number;
   great: number;
@@ -443,6 +731,26 @@ export interface SavedMatch {
   whiteAccuracy?: number;
   blackAccuracy?: number;
   brilliantCount?: number;
+  eloDelta?: number;
+  eloAfter?: number;
+}
+
+export interface EloHistoryPoint {
+  rating: number;
+  delta: number;
+  opponentLabel: string;
+  result: 'win' | 'draw' | 'loss';
+  playedAt: string;
+}
+
+export interface StoredChessElo {
+  rating: number;
+  peakRating: number;
+  gamesRated: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  history: EloHistoryPoint[];
 }
 
 export type PuzzleTheme =

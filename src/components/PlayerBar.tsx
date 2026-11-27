@@ -8,6 +8,8 @@ interface PlayerBarProps {
   color: PlayerColor;
   label: string;
   subtitle?: string;
+  rating?: number | null;
+  ratingDelta?: number | null;
   capturedPieces: PieceSymbol[];
   materialLead: number; // positive if this player is ahead
   isTurn: boolean;
@@ -37,6 +39,8 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   color,
   label,
   subtitle,
+  rating = null,
+  ratingDelta = null,
   capturedPieces,
   materialLead,
   isTurn,
@@ -84,10 +88,26 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           <ChessPieceSvg type="k" color={color} pieceSet={pieceSet} className="w-6 h-6" />
         </div>
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <span className="text-sm font-semibold text-stone-900 dark:text-stone-100 truncate">
               {label}
             </span>
+            {typeof rating === 'number' && (
+              <span className="font-mono text-[11px] font-semibold text-stone-600 dark:text-stone-300 bg-stone-200/70 dark:bg-stone-800 px-1.5 py-0.5 rounded tabular-nums shrink-0">
+                {rating}
+              </span>
+            )}
+            {typeof ratingDelta === 'number' && ratingDelta !== 0 && (
+              <span
+                className={`font-mono text-[11px] font-bold tabular-nums shrink-0 ${
+                  ratingDelta > 0
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : 'text-red-600 dark:text-red-400'
+                }`}
+              >
+                {ratingDelta > 0 ? `+${ratingDelta}` : ratingDelta}
+              </span>
+            )}
             {subtitle && (
               <span className="text-xs text-stone-500 dark:text-stone-400 truncate hidden sm:inline">
                 · {subtitle}

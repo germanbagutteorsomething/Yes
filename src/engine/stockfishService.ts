@@ -10,6 +10,7 @@ import type {
   SideAccuracySummary,
   StockfishLevelConfig,
 } from '../types/chess';
+import { calculateEstimatedElo, explainMove } from '../utils/chessMoveExplainer';
 
 export interface EngineBestMove {
   from: string;
@@ -250,7 +251,14 @@ function computeSideSummary(analyses: MoveAnalysis[]): SideAccuracySummary {
   };
 
   if (analyses.length === 0) {
-    return { accuracy: 100, acpl: 0, ...counts };
+    const eloInfo = calculateEstimatedElo(100, 0, 0, 0, 0, 0);
+    return {
+      accuracy: 100,
+      acpl: 0,
+      estimatedElo: eloInfo.elo,
+      performanceTitle: eloInfo.title,
+      ...counts,
+    };
   }
 
   let totalCpl = 0;
@@ -263,7 +271,22 @@ function computeSideSummary(analyses: MoveAnalysis[]): SideAccuracySummary {
   const rawAcc = 103.1668 * Math.exp(-0.04354 * Math.min(acpl, 300)) - 3.1669;
   const accuracy = Math.max(0, Math.min(100, Math.round(rawAcc * 10) / 10));
 
-  return { accuracy, acpl, ...counts };
+  const eloInfo = calculateEstimatedElo(
+    accuracy,
+    acpl,
+    counts.blunder,
+    counts.mistake,
+    counts.brilliant,
+    analyses.length
+  );
+
+  return {
+    accuracy,
+    acpl,
+    estimatedElo: eloInfo.elo,
+    performanceTitle: eloInfo.title,
+    ...counts,
+  };
 }
 
 class StockfishEngineService {
@@ -723,6 +746,18 @@ class StockfishEngineService {
         isBook
       );
 
+      const bestSan = uciToSan(fenBefore, evalBefore.bestMove);
+      const expl = explainMove(
+        fenBefore,
+        m.lan,
+        evalBefore.bestMove,
+        bestSan,
+        evalBefore,
+        evalAfter,
+        classification,
+        m.color
+      );
+
       moveAnalyses.push({
         ply: m.ply,
         san: m.san,
@@ -730,11 +765,16 @@ class StockfishEngineService {
         to: m.to as Square,
         playedLan: m.lan,
         bestLan: evalBefore.bestMove,
-        bestSan: uciToSan(fenBefore, evalBefore.bestMove),
+        bestSan,
         evalBefore,
         evalAfter,
         cpLoss,
         classification,
+        tacticalTheme: expl.tacticalTheme,
+        whatWentWrong: expl.whatWentWrong,
+        whatWasBetter: expl.whatWasBetter,
+        whyBetter: expl.whyBetter,
+        explanation: expl.summary,
       });
     }
 

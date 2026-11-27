@@ -31,6 +31,7 @@ import {
   unlockArcadeItem,
 } from '../utils/arcadeProgress';
 import {
+  loadChessElo,
   loadCompletedEndgames,
   loadDefeatedBots,
   loadDefeatedLevels,
@@ -70,6 +71,7 @@ export const GamesHub: React.FC<GamesHubProps> = ({
     const levels = loadDefeatedLevels();
     const ski = loadSkiProgress();
     const heist = loadHeistProgress();
+    const chessElo = loadChessElo();
 
     let bestSkiScore = 0;
     let totalSkiScore = 0;
@@ -96,6 +98,7 @@ export const GamesHub: React.FC<GamesHubProps> = ({
       skiMedalsEarned,
       skiRecords: ski.records,
       heist,
+      chessElo,
     };
   }, []);
 
@@ -167,7 +170,7 @@ export const GamesHub: React.FC<GamesHubProps> = ({
           <div className="flex flex-1 flex-col justify-between p-5 space-y-4">
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-xs text-stone-500 dark:text-stone-400 font-mono tabular-nums">
-                <span>Strategy</span>
+                <span>{summary.chessElo.rating} Elo</span>
                 <span aria-hidden="true">·</span>
                 <span>10 Stockfish</span>
                 <span aria-hidden="true">·</span>
@@ -579,12 +582,12 @@ export const GamesHub: React.FC<GamesHubProps> = ({
       {/* Full-Width 4-Column Arcade Progress Strip */}
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4">
-          <div className="text-xs text-stone-500 dark:text-stone-400">Chess &amp; Rush</div>
+          <div className="text-xs text-stone-500 dark:text-stone-400">Chess Elo &amp; Rush</div>
           <div className="mt-1 font-mono text-2xl font-bold text-stone-900 dark:text-stone-100 tabular-nums">
-            {summary.matchesCount}
+            {summary.chessElo.rating}
           </div>
           <div className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400 font-mono tabular-nums">
-            {summary.opponentsBeat}/16 AI · Rush {arcade.puzzleRushBestScore}
+            Peak {summary.chessElo.peakRating} · Rush {arcade.puzzleRushBestScore}
           </div>
         </div>
 

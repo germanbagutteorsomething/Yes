@@ -7,6 +7,7 @@ import {
   BarChart3,
   BookOpen,
   Bot,
+  CheckCircle2,
   CircleDot,
   Cpu,
   Crosshair,
@@ -18,6 +19,8 @@ import {
   Lightbulb,
   Loader2,
   Lock,
+  Maximize2,
+  Minimize2,
   Moon,
   Mountain,
   Puzzle,
@@ -48,6 +51,7 @@ import { PuzzlesWorkspace } from './components/PuzzlesWorkspace';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { SkiGameWorkspace } from './components/SkiGameWorkspace';
 import { detectOpening } from './data/openings';
+import { useFullscreen } from './hooks/useFullscreen';
 import { auth, signInGuestAnonymously, signInWithGoogle, signOutFirebase } from './firebase';
 import { getBotMove } from './engine/botService';
 import {
@@ -83,6 +87,7 @@ import {
   type BoardHighlight,
   type BoardTheme,
   type BotId,
+  type BotTier,
   type CrazyhouseSetupMode,
   type DroppablePiece,
   type GameMode,
@@ -99,6 +104,7 @@ import {
   type SavedMatch,
   type SideChoice,
   type StockfishLevelNumber,
+  type StoredChessElo,
   type TimeControlId,
 } from './types/chess';
 import { ARCADE_UNLOCKABLES } from './types/arcade';
@@ -116,16 +122,19 @@ import {
   parseCrazyhouseDropNotation,
   replayCrazyhouseChess,
 } from './utils/crazyhouse';
+import { getChessRankTitle } from './utils/elo';
 import { playChessSound } from './utils/sound';
 import {
   clearSavedMatches,
   deleteSavedMatch,
+  loadChessElo,
   loadDefeatedBots,
   loadDefeatedLevels,
   loadPreferences,
   loadSavedMatches,
   markBotDefeated,
   markLevelDefeated,
+  recordChessEloResult,
   saveMatchToHistory,
   savePreferences,
   updateMatchAnalysisInHistory,
@@ -312,7 +321,13 @@ export default function App() {
   const [opponentKind, setOpponentKind] = useState<OpponentKind>('stockfish');
   const [stockfishLevel, setStockfishLevel] = useState<StockfishLevelNumber>(4);
   const [selectedBotId, setSelectedBotId] = useState<BotId>('tara');
+  const [botTierFilter, setBotTierFilter] = useState<'all' | BotTier>('all');
   const [sideChoice, setSideChoice] = useState<SideChoice>('w');
+  const {
+    containerRef: chessFullscreenRef,
+    isFullscreen: isChessFullscreen,
+    toggleFullscreen: toggleChessFullscreen,
+  } = useFullscreen<HTMLDivElement>();
   const [humanColor, setHumanColor] = useState<PlayerColor>('w');
   const [variant, setVariant] = useState<GameVariant>('standard');
   const [crazyhouseSetup, setCrazyhouseSetup] = useState<CrazyhouseSetupMode>('classic');
@@ -664,11 +679,19 @@ export default function App() {
   const [defeatedLevels, setDefeatedLevels] = useState<StockfishLevelNumber[]>(() =>
     loadDefeatedLevels()
   );
+  const [chessElo, setChessElo] = useState<StoredChessElo>(() => loadChessElo());
+  const [lastMatchEloDelta, setLastMatchEloDelta] = useState<{
+    delta: number;
+    prevRating: number;
+    nextRating: number;
+    opponentRating: number;
+  } | null>(null);
 
   const refreshArchiveData = useCallback(() => {
     setSavedMatches(loadSavedMatches());
     setDefeatedBots(loadDefeatedBots());
     setDefeatedLevels(loadDefeatedLevels());
+    setChessElo(loadChessElo());
     setArcadeState(loadArcadeState());
   }, []);
 
@@ -711,7 +734,7 @@ export default function App() {
     return detectOpening(moves);
   }, [moves, startFen]);
 
-  // Save finished game & update defeated checklist once per finished match
+  // Save finished game & update defeated checklist + Chess Elo once per finished match
   useEffect(() => {
     if (!gameResult) return;
     if (isLoadedArchiveRef.current) return;
@@ -721,12 +744,52 @@ export default function App() {
     const matchId = createMatchId();
     currentMatchIdRef.current = matchId;
 
+    const onlineOpponentName =
+      activeOnlineGame && firebaseUser
+        ? activeOnlineGame.hostUid === firebaseUser.uid
+          ? activeOnlineGame.guestName || 'Online Opponent'
+          : activeOnlineGame.hostName || 'Online Opponent'
+        : 'Online Opponent';
+
     const opponentLabel =
       gameMode === 'two-player'
         ? '2-Player Local'
-        : opponentKind === 'bot'
-          ? `${currentBot.name} (${currentBot.eloLabel})`
-          : `Stockfish Lv ${currentLevelConfig.level} · ${currentLevelConfig.name}`;
+        : gameMode === 'online'
+          ? onlineOpponentName
+          : opponentKind === 'bot'
+            ? `${currentBot.name} (${currentBot.eloLabel})`
+            : `Stockfish Lv ${currentLevelConfig.level} · ${currentLevelConfig.name}`;
+
+    let eloDelta: number | undefined;
+    let eloAfter: number | undefined;
+    if (gameMode === 'stockfish' || gameMode === 'online') {
+      const opponentRating =
+        gameMode === 'online'
+          ? 1200
+          : opponentKind === 'bot'
+            ? currentBot.numericElo
+            : currentLevelConfig.numericElo;
+      const outcome: 'win' | 'draw' | 'loss' =
+        gameResult.winner === 'draw'
+          ? 'draw'
+          : gameResult.winner === humanColor
+            ? 'win'
+            : 'loss';
+      const eloRes = recordChessEloResult({
+        opponentRating,
+        opponentLabel,
+        outcome,
+      });
+      setChessElo(eloRes.state);
+      setLastMatchEloDelta({
+        delta: eloRes.delta,
+        prevRating: eloRes.prevRating,
+        nextRating: eloRes.nextRating,
+        opponentRating: eloRes.opponentRating,
+      });
+      eloDelta = eloRes.delta;
+      eloAfter = eloRes.nextRating;
+    }
 
     const record: SavedMatch = {
       id: matchId,
@@ -751,6 +814,8 @@ export default function App() {
       startFen,
       moves,
       pgn: chessRef.current.pgn(),
+      eloDelta,
+      eloAfter,
     };
 
     setSavedMatches(saveMatchToHistory(record));
@@ -764,12 +829,16 @@ export default function App() {
       setArcadeState(recordDailyProgress({ addChessWins: 1, bonusXp: 40 }));
     }
   }, [
+    activeOnlineGame,
     crazyhouseSetup,
     currentBot.eloLabel,
     currentBot.id,
     currentBot.name,
+    currentBot.numericElo,
     currentLevelConfig.level,
     currentLevelConfig.name,
+    currentLevelConfig.numericElo,
+    firebaseUser,
     gameMode,
     gameResult,
     humanColor,
@@ -892,6 +961,7 @@ export default function App() {
       setTurn(fresh.turn());
       setIsCheck(false);
       setGameResult(null);
+      setLastMatchEloDelta(null);
       setPendingPromotion(null);
       setSelectedDropPiece(null);
       setViewIndex(null);
@@ -2082,16 +2152,34 @@ export default function App() {
       if (opponentKind === 'bot') return currentBot.name;
       return `Stockfish · ${currentLevelConfig.name}`;
     }
+    if (gameMode === 'online' && activeOnlineGame) {
+      if (color === 'w') return activeOnlineGame.hostColor === 'w' ? activeOnlineGame.hostName : activeOnlineGame.guestName || 'Opponent';
+      return activeOnlineGame.hostColor === 'b' ? activeOnlineGame.hostName : activeOnlineGame.guestName || 'Opponent';
+    }
     return color === 'w' ? 'Player 1' : 'Player 2';
   };
 
   const getPlayerSubtitle = (color: PlayerColor) => {
     if (gameMode === 'stockfish') {
-      if (color === humanColor) return color === 'w' ? 'White' : 'Black';
-      if (opponentKind === 'bot') return `${currentBot.tagline} · ${currentBot.eloLabel}`;
-      return `Lv ${currentLevelConfig.level} · ${currentLevelConfig.eloLabel} Elo`;
+      if (color === humanColor) return getChessRankTitle(chessElo.rating);
+      if (opponentKind === 'bot') return currentBot.tagline;
+      return `Lv ${currentLevelConfig.level}`;
     }
     return color === 'w' ? 'White' : 'Black';
+  };
+
+  const getPlayerElo = (color: PlayerColor): number | null => {
+    if (gameMode === 'two-player') return null;
+    if (color === humanColor) return chessElo.rating;
+    if (gameMode === 'stockfish') {
+      return opponentKind === 'bot' ? currentBot.numericElo : currentLevelConfig.numericElo;
+    }
+    return 1200;
+  };
+
+  const getPlayerEloDelta = (color: PlayerColor): number | null => {
+    if (!lastMatchEloDelta || gameMode === 'two-player') return null;
+    return color === humanColor ? lastMatchEloDelta.delta : null;
   };
 
   const handleSelectHub = useCallback(() => {
@@ -2341,34 +2429,69 @@ export default function App() {
       {/* Secondary Chess Studio Sub-Navigation (when inside Chess) */}
       {activeGame === 'chess' && (
         <div className="border-b border-stone-200/80 dark:border-stone-800/80 bg-stone-50/90 dark:bg-stone-900/70">
-          <nav
-            aria-label="Chess studio sections"
-            className="mx-auto flex max-w-[1200px] items-center gap-1 px-4 sm:px-6 overflow-x-auto"
-          >
-            {chessNavItems.map((item) => {
-              const active = activeView === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setActiveView(item.id)}
-                  className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 ${
-                    active
-                      ? 'border-emerald-700 dark:border-emerald-400 text-emerald-800 dark:text-emerald-300'
-                      : 'border-transparent text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
-                  }`}
-                >
-                  {item.icon}
-                  <span>{item.label}</span>
-                  {item.id === 'archive' && savedMatches.length > 0 && (
-                    <span className="font-mono text-[10px] opacity-70 tabular-nums">
-                      ({savedMatches.length})
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
+          <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-3 px-4 sm:px-6">
+            <nav
+              aria-label="Chess studio sections"
+              className="flex items-center gap-1 overflow-x-auto"
+            >
+              {chessNavItems.map((item) => {
+                const active = activeView === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setActiveView(item.id)}
+                    className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+                      active
+                        ? 'border-emerald-700 dark:border-emerald-400 text-emerald-800 dark:text-emerald-300'
+                        : 'border-transparent text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                    }`}
+                  >
+                    {item.icon}
+                    <span>{item.label}</span>
+                    {item.id === 'archive' && savedMatches.length > 0 && (
+                      <span className="font-mono text-[10px] opacity-70 tabular-nums">
+                        ({savedMatches.length})
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="flex items-center gap-2 shrink-0 py-1">
+              <div
+                title={`Peak Elo: ${chessElo.peakRating} · ${chessElo.wins}W-${chessElo.draws}D-${chessElo.losses}L`}
+                className="hidden sm:flex items-center gap-2 font-mono text-xs tabular-nums"
+              >
+                <span className="text-[11px] font-sans text-stone-500 dark:text-stone-400">
+                  {getChessRankTitle(chessElo.rating)}
+                </span>
+                <span className="rounded-md border border-emerald-700/25 dark:border-emerald-500/30 bg-emerald-50/80 dark:bg-emerald-950/50 px-2 py-0.5 font-bold text-emerald-800 dark:text-emerald-300">
+                  {chessElo.rating} Elo
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={toggleChessFullscreen}
+                title={isChessFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+                className="inline-flex items-center gap-1.5 rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 px-2.5 py-1 text-xs font-semibold text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors whitespace-nowrap"
+              >
+                {isChessFullscreen ? (
+                  <>
+                    <Minimize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span className="hidden sm:inline">Exit Full</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span className="hidden sm:inline">Fullscreen</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -2417,16 +2540,78 @@ export default function App() {
           />
         )}
 
-        {activeGame === 'chess' && activeView === 'play' && (
+        {activeGame === 'chess' && (
+          <div
+            ref={chessFullscreenRef}
+            className={
+              isChessFullscreen
+                ? 'fixed inset-0 z-50 h-[100dvh] w-screen overflow-y-auto bg-stone-100 dark:bg-stone-950 p-3 sm:p-5 space-y-4'
+                : ''
+            }
+          >
+            {isChessFullscreen && (
+              <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-3.5 py-2">
+                <div className="flex items-center gap-2">
+                  <Swords className="w-4 h-4 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+                  <span className="font-display text-sm font-bold text-stone-900 dark:text-stone-100">
+                    SquareEight Chess
+                  </span>
+                  <span className="hidden sm:inline font-mono text-xs text-stone-500 dark:text-stone-400 tabular-nums">
+                    · {chessElo.rating} Elo
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {activeView === 'play' && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setFlipped((f) => !f)}
+                        className="inline-flex items-center gap-1 rounded-md border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 px-2.5 py-1.5 text-xs font-semibold text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 whitespace-nowrap"
+                      >
+                        <ArrowUpDown className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span className="hidden sm:inline">Flip</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => startNewGame()}
+                        className="inline-flex items-center gap-1 rounded-md bg-emerald-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 whitespace-nowrap"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>New Game</span>
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={toggleChessFullscreen}
+                    className="inline-flex items-center gap-1 rounded-md border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 px-2.5 py-1.5 text-xs font-semibold text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 whitespace-nowrap"
+                  >
+                    <Minimize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Exit Fullscreen</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className={isChessFullscreen ? 'mx-auto max-w-[1200px]' : ''}>
+        {activeView === 'play' && (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_400px] lg:items-start">
             {/* Left Column: Board & Player Bars */}
             <div className="flex flex-col items-center">
-              <div className="w-full max-w-[580px] lg:max-w-[min(600px,calc(100vh-220px))] space-y-2.5">
+              <div
+                className={`w-full space-y-2.5 ${
+                  isChessFullscreen
+                    ? 'max-w-[min(78vh,740px)]'
+                    : 'max-w-[580px] lg:max-w-[min(600px,calc(100vh-220px))]'
+                }`}
+              >
                 {/* Top Player Bar */}
                 <PlayerBar
                   color={topColor}
                   label={getPlayerLabel(topColor)}
                   subtitle={getPlayerSubtitle(topColor)}
+                  rating={getPlayerElo(topColor)}
+                  ratingDelta={getPlayerEloDelta(topColor)}
                   capturedPieces={
                     topColor === 'w'
                       ? materialStats.capturedByWhite
@@ -2530,6 +2715,8 @@ export default function App() {
                   color={bottomColor}
                   label={getPlayerLabel(bottomColor)}
                   subtitle={getPlayerSubtitle(bottomColor)}
+                  rating={getPlayerElo(bottomColor)}
+                  ratingDelta={getPlayerEloDelta(bottomColor)}
                   capturedPieces={
                     bottomColor === 'w'
                       ? materialStats.capturedByWhite
@@ -2702,29 +2889,68 @@ export default function App() {
                     </p>
                   </div>
 
-                  {analysisResult && !isAnalyzing && (
-                    <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/80 dark:bg-stone-800/50 p-2.5 flex items-center justify-between text-xs">
-                      <div className="font-mono tabular-nums">
-                        <span className="text-stone-500 dark:text-stone-400 mr-1.5">W:</span>
+                  {lastMatchEloDelta && (
+                    <div className="flex items-center justify-between rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/80 dark:bg-stone-800/50 px-3 py-2 text-xs">
+                      <span className="text-stone-600 dark:text-stone-300 font-medium">
+                        Chess Elo ({getChessRankTitle(lastMatchEloDelta.nextRating)})
+                      </span>
+                      <div className="flex items-center gap-2 font-mono tabular-nums">
                         <span className="font-bold text-stone-900 dark:text-stone-100">
-                          {analysisResult.white.accuracy.toFixed(1)}%
+                          {lastMatchEloDelta.nextRating}
                         </span>
-                        <span className="mx-2 text-stone-300 dark:text-stone-700">|</span>
-                        <span className="text-stone-500 dark:text-stone-400 mr-1.5">B:</span>
-                        <span className="font-bold text-stone-900 dark:text-stone-100">
-                          {analysisResult.black.accuracy.toFixed(1)}%
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[11px] font-bold ${
+                            lastMatchEloDelta.delta > 0
+                              ? 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300'
+                              : lastMatchEloDelta.delta < 0
+                                ? 'bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300'
+                                : 'bg-stone-200 dark:bg-stone-700 text-stone-600 dark:text-stone-300'
+                          }`}
+                        >
+                          {lastMatchEloDelta.delta > 0
+                            ? `+${lastMatchEloDelta.delta}`
+                            : lastMatchEloDelta.delta === 0
+                              ? '±0'
+                              : lastMatchEloDelta.delta}
                         </span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSidebarTab('analysis');
-                          handleSelectHistoryPly(moves.length > 0 ? 0 : null);
-                        }}
-                        className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 hover:underline whitespace-nowrap"
-                      >
-                        Review Report
-                      </button>
+                    </div>
+                  )}
+
+                  {analysisResult && !isAnalyzing && (
+                    <div className="rounded-lg border border-emerald-200 dark:border-emerald-800/80 bg-emerald-50/50 dark:bg-emerald-950/20 p-2.5 space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
+                            Performance:
+                          </span>
+                          <span className="font-mono font-extrabold text-stone-900 dark:text-stone-100 text-sm">
+                            ~{analysisResult[humanColor === 'w' ? 'white' : 'black'].estimatedElo} Elo
+                          </span>
+                          <span className="text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
+                            ({analysisResult[humanColor === 'w' ? 'white' : 'black'].performanceTitle})
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSidebarTab('analysis');
+                            handleSelectHistoryPly(moves.length > 0 ? 0 : null);
+                          }}
+                          className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 hover:underline whitespace-nowrap"
+                        >
+                          Full Review →
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] font-mono tabular-nums text-stone-600 dark:text-stone-300 pt-1 border-t border-emerald-200/60 dark:border-emerald-900/40">
+                        <span>
+                          White: <strong>{analysisResult.white.accuracy.toFixed(1)}%</strong> (~{analysisResult.white.estimatedElo})
+                        </span>
+                        <span>
+                          Black: <strong>{analysisResult.black.accuracy.toFixed(1)}%</strong> (~{analysisResult.black.estimatedElo})
+                        </span>
+                      </div>
                     </div>
                   )}
 
@@ -3099,7 +3325,7 @@ export default function App() {
                             }`}
                           >
                             <Bot className="w-3.5 h-3.5" aria-hidden="true" />
-                            <span>Chess Bots (6)</span>
+                            <span>Chess Bots ({BOT_PROFILES.length})</span>
                           </button>
                         </div>
 
@@ -3143,15 +3369,42 @@ export default function App() {
                           <>
                             <div className="flex items-center justify-between mb-2">
                               <span className="text-xs font-semibold text-stone-700 dark:text-stone-300">
-                                Select Opponent
+                                Select Opponent ({defeatedBots.length}/{BOT_PROFILES.length} Beat)
                               </span>
                               <span className="font-mono text-xs text-stone-500 dark:text-stone-400 tabular-nums">
                                 {currentBot.name} ({currentBot.eloLabel})
                               </span>
                             </div>
-                            <div className="grid grid-cols-2 gap-1.5">
-                              {BOT_PROFILES.map((bot) => {
+                            <div className="grid grid-cols-5 gap-1 rounded-lg bg-stone-100 dark:bg-stone-800 p-0.5 mb-2">
+                              {(
+                                [
+                                  { id: 'all', label: 'All' },
+                                  { id: 'Casual', label: 'Casual' },
+                                  { id: 'Club', label: 'Club' },
+                                  { id: 'Master', label: 'Master' },
+                                  { id: 'Grandmaster', label: 'GM' },
+                                ] as { id: 'all' | BotTier; label: string }[]
+                              ).map((t) => (
+                                <button
+                                  key={t.id}
+                                  type="button"
+                                  onClick={() => setBotTierFilter(t.id)}
+                                  className={`rounded-md py-1 text-[10px] font-semibold transition-colors whitespace-nowrap ${
+                                    botTierFilter === t.id
+                                      ? 'bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 shadow-xs'
+                                      : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                                  }`}
+                                >
+                                  {t.label}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5 max-h-[268px] overflow-y-auto pr-1">
+                              {BOT_PROFILES.filter(
+                                (bot) => botTierFilter === 'all' || bot.tier === botTierFilter
+                              ).map((bot) => {
                                 const active = selectedBotId === bot.id;
+                                const beaten = defeatedBots.includes(bot.id);
                                 return (
                                   <button
                                     key={bot.id}
@@ -3168,8 +3421,11 @@ export default function App() {
                                     }`}
                                   >
                                     <div className="flex items-center justify-between gap-1 w-full">
-                                      <span className="text-[11px] font-semibold leading-tight truncate">
-                                        {bot.name}
+                                      <span className="inline-flex items-center gap-1 min-w-0 text-[11px] font-semibold leading-tight">
+                                        <span className="truncate">{bot.name}</span>
+                                        {beaten && (
+                                          <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                        )}
                                       </span>
                                       <span className="font-mono text-[10px] opacity-80 shrink-0 tabular-nums">
                                         {bot.eloLabel}
@@ -3397,6 +3653,7 @@ export default function App() {
                   error={analysisError}
                   inspectedPlyIndex={viewIndex}
                   totalMoves={moves.length}
+                  humanColor={humanColor}
                   onStartAnalysis={handleStartAnalysis}
                   onCancelAnalysis={handleCancelAnalysis}
                   onSelectPly={handleSelectHistoryPly}
@@ -3406,7 +3663,7 @@ export default function App() {
           </div>
         )}
 
-        {activeGame === 'chess' && activeView === 'puzzles' && (
+        {activeView === 'puzzles' && (
           <PuzzlesWorkspace
             boardTheme={boardTheme}
             pieceSet={pieceSet}
@@ -3415,7 +3672,7 @@ export default function App() {
           />
         )}
 
-        {activeGame === 'chess' && activeView === 'endgames' && (
+        {activeView === 'endgames' && (
           <EndgamesWorkspace
             boardTheme={boardTheme}
             pieceSet={pieceSet}
@@ -3424,7 +3681,7 @@ export default function App() {
           />
         )}
 
-        {activeGame === 'chess' && activeView === 'archive' && (
+        {activeView === 'archive' && (
           <ArchiveWorkspace
             matches={savedMatches}
             defeatedBots={defeatedBots}
@@ -3434,6 +3691,9 @@ export default function App() {
             onClearMatches={() => setSavedMatches(clearSavedMatches())}
             onImportPositionOrGame={handleImportPositionOrGame}
           />
+        )}
+            </div>
+          </div>
         )}
       </main>
 

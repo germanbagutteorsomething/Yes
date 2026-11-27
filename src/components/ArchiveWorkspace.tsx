@@ -16,7 +16,8 @@ import {
   type SavedMatch,
   type StockfishLevelNumber,
 } from '../types/chess';
-import { loadPuzzleState } from '../utils/storage';
+import { getChessRankTitle } from '../utils/elo';
+import { loadChessElo, loadPuzzleState } from '../utils/storage';
 
 interface ArchiveWorkspaceProps {
   matches: SavedMatch[];
@@ -41,6 +42,7 @@ export const ArchiveWorkspace: React.FC<ArchiveWorkspaceProps> = ({
   const [importError, setImportError] = useState<string | null>(null);
 
   const puzzleState = useMemo(() => loadPuzzleState(), []);
+  const chessElo = useMemo(() => loadChessElo(), [matches.length]);
 
   const stats = useMemo(() => {
     let wins = 0;
@@ -108,7 +110,17 @@ export const ArchiveWorkspace: React.FC<ArchiveWorkspaceProps> = ({
   return (
     <div className="space-y-6">
       {/* KPI Overview Strip */}
-      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4">
+          <div className="text-xs text-stone-500 dark:text-stone-400">Chess Elo</div>
+          <div className="mt-1 font-mono text-2xl font-bold text-emerald-700 dark:text-emerald-400 tabular-nums">
+            {chessElo.rating}
+          </div>
+          <div className="mt-1 font-mono text-[11px] text-stone-500 dark:text-stone-400 tabular-nums">
+            {getChessRankTitle(chessElo.rating)} · Peak {chessElo.peakRating}
+          </div>
+        </div>
+
         <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4">
           <div className="text-xs text-stone-500 dark:text-stone-400">Matches Played</div>
           <div className="mt-1 font-mono text-2xl font-bold text-stone-900 dark:text-stone-100 tabular-nums">
@@ -121,7 +133,7 @@ export const ArchiveWorkspace: React.FC<ArchiveWorkspaceProps> = ({
 
         <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4">
           <div className="text-xs text-stone-500 dark:text-stone-400">Avg Accuracy</div>
-          <div className="mt-1 font-mono text-2xl font-bold text-emerald-700 dark:text-emerald-400 tabular-nums">
+          <div className="mt-1 font-mono text-2xl font-bold text-stone-900 dark:text-stone-100 tabular-nums">
             {stats.avgAccuracy === '—' ? '—' : `${stats.avgAccuracy}%`}
           </div>
           <div className="mt-1 text-[11px] text-stone-500 dark:text-stone-400">
@@ -139,7 +151,7 @@ export const ArchiveWorkspace: React.FC<ArchiveWorkspaceProps> = ({
           </div>
         </div>
 
-        <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4">
+        <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4 col-span-2 sm:col-span-1">
           <div className="text-xs text-stone-500 dark:text-stone-400">Puzzle Best Streak</div>
           <div className="mt-1 font-mono text-2xl font-bold text-stone-900 dark:text-stone-100 tabular-nums">
             {puzzleState.bestStreak}
@@ -247,6 +259,22 @@ export const ArchiveWorkspace: React.FC<ArchiveWorkspaceProps> = ({
                               </span>
                             </>
                           )}
+                        {typeof m.eloDelta === 'number' && (
+                          <>
+                            <span>·</span>
+                            <span
+                              className={`font-mono font-semibold tabular-nums ${
+                                m.eloDelta > 0
+                                  ? 'text-emerald-700 dark:text-emerald-400'
+                                  : m.eloDelta < 0
+                                    ? 'text-red-600 dark:text-red-400'
+                                    : 'text-stone-500 dark:text-stone-400'
+                              }`}
+                            >
+                              {m.eloDelta > 0 ? `+${m.eloDelta}` : m.eloDelta === 0 ? '±0' : m.eloDelta} Elo
+                            </span>
+                          </>
+                        )}
                         {typeof m.brilliantCount === 'number' && m.brilliantCount > 0 && (
                           <>
                             <span>·</span>
@@ -335,20 +363,23 @@ export const ArchiveWorkspace: React.FC<ArchiveWorkspaceProps> = ({
               <div className="mb-1.5 text-[11px] font-semibold text-stone-600 dark:text-stone-400">
                 Chess Bots ({defeatedBots.length}/{BOT_PROFILES.length})
               </div>
-              <div className="grid grid-cols-2 gap-1.5">
+              <div className="grid grid-cols-2 gap-1.5 max-h-[260px] overflow-y-auto pr-1">
                 {BOT_PROFILES.map((b) => {
                   const beaten = defeatedBots.includes(b.id);
                   return (
                     <div
                       key={b.id}
-                      className={`flex items-center justify-between rounded-md border px-2.5 py-1.5 text-[11px] ${
+                      className={`flex items-center justify-between gap-1 rounded-md border px-2.5 py-1.5 text-[11px] ${
                         beaten
                           ? 'border-emerald-300 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200'
                           : 'border-stone-200 dark:border-stone-800 text-stone-500 dark:text-stone-400'
                       }`}
                     >
                       <span className="truncate font-medium">{b.name}</span>
-                      {beaten && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />}
+                      <span className="flex items-center gap-1 shrink-0">
+                        <span className="font-mono text-[10px] opacity-70 tabular-nums">{b.eloLabel}</span>
+                        {beaten && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />}
+                      </span>
                     </div>
                   );
                 })}

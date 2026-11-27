@@ -380,10 +380,16 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
 
     const quality = graphicsQualityRef.current;
     const enableShadows = !isSoftwareGl && quality !== 'low';
-    const enableBloom = !isSoftwareGl && quality !== 'low';
-    const shadowMapSize = quality === 'high' ? 2048 : 1024;
-    const pixelRatio = isSoftwareGl ? 1 : quality === 'low' ? 1 : quality === 'medium' ? Math.min(window.devicePixelRatio, 1.5) : Math.min(window.devicePixelRatio, 2);
-    const particleCount = quality === 'low' ? 70 : quality === 'medium' ? 150 : 240;
+    const enableBloom = !isSoftwareGl && quality !== 'low' && (map.isNight || quality === 'high');
+    const shadowMapSize = quality === 'high' ? 1536 : 768;
+    const pixelRatio = isSoftwareGl
+      ? 1
+      : quality === 'low'
+        ? 1
+        : quality === 'medium'
+          ? Math.min(window.devicePixelRatio, 1.25)
+          : Math.min(window.devicePixelRatio, 1.75);
+    const particleCount = quality === 'low' ? 60 : quality === 'medium' ? 120 : 190;
 
     setWebglError(null);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -440,10 +446,13 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       composer.setSize(width, height);
       composer.addPass(new RenderPass(scene, camera));
       bloomPass = new UnrealBloomPass(
-        new THREE.Vector2(width, height),
-        map.isNight ? 0.26 : 0.08,
-        map.isNight ? 0.30 : 0.20,
-        map.isNight ? 1.05 : 1.95
+        new THREE.Vector2(
+          Math.max(160, Math.floor(width * 0.5)),
+          Math.max(120, Math.floor(height * 0.5))
+        ),
+        map.isNight ? 0.14 : 0.035,
+        map.isNight ? 0.22 : 0.16,
+        map.isNight ? 1.22 : 2.1
       );
       composer.addPass(bloomPass);
       outputPass = new OutputPass();
@@ -591,7 +600,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
     let lastTrackZ = -10;
 
     // Ambient Falling Alpine Snow Flurries (InstancedMesh)
-    const FLURRY_COUNT = 120;
+    const FLURRY_COUNT = quality === 'low' ? 45 : quality === 'medium' ? 75 : 110;
     const flurryGeo = new THREE.OctahedronGeometry(0.055, 0);
     const flurryMat = new THREE.MeshBasicMaterial({
       color: '#FFFFFF',
@@ -1013,7 +1022,10 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
         composer.setSize(w, h);
       }
       if (bloomPass) {
-        bloomPass.resolution.set(w, h);
+        bloomPass.resolution.set(
+          Math.max(160, Math.floor(w * 0.5)),
+          Math.max(120, Math.floor(h * 0.5))
+        );
       }
     };
     window.addEventListener('resize', handleResize);
@@ -2267,7 +2279,7 @@ export const SkiViewport: React.FC<SkiViewportProps> = ({
       composer?.dispose();
       renderer.dispose();
     };
-  }, [gearId, inputRef, mapId, runSeed]);
+  }, [gearId, graphicsQuality, inputRef, mapId, runSeed]);
 
   if (webglError) {
     return (

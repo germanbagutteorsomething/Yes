@@ -10,7 +10,9 @@ import {
   Gamepad2,
   Ghost,
   Lock,
+  Maximize2,
   Medal,
+  Minimize2,
   Mountain,
   Pause,
   Play,
@@ -21,6 +23,7 @@ import {
   Trophy,
   Zap,
 } from 'lucide-react';
+import { useFullscreen } from '../hooks/useFullscreen';
 import {
   DEFAULT_SKI_ALTITUDE_LIMIT_METERS,
   getSkiGearById,
@@ -186,6 +189,11 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
   const [arcadeState, setArcadeState] = useState(() => loadArcadeState());
   const [unlockNotice, setUnlockNotice] = useState<string | null>(null);
   const [touchHudOverride, setTouchHudOverride] = useState<boolean | null>(null);
+  const {
+    containerRef: skiFullscreenRef,
+    isFullscreen,
+    toggleFullscreen,
+  } = useFullscreen<HTMLDivElement>();
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -563,10 +571,23 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
     setBoostPressedUi(false);
   }, []);
 
-  if (phase === 'menu') {
-    const selectedRecord = progress.records[mapId];
+  const selectedRecord = progress.records[mapId];
+  const projectedRunTotal = hud.score + hud.comboScore * hud.comboMultiplier;
+  const beatingRecordLive = currentMapBest > 0 && projectedRunTotal > currentMapBest;
+  const activeMedalMeta = MEDAL_STYLES[hud.medalEarned];
 
-    return (
+  return (
+    <div
+      ref={skiFullscreenRef}
+      className={
+        isFullscreen
+          ? phase === 'menu'
+            ? 'fixed inset-0 z-50 h-[100dvh] w-screen overflow-y-auto bg-stone-100 dark:bg-stone-950 p-4 sm:p-6'
+            : 'fixed inset-0 z-50 h-[100dvh] w-screen overflow-hidden bg-stone-950'
+          : ''
+      }
+    >
+      {phase === 'menu' ? (
       <div className="space-y-6">
         {/* Top Banner & Primary Drop-In Header */}
         <section className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 sm:p-6">
@@ -682,6 +703,25 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
               >
                 <Ghost className="w-4 h-4" aria-hidden="true" />
                 <span>Ghost: {progress.ghostEnabled ? 'On' : 'Off'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 px-3 py-2.5 text-xs font-semibold text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors whitespace-nowrap"
+              >
+                {isFullscreen ? (
+                  <>
+                    <Minimize2 className="w-4 h-4" aria-hidden="true" />
+                    <span>Exit Full</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-4 h-4" aria-hidden="true" />
+                    <span>Fullscreen</span>
+                  </>
+                )}
               </button>
 
               <button
@@ -1081,16 +1121,14 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
           </section>
         </div>
       </div>
-    );
-  }
-
-  // Active 3D Viewport (Playing / Paused / Finished)
-  const projectedRunTotal = hud.score + hud.comboScore * hud.comboMultiplier;
-  const beatingRecordLive = currentMapBest > 0 && projectedRunTotal > currentMapBest;
-  const activeMedalMeta = MEDAL_STYLES[hud.medalEarned];
-
-  return (
-    <div className="relative w-full h-[calc(100dvh-118px)] sm:h-[calc(100dvh-138px)] min-h-[400px] sm:min-h-[520px] max-h-[860px] overflow-hidden rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-950 shadow-sm touch-none select-none">
+      ) : (
+    <div
+      className={
+        isFullscreen
+          ? 'relative w-full h-full overflow-hidden bg-stone-950 touch-none select-none'
+          : 'relative w-full h-[calc(100dvh-118px)] sm:h-[calc(100dvh-138px)] min-h-[400px] sm:min-h-[520px] max-h-[860px] overflow-hidden rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-950 shadow-sm touch-none select-none'
+      }
+    >
       {/* Isolated WebGL Canvas Container */}
       <SkiViewport
         mapId={mapId}
@@ -1299,6 +1337,25 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
               className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/15 bg-stone-950/80 text-white hover:bg-stone-900 transition-colors"
             >
               <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+              className="inline-flex h-9 w-9 sm:w-auto items-center justify-center gap-1.5 rounded-lg border border-white/15 bg-stone-950/80 sm:px-2.5 text-xs font-medium text-white hover:bg-stone-900 transition-colors whitespace-nowrap"
+            >
+              {isFullscreen ? (
+                <>
+                  <Minimize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span className="hidden md:inline">Exit Full</span>
+                </>
+              ) : (
+                <>
+                  <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span className="hidden md:inline">Fullscreen</span>
+                </>
+              )}
             </button>
 
             <button
@@ -1779,6 +1836,8 @@ export const SkiGameWorkspace: React.FC<SkiGameWorkspaceProps> = ({
             </div>
           </div>
         </div>
+      )}
+    </div>
       )}
     </div>
   );

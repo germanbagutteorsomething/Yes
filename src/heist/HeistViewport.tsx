@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import {
   HEIST_VEHICLE_SPECS,
   HEIST_WEAPON_ORDER,
@@ -30,10 +34,13 @@ import {
   buildHeistBeaconMesh,
   buildPickupMesh,
   buildPlayerRig,
+  buildPoliceChopperMesh,
   buildPoliceVehicleMesh,
   createBuildingFacadeTexture,
-  createCityAsphaltTexture,
+  createCityAsphaltTextures,
+  createNightSkyDome,
   type GetawayCarRig,
+  type PoliceVehicleRig,
 } from './heistModels';
 
 interface HeistViewportProps {
@@ -56,11 +63,15 @@ interface SimCar {
   vx: number;
   vz: number;
   yaw: number;
+  angVel: number;
+  spinOutTimer: number;
   speed: number;
   steerAngle: number;
   wheelRoll: number;
   bodyPitch: number;
   bodyRoll: number;
+  nitro: number;
+  boosting: boolean;
   hp: number;
   maxHp: number;
   rig: GetawayCarRig;
@@ -85,12 +96,19 @@ interface SimCopVehicle {
   kind: 'cruiser' | 'interceptor' | 'swat';
   x: number;
   z: number;
+  vx: number;
+  vz: number;
   yaw: number;
+  angVel: number;
+  spinOutTimer: number;
+  pitRewarded: boolean;
   speed: number;
+  wheelRoll: number;
   hp: number;
   maxHp: number;
   fireCd: number;
   ramCd: number;
+  rig: PoliceVehicleRig;
   mesh: THREE.Group;
   redBeacon: THREE.Mesh;
   blueBeacon: THREE.Mesh;
@@ -256,10 +274,13 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
     renderer.domElement.style.touchAction = 'none';
     container.appendChild(renderer.domElement);
 
-    // 2. Scene + Fog + RoomEnvironment
+    // 2. Scene + Sky Dome + Horizon Fog + RoomEnvironment
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x090e1a);
-    scene.fog = new THREE.FogExp2(0x090e1a, 0.0072);
+    scene.background = new THREE.Color(0x0b0f1e);
+    scene.fog = new THREE.FogExp2(0x161124, 0.0056);
+
+    const skyDome = createNightSkyDome();
+    scene.add(skyDome);
 
     const pmrem = new THREE.PMREMGenerator(renderer);
     const envTarget = pmrem.fromScene(new RoomEnvironment(), 0.04);
@@ -269,10 +290,32 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
       58,
       (container.clientWidth || 800) / (container.clientHeight || 560),
       0.12,
-      280
+      450
     );
     camera.position.set(0, 8, -12);
     scene.add(camera);
+
+    let composer: EffectComposer | null = null;
+    let bloomPass: UnrealBloomPass | null = null;
+    if (!isSoftwareGl) {
+      const initW = container.clientWidth || 800;
+      const initH = container.clientHeight || 560;
+      composer = new EffectComposer(renderer);
+      composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+      composer.setSize(initW, initH);
+      composer.addPass(new RenderPass(scene, camera));
+      bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(
+          Math.max(160, Math.floor(initW * 0.5)),
+          Math.max(120, Math.floor(initH * 0.5))
+        ),
+        0.28,
+        0.28,
+        0.92
+      );
+      composer.addPass(bloomPass);
+      composer.addPass(new OutputPass());
+    }
 
     // First-person rigs mounted to camera
     const fpWeaponRig = buildFirstPersonWeaponRig();
@@ -283,11 +326,11 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
     fpCockpitRig.group.visible = false;
     camera.add(fpCockpitRig.group);
 
-    // 3. Lighting
-    const hemi = new THREE.HemisphereLight(0x7dd3fc, 0x0f172a, 0.9);
+    // 3. Lighting (Cool moonlight + warm rim + dynamic flash + police siren point light)
+    const hemi = new THREE.HemisphereLight(0x818cf8, 0x0f172a, 0.98);
     scene.add(hemi);
 
-    const moonLight = new THREE.DirectionalLight(0xe0f2fe, 1.85);
+    const moonLight = new THREE.DirectionalLight(0xe0f2fe, 1.95);
     moonLight.position.set(32, 56, 26);
     if (!isSoftwareGl) {
       moonLight.castShadow = true;
@@ -304,18 +347,32 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
     scene.add(moonLight);
     scene.add(moonLight.target);
 
-    const rimLight = new THREE.DirectionalLight(0xfbbf24, 0.48);
+    const rimLight = new THREE.DirectionalLight(0xf59e0b, 0.6);
     rimLight.position.set(-40, 25, -35);
     scene.add(rimLight);
 
-    // 4. City Ground, Perimeter, Buildings, Streetlamps
+    const flashLight = new THREE.PointLight(0xfbbf24, 0, 28, 2);
+    flashLight.position.set(0, 2, 0);
+    scene.add(flashLight);
+
+    const sirenLight = new THREE.PointLight(0xef4444, 0, 28, 2);
+    sirenLight.position.set(0, 2.6, 0);
+    scene.add(sirenLight);
+
+    // 4. City Ground (with Wet Asphalt Roughness Map), Curbs, Buildings, Traffic Signals, Rain & Chopper
     const maxAniso = renderer.capabilities.getMaxAnisotropy();
-    const asphaltTex = createCityAsphaltTexture(maxAniso);
+    const asphaltTextures = createCityAsphaltTextures(maxAniso);
     const facadeTex = createBuildingFacadeTexture(maxAniso);
 
     const groundMesh = new THREE.Mesh(
       new THREE.PlaneGeometry(240, 240),
-      new THREE.MeshStandardMaterial({ map: asphaltTex, roughness: 0.72, metalness: 0.14 })
+      new THREE.MeshStandardMaterial({
+        map: asphaltTextures.map,
+        roughnessMap: asphaltTextures.roughnessMap,
+        roughness: 0.85,
+        metalness: 0.24,
+        envMapIntensity: 1.65,
+      })
     );
     groundMesh.rotation.x = -Math.PI / 2;
     groundMesh.receiveShadow = !isSoftwareGl;
@@ -323,11 +380,20 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
 
     const outerGround = new THREE.Mesh(
       new THREE.PlaneGeometry(640, 640),
-      new THREE.MeshStandardMaterial({ color: 0x060b14, roughness: 0.3, metalness: 0.6 })
+      new THREE.MeshStandardMaterial({ color: 0x060b14, roughness: 0.25, metalness: 0.65 })
     );
     outerGround.rotation.x = -Math.PI / 2;
     outerGround.position.y = -0.25;
     scene.add(outerGround);
+
+    // Raised 3D sidewalk slabs for each of the 16 city blocks
+    const blockCenters = [-72, -24, 24, 72];
+    const sidewalkInst = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(32, 0.08, 32),
+      new THREE.MeshStandardMaterial({ color: 0x283344, roughness: 0.72, metalness: 0.12 }),
+      16
+    );
+    sidewalkInst.receiveShadow = !isSoftwareGl;
 
     const curbMat = new THREE.MeshStandardMaterial({
       color: 0x334155,
@@ -352,8 +418,11 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
     const bGeo = new THREE.BoxGeometry(1, 1, 1);
     const bMat = new THREE.MeshStandardMaterial({
       map: facadeTex,
-      roughness: 0.55,
-      metalness: 0.25,
+      emissive: new THREE.Color(0xdbeafe),
+      emissiveMap: facadeTex,
+      emissiveIntensity: 0.65,
+      roughness: 0.42,
+      metalness: 0.34,
     });
     const buildingInst = new THREE.InstancedMesh(bGeo, bMat, buildings.length);
     buildingInst.castShadow = !isSoftwareGl;
@@ -366,9 +435,46 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
       Math.max(1, crownList.length)
     );
 
+    const neonSignInst = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 0.55, 0.25),
+      new THREE.MeshBasicMaterial({ color: 0xffffff }),
+      buildings.length
+    );
+
+    const hvacList = buildings.filter((b) => b.h > 19);
+    const hvacInst = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1.8, 1),
+      new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.65, metalness: 0.5 }),
+      Math.max(1, hvacList.length)
+    );
+
+    const spireList = buildings.filter((b) => b.h > 28);
+    const spireInst = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.08, 0.18, 6.5, 6),
+      new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.35, metalness: 0.8 }),
+      Math.max(1, spireList.length)
+    );
+
     const dummy = new THREE.Object3D();
     const tmpColor = new THREE.Color();
+
+    let swIdx = 0;
+    for (const bx of blockCenters) {
+      for (const bz of blockCenters) {
+        dummy.position.set(bx, 0.04, bz);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        sidewalkInst.setMatrixAt(swIdx++, dummy.matrix);
+      }
+    }
+    sidewalkInst.instanceMatrix.needsUpdate = true;
+    sidewalkInst.computeBoundingSphere();
+    scene.add(sidewalkInst);
+
     let crownIdx = 0;
+    let hvacIdx = 0;
+    let spireIdx = 0;
 
     buildings.forEach((b, i) => {
       dummy.position.set(b.x, b.h / 2, b.z);
@@ -379,22 +485,149 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
       tmpColor.setHex(b.colorHex).multiplyScalar(1.35);
       buildingInst.setColorAt(i, tmpColor);
 
+      // Street-level neon marquee sign facing nearest avenue
+      const faceZ = b.z >= 0 ? -1 : 1;
+      dummy.position.set(b.x, 3.2, b.z + faceZ * (b.d * 0.5 + 0.14));
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(Math.min(7.5, b.w * 0.62), 1, 1);
+      dummy.updateMatrix();
+      neonSignInst.setMatrixAt(i, dummy.matrix);
+      tmpColor.setHex(b.accentHex).multiplyScalar(1.85);
+      neonSignInst.setColorAt(i, tmpColor);
+
       if (b.hasCrown) {
         dummy.position.set(b.x, b.h + 0.25, b.z);
+        dummy.rotation.set(0, 0, 0);
         dummy.scale.set(b.w * 0.94, 1, b.d * 0.94);
         dummy.updateMatrix();
         crownInst.setMatrixAt(crownIdx, dummy.matrix);
-        tmpColor.setHex(b.accentHex);
+        tmpColor.setHex(b.accentHex).multiplyScalar(1.9);
         crownInst.setColorAt(crownIdx, tmpColor);
         crownIdx += 1;
+      }
+
+      if (b.h > 19) {
+        dummy.position.set(b.x - b.w * 0.16, b.h + 0.9, b.z + b.d * 0.12);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(b.w * 0.36, 1, b.d * 0.34);
+        dummy.updateMatrix();
+        hvacInst.setMatrixAt(hvacIdx++, dummy.matrix);
+      }
+
+      if (b.h > 28) {
+        dummy.position.set(b.x + b.w * 0.18, b.h + 3.25, b.z - b.d * 0.15);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        spireInst.setMatrixAt(spireIdx++, dummy.matrix);
       }
     });
     buildingInst.instanceMatrix.needsUpdate = true;
     if (buildingInst.instanceColor) buildingInst.instanceColor.needsUpdate = true;
+    buildingInst.computeBoundingSphere();
+
     crownInst.count = crownIdx;
     crownInst.instanceMatrix.needsUpdate = true;
     if (crownInst.instanceColor) crownInst.instanceColor.needsUpdate = true;
-    scene.add(buildingInst, crownInst);
+    crownInst.computeBoundingSphere();
+
+    neonSignInst.instanceMatrix.needsUpdate = true;
+    if (neonSignInst.instanceColor) neonSignInst.instanceColor.needsUpdate = true;
+    neonSignInst.computeBoundingSphere();
+
+    hvacInst.count = hvacIdx;
+    hvacInst.instanceMatrix.needsUpdate = true;
+    hvacInst.computeBoundingSphere();
+
+    spireInst.count = spireIdx;
+    spireInst.instanceMatrix.needsUpdate = true;
+    spireInst.computeBoundingSphere();
+
+    scene.add(buildingInst, crownInst, neonSignInst, hvacInst, spireInst);
+
+    // Stylized avenue trees placed cleanly on block sidewalk corners
+    const treeCount = 32;
+    const trunkInst = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.14, 0.22, 1.8, 6),
+      new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.9, metalness: 0.05 }),
+      treeCount
+    );
+    const canopyInst = new THREE.InstancedMesh(
+      new THREE.DodecahedronGeometry(1.15, 0),
+      new THREE.MeshStandardMaterial({ color: 0x1e5638, roughness: 0.82, metalness: 0.05 }),
+      treeCount
+    );
+    trunkInst.castShadow = !isSoftwareGl;
+    canopyInst.castShadow = !isSoftwareGl;
+
+    let treeIdx = 0;
+    for (let gx = 0; gx < blockCenters.length; gx++) {
+      for (let gz = 0; gz < blockCenters.length; gz++) {
+        const bx = blockCenters[gx];
+        const bz = blockCenters[gz];
+        const corners: Array<[number, number]> = [
+          [bx - 14.3, bz - 14.3],
+          [bx + 14.3, bz + 14.3],
+        ];
+        for (const [tx, tz] of corners) {
+          const s = 0.88 + ((treeIdx * 37) % 10) * 0.028;
+          dummy.position.set(tx, 0.9 * s, tz);
+          dummy.rotation.set(0, treeIdx * 1.1, 0);
+          dummy.scale.set(s, s, s);
+          dummy.updateMatrix();
+          trunkInst.setMatrixAt(treeIdx, dummy.matrix);
+
+          dummy.position.set(tx, 2.35 * s, tz);
+          dummy.scale.set(s, s * 1.12, s);
+          dummy.updateMatrix();
+          canopyInst.setMatrixAt(treeIdx, dummy.matrix);
+          tmpColor.setHex(treeIdx % 2 === 0 ? 0x1e5638 : 0x164e3f);
+          canopyInst.setColorAt(treeIdx, tmpColor);
+          treeIdx += 1;
+        }
+      }
+    }
+    trunkInst.instanceMatrix.needsUpdate = true;
+    canopyInst.instanceMatrix.needsUpdate = true;
+    if (canopyInst.instanceColor) canopyInst.instanceColor.needsUpdate = true;
+    trunkInst.computeBoundingSphere();
+    canopyInst.computeBoundingSphere();
+    scene.add(trunkInst, canopyInst);
+
+    // Distant outer harbor skyline silhouettes outside perimeter
+    const skylineCount = 44;
+    const skylineInst = new THREE.InstancedMesh(
+      bGeo,
+      new THREE.MeshStandardMaterial({
+        map: facadeTex,
+        emissive: new THREE.Color(0x93c5fd),
+        emissiveMap: facadeTex,
+        emissiveIntensity: 0.42,
+        roughness: 0.65,
+        metalness: 0.25,
+      }),
+      skylineCount
+    );
+    for (let i = 0; i < skylineCount; i++) {
+      const ang = (i / skylineCount) * Math.PI * 2;
+      const rad = 148 + ((i * 23) % 34);
+      const sx = Math.cos(ang) * rad;
+      const sz = Math.sin(ang) * rad;
+      const sw = 12 + ((i * 17) % 10);
+      const sd = 12 + ((i * 13) % 10);
+      const sh = 24 + ((i * 29) % 44);
+      dummy.position.set(sx, sh / 2 - 0.3, sz);
+      dummy.rotation.set(0, ang * 0.25, 0);
+      dummy.scale.set(sw, sh, sd);
+      dummy.updateMatrix();
+      skylineInst.setMatrixAt(i, dummy.matrix);
+      tmpColor.setHex(i % 2 === 0 ? 0x131d31 : 0x1b1930);
+      skylineInst.setColorAt(i, tmpColor);
+    }
+    skylineInst.instanceMatrix.needsUpdate = true;
+    if (skylineInst.instanceColor) skylineInst.instanceColor.needsUpdate = true;
+    skylineInst.computeBoundingSphere();
+    scene.add(skylineInst);
 
     const poleInst = new THREE.InstancedMesh(
       new THREE.CylinderGeometry(0.09, 0.12, 4.6, 6),
@@ -403,7 +636,7 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
     );
     const bulbInst = new THREE.InstancedMesh(
       new THREE.BoxGeometry(0.42, 0.14, 0.42),
-      new THREE.MeshBasicMaterial({ color: 0xfef3c7 }),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(1.9, 1.75, 1.35) }),
       layout.lamps.length
     );
     layout.lamps.forEach((lamp, i) => {
@@ -418,7 +651,84 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
     });
     poleInst.instanceMatrix.needsUpdate = true;
     bulbInst.instanceMatrix.needsUpdate = true;
+    poleInst.computeBoundingSphere();
+    bulbInst.computeBoundingSphere();
     scene.add(poleInst, bulbInst);
+
+    // Intersection Traffic Signals & Glowing Signal Lenses
+    const sigCoords = [-48, 0, 48];
+    const sigCount = sigCoords.length * sigCoords.length;
+    const sigPoleInst = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.08, 0.1, 4.4, 6),
+      new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.78, roughness: 0.35 }),
+      sigCount
+    );
+    const sigHeadInst = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.38, 1.05, 0.38),
+      new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.45, metalness: 0.6 }),
+      sigCount
+    );
+    const sigLensInst = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.42, 0.24, 0.42),
+      new THREE.MeshBasicMaterial({ color: 0xffffff }),
+      sigCount
+    );
+    let sigIdx = 0;
+    for (const sx of sigCoords) {
+      for (const sz of sigCoords) {
+        dummy.position.set(sx + 8.1, 2.2, sz + 8.1);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        sigPoleInst.setMatrixAt(sigIdx, dummy.matrix);
+
+        dummy.position.set(sx + 8.1, 4.1, sz + 8.1);
+        dummy.updateMatrix();
+        sigHeadInst.setMatrixAt(sigIdx, dummy.matrix);
+
+        dummy.position.set(sx + 8.1, 4.3, sz + 8.1);
+        dummy.updateMatrix();
+        sigLensInst.setMatrixAt(sigIdx, dummy.matrix);
+        tmpColor.setHex(sigIdx % 2 === 0 ? 0x10b981 : 0xf43f5e).multiplyScalar(1.9);
+        sigLensInst.setColorAt(sigIdx, tmpColor);
+        sigIdx += 1;
+      }
+    }
+    sigPoleInst.instanceMatrix.needsUpdate = true;
+    sigHeadInst.instanceMatrix.needsUpdate = true;
+    sigLensInst.instanceMatrix.needsUpdate = true;
+    if (sigLensInst.instanceColor) sigLensInst.instanceColor.needsUpdate = true;
+    sigPoleInst.computeBoundingSphere();
+    sigHeadInst.computeBoundingSphere();
+    sigLensInst.computeBoundingSphere();
+    scene.add(sigPoleInst, sigHeadInst, sigLensInst);
+
+    // Subtle Atmospheric Night Rain Streaks around camera
+    const RAIN_COUNT = 72;
+    const rainInst = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.025, 0.85, 0.025),
+      new THREE.MeshBasicMaterial({
+        color: 0x93c5fd,
+        transparent: true,
+        opacity: 0.22,
+        depthWrite: false,
+      }),
+      RAIN_COUNT
+    );
+    rainInst.frustumCulled = false;
+    const rainDrops = Array.from({ length: RAIN_COUNT }, (_, i) => ({
+      ox: ((i * 37) % 44) - 22,
+      oy: ((i * 19) % 18) + 1,
+      oz: ((i * 53) % 44) - 22,
+      speed: 22 + (i % 5) * 3.5,
+    }));
+    scene.add(rainInst);
+
+    // Police Chopper Rig (deployed at 4+ Wanted Stars)
+    const chopperRig = buildPoliceChopperMesh();
+    chopperRig.group.visible = false;
+    chopperRig.groundSpot.visible = false;
+    scene.add(chopperRig.group, chopperRig.groundSpot);
 
     // 5. Instanced Bullets & Particles
     const bulletInst = new THREE.InstancedMesh(
@@ -519,6 +829,9 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
       calloutText: '',
       calloutTone: 'loot' as 'loot' | 'heat' | 'weapon' | 'danger',
       calloutNonce: 0,
+      damageFlashNonce: 0,
+      pitCount: 0,
+      nitroBoostSfxCd: 0,
       copSpawnCd: 2.0,
       copCarSpawnCd: 5.0,
       carRespawnCd: 14.0,
@@ -684,11 +997,15 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
         vx: 0,
         vz: 0,
         yaw,
+        angVel: 0,
+        spinOutTimer: 0,
         speed: 0,
         steerAngle: 0,
         wheelRoll: 0,
         bodyPitch: 0,
         bodyRoll: 0,
+        nitro: 100,
+        boosting: false,
         hp: spec.maxHp,
         maxHp: spec.maxHp,
         rig,
@@ -745,12 +1062,19 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
         kind,
         x: pt.x,
         z: pt.z,
+        vx: Math.sin(yaw) * 10,
+        vz: Math.cos(yaw) * 10,
         yaw,
+        angVel: 0,
+        spinOutTimer: 0,
+        pitRewarded: false,
         speed: 10,
+        wheelRoll: 0,
         hp,
         maxHp: hp,
         fireCd: 1.2,
         ramCd: 0,
+        rig,
         mesh: rig.group,
         redBeacon: rig.redBeacon,
         blueBeacon: rig.blueBeacon,
@@ -770,7 +1094,8 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
         sim.cash +
           sim.survivalSec * 15 +
           sim.copsDown * 180 +
-          sim.heistsCompleted * 850
+          sim.heistsCompleted * 850 +
+          sim.pitCount * 220
       );
 
     const buildWeaponSnapshot = (): Record<HeistWeaponId, HeistWeaponStateSnapshot> => {
@@ -833,6 +1158,9 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
         maxArmor: sim.maxArmor,
         dashReadyPct:
           sim.dashCd <= 0 ? 100 : Math.max(0, Math.round((1 - sim.dashCd / 1.1) * 100)),
+        nitroPct: activeCar ? Math.round(activeCar.nitro) : 100,
+        vehicleBoostActive: Boolean(activeCar?.boosting),
+        pitCount: sim.pitCount,
         inVehicle: Boolean(activeCar),
         vehicleName: activeCar ? HEIST_VEHICLE_SPECS[activeCar.kind].name : '',
         vehicleHp: activeCar ? Math.max(0, Math.round(activeCar.hp)) : 0,
@@ -855,6 +1183,7 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
         calloutText: sim.calloutText,
         calloutTone: sim.calloutTone,
         calloutNonce: sim.calloutNonce,
+        damageFlashNonce: sim.damageFlashNonce,
         playerX: sim.playerX,
         playerZ: sim.playerZ,
         playerYaw: sim.playerYaw,
@@ -927,6 +1256,8 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
       sim.survivalSec = 0;
       sim.heistsCompleted = 0;
       sim.copsDown = 0;
+      sim.pitCount = 0;
+      sim.damageFlashNonce = 0;
       sim.heat = 0;
       sim.wantedStars = 0;
       sim.maxWantedStars = 0;
@@ -941,6 +1272,9 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
       sim.camX = 0;
       sim.camY = 6.5;
       sim.camZ = 11;
+      chopperRig.group.visible = false;
+      chopperRig.groundSpot.visible = false;
+      sirenLight.intensity = 0;
 
       playerRig.group.visible = true;
       playerRig.group.position.set(0, 0, 0);
@@ -965,6 +1299,10 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
     let rightMouseDown = false;
     let lastClientX: number | null = null;
     let lastClientY: number | null = null;
+    let touchLookPointerId: number | null = null;
+    let touchLookLastX = 0;
+    let touchLookLastY = 0;
+    let touchLookCooldown = 0;
     const pointerNdc = new THREE.Vector2(0, 0);
     const raycaster = new THREE.Raycaster();
     const aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -1.0);
@@ -1036,7 +1374,25 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
     };
 
     const onPointerMove = (e: PointerEvent) => {
-      if (e.pointerType === 'touch') return;
+      if (e.pointerType === 'touch') {
+        if (touchLookPointerId === e.pointerId && phaseRef.current === 'playing') {
+          const dx = e.clientX - touchLookLastX;
+          const dy = e.clientY - touchLookLastY;
+          touchLookLastX = e.clientX;
+          touchLookLastY = e.clientY;
+          touchLookCooldown = 1.4;
+          const sens = camModeRef.current === 'first-person' ? 0.0068 : 0.0062;
+          if (camModeRef.current === 'first-person') {
+            sim.fpYaw -= dx * sens;
+            sim.fpPitch = Math.max(-0.95, Math.min(0.85, sim.fpPitch - dy * sens));
+          } else if (camModeRef.current === 'chase') {
+            sim.camYaw -= dx * sens;
+            sim.camPitch = Math.max(-0.65, Math.min(0.05, sim.camPitch - dy * sens));
+          }
+        }
+        return;
+      }
+
       const locked = document.pointerLockElement === renderer.domElement;
 
       if (locked) {
@@ -1075,7 +1431,20 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (e.pointerType === 'touch') return;
+      if (e.pointerType === 'touch') {
+        if (touchLookPointerId === null && phaseRef.current === 'playing') {
+          touchLookPointerId = e.pointerId;
+          touchLookLastX = e.clientX;
+          touchLookLastY = e.clientY;
+          try {
+            renderer.domElement.setPointerCapture(e.pointerId);
+          } catch {
+            // ignore capture error
+          }
+        }
+        return;
+      }
+
       lastClientX = e.clientX;
       lastClientY = e.clientY;
       updatePointerFromEvent(e.clientX, e.clientY);
@@ -1091,7 +1460,12 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
     };
 
     const onPointerUp = (e: PointerEvent) => {
-      if (e.pointerType === 'touch') return;
+      if (e.pointerType === 'touch') {
+        if (touchLookPointerId === e.pointerId) {
+          touchLookPointerId = null;
+        }
+        return;
+      }
       if (e.button === 0) leftMouseDown = false;
       if (e.button === 2) rightMouseDown = false;
     };
@@ -1106,6 +1480,7 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
       rightMouseDown = false;
       lastClientX = null;
       lastClientY = null;
+      touchLookPointerId = null;
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -1115,6 +1490,7 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
     renderer.domElement.addEventListener('contextmenu', onContextMenu);
     window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
 
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
@@ -1124,6 +1500,13 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
+      composer?.setSize(w, h);
+      if (bloomPass) {
+        bloomPass.resolution.set(
+          Math.max(160, Math.floor(w * 0.5)),
+          Math.max(120, Math.floor(h * 0.5))
+        );
+      }
     });
     ro.observe(container);
 
@@ -1146,6 +1529,7 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
         rem -= absorbed;
       }
       sim.hp = Math.max(0, sim.hp - rem);
+      sim.damageFlashNonce += 1;
       sim.shake = Math.min(0.9, sim.shake + 0.25);
       heistAudio.playHit(soundRef.current, false);
 
@@ -1159,6 +1543,7 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
           heistsCompleted: sim.heistsCompleted,
           copsDown: sim.copsDown,
           maxWantedStars: sim.maxWantedStars,
+          pitCount: sim.pitCount,
         });
       }
     };
@@ -1277,7 +1662,8 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
         camera.updateProjectionMatrix();
         camera.position.set(Math.sin(ang) * 28, 20, Math.cos(ang) * 28);
         camera.lookAt(0, 1.5, 0);
-        renderer.render(scene, camera);
+        if (composer) composer.render();
+        else renderer.render(scene, camera);
         afterDraw(tick);
         return;
       }
@@ -1289,13 +1675,17 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
         }
 
         const inp = inputRef.current;
-        // Touch look deltas
+        if (touchLookCooldown > 0) touchLookCooldown = Math.max(0, touchLookCooldown - dt);
+
+        // Touch look deltas (e.g. dragging from touch look/fire button)
         if (Math.abs(inp.lookDeltaX) > 0 || Math.abs(inp.lookDeltaY) > 0) {
+          touchLookCooldown = 1.4;
           if (mode === 'first-person') {
-            sim.fpYaw -= inp.lookDeltaX * 0.0045;
-            sim.fpPitch = Math.max(-0.95, Math.min(0.85, sim.fpPitch - inp.lookDeltaY * 0.0045));
+            sim.fpYaw -= inp.lookDeltaX * 0.0065;
+            sim.fpPitch = Math.max(-0.95, Math.min(0.85, sim.fpPitch - inp.lookDeltaY * 0.0055));
           } else if (mode === 'chase') {
-            sim.camYaw -= inp.lookDeltaX * 0.0045;
+            sim.camYaw -= inp.lookDeltaX * 0.0062;
+            sim.camPitch = Math.max(-0.65, Math.min(0.05, sim.camPitch - inp.lookDeltaY * 0.005));
           }
           inp.lookDeltaX = 0;
           inp.lookDeltaY = 0;
@@ -1402,6 +1792,11 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
           }
         }
         sim.fpRecoil = THREE.MathUtils.damp(sim.fpRecoil, 0, 16, dt);
+        if (flashLight.intensity > 0.02) {
+          flashLight.intensity = THREE.MathUtils.damp(flashLight.intensity, 0, 18, dt);
+        } else {
+          flashLight.intensity = 0;
+        }
 
         for (const wid of HEIST_WEAPON_ORDER) {
           const w = sim.weapons[wid];
@@ -1424,10 +1819,14 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
 
         if (drivingCar) {
           const spec = HEIST_VEHICLE_SPECS[drivingCar.kind];
+          const touchThrottle =
+            Math.abs(inp.moveY) > 0.12
+              ? -Math.sign(inp.moveY) * Math.min(1, Math.abs(inp.moveY) * 1.45)
+              : 0;
           const rawThrottle =
             (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
-            (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) -
-            (Math.abs(inp.moveY) > 0.12 ? inp.moveY : 0);
+            (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) +
+            touchThrottle;
           const throttle = Math.max(-1, Math.min(1, rawThrottle));
 
           const rawSteer =
@@ -1436,46 +1835,74 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
             (Math.abs(inp.moveX) > 0.12 ? inp.moveX : 0);
           const targetSteer = Math.max(-1, Math.min(1, rawSteer));
 
-          // Smooth steering angle with speed sensitivity
+          // Nitro Turbo (Shift on keyboard or mobile NITRO button)
+          if (sim.nitroBoostSfxCd > 0) sim.nitroBoostSfxCd -= dt;
+          const wantBoost = sprintPressed && throttle > 0.15 && drivingCar.nitro > 4;
+          if (wantBoost) {
+            if (!drivingCar.boosting && sim.nitroBoostSfxCd <= 0) {
+              sim.nitroBoostSfxCd = 0.55;
+              heistAudio.playNitro(soundRef.current);
+            }
+            drivingCar.boosting = true;
+            drivingCar.nitro = Math.max(0, drivingCar.nitro - 32 * dt);
+          } else {
+            drivingCar.boosting = false;
+            drivingCar.nitro = Math.min(100, drivingCar.nitro + 10 * dt);
+          }
+
+          // Smooth steering angle with responsive counter-steer
           drivingCar.steerAngle = THREE.MathUtils.damp(
             drivingCar.steerAngle,
             targetSteer,
-            11,
+            13,
             dt
           );
+
+          if (drivingCar.spinOutTimer > 0) {
+            drivingCar.spinOutTimer = Math.max(0, drivingCar.spinOutTimer - dt);
+          }
 
           const fwdX = Math.sin(drivingCar.yaw);
           const fwdZ = Math.cos(drivingCar.yaw);
           const rightX = Math.cos(drivingCar.yaw);
           const rightZ = -Math.sin(drivingCar.yaw);
 
-          // Decompose velocity into forward & lateral components for real drift physics
+          // Decompose velocity into forward & lateral components
           let vFwd = drivingCar.vx * fwdX + drivingCar.vz * fwdZ;
           let vLat = drivingCar.vx * rightX + drivingCar.vz * rightZ;
 
+          const boostAccelMul = drivingCar.boosting ? 1.45 : 1.0;
+          const boostMaxSpeed = spec.maxSpeed * (drivingCar.boosting ? 1.24 : 1.0);
+
           if (throttle > 0.05) {
-            vFwd += spec.accel * throttle * dt;
+            vFwd += spec.accel * boostAccelMul * throttle * dt;
           } else if (throttle < -0.05) {
-            // Braking feels strong when moving forward, smooth in reverse
-            const brakeMult = vFwd > 1.5 ? 1.55 : 0.72;
+            const brakeMult = vFwd > 1.5 ? 1.65 : 0.78;
             vFwd += spec.accel * brakeMult * throttle * dt;
           } else {
-            // Rolling drag
-            vFwd *= Math.exp(-1.55 * dt);
+            vFwd *= Math.exp(-1.45 * dt);
           }
 
           if (spacePressed) {
-            vFwd *= Math.exp(-2.2 * dt);
+            vFwd *= Math.exp(-1.85 * dt);
           }
 
-          vFwd = Math.max(-spec.maxSpeed * 0.48, Math.min(spec.maxSpeed, vFwd));
+          vFwd = Math.max(-spec.maxSpeed * 0.5, Math.min(boostMaxSpeed, vFwd));
 
-          // Lateral tire grip drops sharply when handbraking -> smooth rear-end drift!
-          const lateralGrip = spacePressed ? 2.4 : 10.2;
+          // Counter-steering helps recover cleanly from drifts & cop PIT taps
+          const counterSteerBonus =
+            Math.abs(vLat) > 1.5 && Math.sign(drivingCar.steerAngle) === Math.sign(vLat) ? 2.8 : 0;
+          const lateralGrip =
+            drivingCar.spinOutTimer > 0
+              ? 2.2
+              : spacePressed
+              ? 2.6 + counterSteerBonus * 0.5
+              : 11.2 + counterSteerBonus;
           vLat *= Math.exp(-lateralGrip * dt);
 
           const absFwd = Math.abs(vFwd);
-          const steerAuthority = Math.min(1, absFwd / 5.5) * (0.45 + 0.55 * (1 - absFwd / (spec.maxSpeed * 1.4)));
+          const steerAuthority =
+            Math.min(1, absFwd / 4.2) * (0.52 + 0.48 * (1 - absFwd / (boostMaxSpeed * 1.45)));
           const reverseSign = vFwd >= -0.25 ? 1 : -1;
           const driftTurnMult = spacePressed ? 1.38 : 1.0;
 
@@ -1485,7 +1912,9 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
             steerAuthority *
             reverseSign *
             driftTurnMult;
-          drivingCar.yaw += yawRate * dt;
+
+          drivingCar.angVel *= Math.exp(-4.2 * dt);
+          drivingCar.yaw += (yawRate + drivingCar.angVel) * dt;
 
           // Reconstruct world velocity after yaw rotation
           const nFwdX = Math.sin(drivingCar.yaw);
@@ -1498,16 +1927,16 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
           drivingCar.speed = vFwd;
 
           const lateralSlip = Math.abs(vLat);
-          sim.isDrifting = lateralSlip > 3.6 && absFwd > 7.5;
+          sim.isDrifting = (lateralSlip > 3.2 && absFwd > 7.0) || drivingCar.spinOutTimer > 0;
 
           // Tire smoke / drift sparks
           if (sim.isDrifting) {
             sim.smokeCd -= dt;
             if (sim.smokeCd <= 0) {
-              sim.smokeCd = 0.045;
+              sim.smokeCd = 0.04;
               const rearX = drivingCar.x - nFwdX * 1.35;
               const rearZ = drivingCar.z - nFwdZ * 1.35;
-              spawnParticles(rearX, 0.2, rearZ, 2, 0xcbd5e1, 3.2, 0.36);
+              spawnParticles(rearX, 0.2, rearZ, 2, 0xcbd5e1, 3.4, 0.38);
             }
           }
 
@@ -1522,12 +1951,11 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
             const impactDot =
               drivingCar.vx * col.hitNormalX + drivingCar.vz * col.hitNormalZ;
             if (impactDot < 0) {
-              // Remove velocity component into wall so car slides cleanly along walls
               drivingCar.vx -= col.hitNormalX * impactDot * 1.15;
               drivingCar.vz -= col.hitNormalZ * impactDot * 1.15;
               const slamSpeed = Math.abs(impactDot);
               if (slamSpeed > 9.5) {
-                drivingCar.hp -= (slamSpeed - 7) * 0.9;
+                drivingCar.hp -= (slamSpeed - 7) * 0.85;
                 sim.shake = Math.min(0.75, sim.shake + slamSpeed * 0.018);
                 heistAudio.playHit(soundRef.current, true);
                 spawnParticles(drivingCar.x, 0.8, drivingCar.z, 7, 0xfacc15, 7, 0.25);
@@ -1535,12 +1963,51 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
             }
           }
 
-          // Visual wheel spin, front steering, and chassis suspension tilt!
+          // Physical bumper bump against parked getaway cars
+          for (const other of sim.cars) {
+            if (other.id === drivingCar.id || other.destroyed) continue;
+            const otherSpec = HEIST_VEHICLE_SPECS[other.kind];
+            const ox = drivingCar.x - other.x;
+            const oz = drivingCar.z - other.z;
+            const od = Math.hypot(ox, oz);
+            const minD = spec.radius + otherSpec.radius;
+            if (od > 0.01 && od < minD) {
+              const nx = ox / od;
+              const nz = oz / od;
+              const overlap = minD - od;
+              drivingCar.x += nx * overlap * 0.5;
+              drivingCar.z += nz * overlap * 0.5;
+              other.x -= nx * overlap * 0.5;
+              other.z -= nz * overlap * 0.5;
+              other.vx -= nx * Math.max(4, absFwd * 0.45);
+              other.vz -= nz * Math.max(4, absFwd * 0.45);
+              drivingCar.vx *= 0.78;
+              drivingCar.vz *= 0.78;
+              other.rig.group.position.set(other.x, 0, other.z);
+              spawnParticles((drivingCar.x + other.x) * 0.5, 0.75, (drivingCar.z + other.z) * 0.5, 6, 0xfacc15, 6, 0.22);
+            }
+          }
+
+          // Visual wheel spin, front steering, brake lights, nitro flames & suspension tilt
           drivingCar.wheelRoll += (vFwd / 0.38) * dt;
-          const targetPitch = -throttle * 0.055 + (spacePressed && vFwd > 4 ? 0.06 : 0);
+          const targetPitch = -throttle * (drivingCar.boosting ? 0.085 : 0.055) + (spacePressed && vFwd > 4 ? 0.065 : 0);
           const targetRoll = -drivingCar.steerAngle * Math.min(1, absFwd / 16) * 0.095;
           drivingCar.bodyPitch = THREE.MathUtils.damp(drivingCar.bodyPitch, targetPitch, 9, dt);
           drivingCar.bodyRoll = THREE.MathUtils.damp(drivingCar.bodyRoll, targetRoll, 9, dt);
+
+          const braking = throttle < -0.05 || spacePressed;
+          if (braking) {
+            drivingCar.rig.brakeMat.color.setRGB(3.2, 0.22, 0.16);
+          } else {
+            drivingCar.rig.brakeMat.color.setRGB(1.25, 0.14, 0.1);
+          }
+          for (const flame of drivingCar.rig.nitroFlames) {
+            flame.visible = drivingCar.boosting;
+            if (drivingCar.boosting) {
+              const flicker = 0.8 + Math.random() * 0.55;
+              flame.scale.set(1, 1, flicker);
+            }
+          }
 
           drivingCar.rig.group.position.set(drivingCar.x, 0, drivingCar.z);
           drivingCar.rig.group.rotation.y = drivingCar.yaw;
@@ -1566,6 +2033,9 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
             disposeObjectTree(drivingCar.rig.group);
             spawnParticles(drivingCar.x, 1.0, drivingCar.z, 28, 0xf97316, 14, 0.55);
             spawnParticles(drivingCar.x, 1.2, drivingCar.z, 18, 0xfacc15, 11, 0.4);
+            flashLight.color.setHex(0xf97316);
+            flashLight.position.set(drivingCar.x, 2.2, drivingCar.z);
+            flashLight.intensity = 18;
             sim.inVehicleId = null;
             damagePlayer(24);
             setCallout('Getaway Car Wrecked! Bail Out!', 'danger');
@@ -1581,8 +2051,6 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
             const refYaw = mode === 'first-person' ? sim.fpYaw : sim.camYaw;
             const fwdX = Math.sin(refYaw);
             const fwdZ = Math.cos(refYaw);
-            // Forward is W (inputY = -1), right is D (inputX = +1)
-            // Note: in Three.js with +Y up, forward (sin(yaw), cos(yaw)) -> right is (-cos(yaw), sin(yaw))
             const rgtX = -Math.cos(refYaw);
             const rgtZ = Math.sin(refYaw);
             const fwdInput = -inputY;
@@ -1656,15 +2124,35 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
           const walkSpeed = Math.hypot(sim.walkVx, sim.walkVz);
           if (walkSpeed > 0.6 && sim.grounded) {
             sim.walkPhase += dt * (walkSpeed * 1.25);
-            const swing = Math.sin(sim.walkPhase) * 0.48;
+            const swing = Math.sin(sim.walkPhase) * 0.5;
             playerRig.leftLeg.rotation.x = swing;
             playerRig.rightLeg.rotation.x = -swing;
+            playerRig.leftArm.rotation.x = -swing * 0.7;
           } else {
             playerRig.leftLeg.rotation.x = THREE.MathUtils.lerp(playerRig.leftLeg.rotation.x, 0, 0.25);
             playerRig.rightLeg.rotation.x = THREE.MathUtils.lerp(playerRig.rightLeg.rotation.x, 0, 0.25);
+            playerRig.leftArm.rotation.x = THREE.MathUtils.lerp(playerRig.leftArm.rotation.x, 0, 0.25);
           }
 
           playerRig.group.position.set(sim.playerX, sim.playerY, sim.playerZ);
+        }
+
+        // Settle unattended parked getaway cars gently
+        for (const c of sim.cars) {
+          if (c.id === sim.inVehicleId || c.destroyed) continue;
+          if (Math.abs(c.vx) > 0.05 || Math.abs(c.vz) > 0.05) {
+            c.vx *= Math.exp(-3.5 * dt);
+            c.vz *= Math.exp(-3.5 * dt);
+            const col = resolveCircleCityCollision(
+              c.x + c.vx * dt,
+              c.z + c.vz * dt,
+              HEIST_VEHICLE_SPECS[c.kind].radius,
+              buildings
+            );
+            c.x = col.x;
+            c.z = col.z;
+            c.rig.group.position.set(c.x, 0, c.z);
+          }
         }
 
         // --- Camera Placement & Aim Direction ---
@@ -1675,7 +2163,13 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
 
         if (isFirstPerson) {
           // Smoothly align fpYaw behind car steering subtly when driving unless actively looking
-          if (drivingCar && document.pointerLockElement !== renderer.domElement && !rightMouseDown) {
+          if (
+            drivingCar &&
+            document.pointerLockElement !== renderer.domElement &&
+            !rightMouseDown &&
+            touchLookPointerId === null &&
+            touchLookCooldown <= 0
+          ) {
             sim.fpYaw += normalizeAngle(drivingCar.yaw - sim.fpYaw) * Math.min(1, dt * 3.5);
           }
 
@@ -1728,7 +2222,12 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
           // 3rd-Person GTA Chase Camera
           if (drivingCar) {
             // Swing smoothly behind the car!
-            if (!rightMouseDown && document.pointerLockElement !== renderer.domElement) {
+            if (
+              !rightMouseDown &&
+              document.pointerLockElement !== renderer.domElement &&
+              touchLookPointerId === null &&
+              touchLookCooldown <= 0
+            ) {
               sim.camYaw += normalizeAngle(drivingCar.yaw - sim.camYaw) * Math.min(1, dt * 4.2);
             }
           }
@@ -1860,6 +2359,9 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
                 const startX = camera.position.x + camDirVec.x * 0.8 + camRightVec.x * 0.14;
                 const startY = camera.position.y + camDirVec.y * 0.8 - 0.08;
                 const startZ = camera.position.z + camDirVec.z * 0.8 + camRightVec.z * 0.14;
+                flashLight.color.setHex(spec.tracerColor);
+                flashLight.position.set(startX, startY + 0.15, startZ);
+                flashLight.intensity = 6.5;
 
                 for (let p = 0; p < spec.pellets; p++) {
                   const sYaw = (Math.random() - 0.5) * spec.spreadRad;
@@ -1887,6 +2389,9 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
                 const muzzleX = sim.playerX + Math.sin(sim.playerYaw) * 1.15;
                 const muzzleZ = sim.playerZ + Math.cos(sim.playerYaw) * 1.15;
                 const muzzleY = 1.08 + sim.playerY;
+                flashLight.color.setHex(spec.tracerColor);
+                flashLight.position.set(muzzleX, muzzleY + 0.4, muzzleZ);
+                flashLight.intensity = 6.5;
                 for (let p = 0; p < spec.pellets; p++) {
                   const spread = (Math.random() - 0.5) * spec.spreadRad;
                   const ang = sim.playerYaw + spread;
@@ -1928,6 +2433,9 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
             heistAudio.playHeistComplete(soundRef.current);
             spawnParticles(site.x, 1.5, site.z, 26, 0x10b981, 11, 0.36);
             spawnParticles(site.x, 1.8, site.z, 18, 0xfacc15, 9, 0.3);
+            flashLight.color.setHex(0x34d399);
+            flashLight.position.set(site.x, 2.5, site.z);
+            flashLight.intensity = 14;
 
             let unlockMsg = '';
             if (sim.heistsCompleted <= 3) {
@@ -2148,73 +2656,185 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
           }
         }
 
-        // --- Police Vehicles AI ---
+        // --- Police Vehicles AI & PIT Maneuver Physics ---
         const flashOnRed = Math.floor(now / 150) % 2 === 0;
+        let nearestCopDist = Infinity;
+        let nearestCopX = 0;
+        let nearestCopZ = 0;
+
         for (let i = sim.copsVeh.length - 1; i >= 0; i--) {
           const cv = sim.copsVeh[i];
-          (cv.redBeacon.material as THREE.MeshBasicMaterial).color.setHex(
-            flashOnRed ? 0xff2a2a : 0x450a0a
-          );
-          (cv.blueBeacon.material as THREE.MeshBasicMaterial).color.setHex(
-            flashOnRed ? 0x172554 : 0x38bdf8
-          );
+          const redMat = cv.redBeacon.material as THREE.MeshBasicMaterial;
+          const blueMat = cv.blueBeacon.material as THREE.MeshBasicMaterial;
+          if (flashOnRed) {
+            redMat.color.setRGB(3.0, 0.25, 0.25);
+            blueMat.color.setRGB(0.05, 0.1, 0.28);
+          } else {
+            redMat.color.setRGB(0.25, 0.04, 0.04);
+            blueMat.color.setRGB(0.25, 1.35, 3.2);
+          }
 
           const dx = sim.playerX - cv.x;
           const dz = sim.playerZ - cv.z;
           const dist = Math.hypot(dx, dz);
+          if (dist < nearestCopDist) {
+            nearestCopDist = dist;
+            nearestCopX = cv.x;
+            nearestCopZ = cv.z;
+          }
 
-          const targetYaw = Math.atan2(dx, dz);
-          const yawDiff = normalizeAngle(targetYaw - cv.yaw);
-          const turnSpeed = cv.kind === 'interceptor' ? 2.6 : 2.1;
-          cv.yaw += Math.max(-turnSpeed * dt, Math.min(turnSpeed * dt, yawDiff));
+          if (cv.spinOutTimer > 0) {
+            cv.spinOutTimer = Math.max(0, cv.spinOutTimer - dt);
+            cv.yaw += cv.angVel * dt;
+            cv.angVel *= Math.exp(-1.9 * dt);
+            cv.vx *= Math.exp(-2.1 * dt);
+            cv.vz *= Math.exp(-2.1 * dt);
+            cv.speed = Math.hypot(cv.vx, cv.vz);
+            // Continuous tire smoke during spinout
+            if (Math.random() < 0.55) {
+              spawnParticles(cv.x, 0.22, cv.z, 1, 0x94a3b8, 2.5, 0.34);
+            }
+          } else {
+            // Interceptors & Cruisers attempt flanking PIT approaches at close range when player is driving
+            let aimX = sim.playerX;
+            let aimZ = sim.playerZ;
+            if (drivingCar && dist > 5.5 && dist < 17 && cv.kind !== 'swat') {
+              const pFwdX = Math.sin(drivingCar.yaw);
+              const pFwdZ = Math.cos(drivingCar.yaw);
+              const pRightX = Math.cos(drivingCar.yaw);
+              const pRightZ = -Math.sin(drivingCar.yaw);
+              const sideSign = cv.id % 2 === 0 ? 1 : -1;
+              aimX = drivingCar.x - pFwdX * 1.45 + pRightX * sideSign * 1.35;
+              aimZ = drivingCar.z - pFwdZ * 1.45 + pRightZ * sideSign * 1.35;
+            }
 
-          const maxSpd =
-            cv.kind === 'interceptor'
-              ? 24 + sim.wantedStars * 1.1
-              : cv.kind === 'swat'
-              ? 18
-              : 21 + sim.wantedStars * 0.7;
+            const targetYaw = Math.atan2(aimX - cv.x, aimZ - cv.z);
+            const yawDiff = normalizeAngle(targetYaw - cv.yaw);
+            const turnSpeed = cv.kind === 'interceptor' ? 2.75 : cv.kind === 'swat' ? 1.85 : 2.25;
+            cv.yaw += Math.max(-turnSpeed * dt, Math.min(turnSpeed * dt, yawDiff));
 
-          const desiredSpd = dist > 7 ? maxSpd : 8;
-          cv.speed = THREE.MathUtils.lerp(cv.speed, desiredSpd, 1 - Math.exp(-3.2 * dt));
+            const maxSpd =
+              cv.kind === 'interceptor'
+                ? 24.5 + sim.wantedStars * 1.15
+                : cv.kind === 'swat'
+                ? 18.5
+                : 21.5 + sim.wantedStars * 0.75;
 
-          const stepX = cv.x + Math.sin(cv.yaw) * cv.speed * dt;
-          const stepZ = cv.z + Math.cos(cv.yaw) * cv.speed * dt;
+            const desiredSpd = dist > 6 ? maxSpd : 11;
+            const cFwdX = Math.sin(cv.yaw);
+            const cFwdZ = Math.cos(cv.yaw);
+            const cRightX = Math.cos(cv.yaw);
+            const cRightZ = -Math.sin(cv.yaw);
+
+            let vFwd = cv.vx * cFwdX + cv.vz * cFwdZ;
+            let vLat = cv.vx * cRightX + cv.vz * cRightZ;
+            vFwd = THREE.MathUtils.lerp(vFwd, desiredSpd, 1 - Math.exp(-3.4 * dt));
+            vLat *= Math.exp(-8.5 * dt);
+            cv.vx = cFwdX * vFwd + cRightX * vLat;
+            cv.vz = cFwdZ * vFwd + cRightZ * vLat;
+            cv.speed = vFwd;
+          }
+
+          const stepX = cv.x + cv.vx * dt;
+          const stepZ = cv.z + cv.vz * dt;
           const col = resolveCircleCityCollision(stepX, stepZ, 2.05, buildings);
           if (col.hit) {
+            const impactDot = cv.vx * col.hitNormalX + cv.vz * col.hitNormalZ;
+            if (impactDot < 0) {
+              cv.vx -= col.hitNormalX * impactDot * 1.2;
+              cv.vz -= col.hitNormalZ * impactDot * 1.2;
+              const wallSlam = Math.abs(impactDot);
+              if (cv.spinOutTimer > 0 && wallSlam > 6.5) {
+                cv.hp -= 48 + wallSlam * 3.2;
+                spawnParticles(cv.x, 0.9, cv.z, 14, 0xfacc15, 9, 0.3);
+                heistAudio.playPitImpact(soundRef.current);
+              }
+            }
             const awayYaw = Math.atan2(col.hitNormalX, col.hitNormalZ);
-            cv.yaw += normalizeAngle(awayYaw - cv.yaw) * 0.35;
-            cv.speed *= 0.65;
+            cv.yaw += normalizeAngle(awayYaw - cv.yaw) * 0.28;
           }
           cv.x = col.x;
           cv.z = col.z;
+          cv.wheelRoll += (cv.speed / 0.38) * dt;
           cv.mesh.position.set(cv.x, 0, cv.z);
           cv.mesh.rotation.y = cv.yaw;
+          for (const wSpin of cv.rig.wheelSpinGroups) {
+            wSpin.rotation.x = cv.wheelRoll;
+          }
 
           if (cv.ramCd > 0) cv.ramCd -= dt;
 
-          const hitRadius = drivingCar ? 3.5 : 2.3;
+          const hitRadius = drivingCar ? 3.55 : 2.3;
           if (dist < hitRadius && cv.ramCd <= 0) {
-            cv.ramCd = 0.85;
+            cv.ramCd = 0.62;
             if (drivingCar) {
-              const relSpeed = Math.abs(drivingCar.speed) + cv.speed * 0.5;
-              drivingCar.hp -= 18;
-              cv.hp -= Math.max(20, relSpeed * 1.4);
+              const pSpec = HEIST_VEHICLE_SPECS[drivingCar.kind];
+              const boostFactor = drivingCar.boosting ? 1.45 : 1.0;
+              const relVx = drivingCar.vx - cv.vx;
+              const relVz = drivingCar.vz - cv.vz;
+              const relSpeed = Math.hypot(relVx, relVz);
+
               const pushX = (drivingCar.x - cv.x) / Math.max(0.5, dist);
               const pushZ = (drivingCar.z - cv.z) / Math.max(0.5, dist);
-              drivingCar.vx += pushX * 9;
-              drivingCar.vz += pushZ * 9;
-              sim.shake = Math.min(0.8, sim.shake + 0.28);
-              heistAudio.playHit(soundRef.current, true);
-              spawnParticles(
-                (cv.x + drivingCar.x) / 2,
-                0.9,
-                (cv.z + drivingCar.z) / 2,
-                12,
-                0xfbbf24,
-                9,
-                0.3
-              );
+
+              // Check PIT maneuver geometry: impact relative to cop car's rear/side quarter
+              const copFwdX = Math.sin(cv.yaw);
+              const copFwdZ = Math.cos(cv.yaw);
+              const copRightX = Math.cos(cv.yaw);
+              const copRightZ = -Math.sin(cv.yaw);
+              const toPlayerX = (drivingCar.x - cv.x) / Math.max(0.4, dist);
+              const toPlayerZ = (drivingCar.z - cv.z) / Math.max(0.4, dist);
+              const copFwdDot = toPlayerX * copFwdX + toPlayerZ * copFwdZ;
+              const copSideDot = toPlayerX * copRightX + toPlayerZ * copRightZ;
+
+              const isPlayerPit =
+                Math.abs(drivingCar.speed) > 10.5 &&
+                ((copFwdDot < 0.42 && Math.abs(copSideDot) > 0.3) ||
+                  (drivingCar.boosting && relSpeed > 13));
+
+              if (isPlayerPit) {
+                const spinDir = copSideDot >= 0 ? 1 : -1;
+                cv.spinOutTimer = 1.75;
+                cv.angVel = spinDir * (6.8 + Math.min(4, Math.abs(drivingCar.speed) * 0.14));
+                cv.vx += -pushX * 11 * boostFactor + copRightX * (-spinDir * 8.5);
+                cv.vz += -pushZ * 11 * boostFactor + copRightZ * (-spinDir * 8.5);
+                cv.hp -= pSpec.ramDamage * 0.72 * boostFactor;
+                drivingCar.hp -= 7;
+                if (!cv.pitRewarded) {
+                  cv.pitRewarded = true;
+                  sim.pitCount += 1;
+                  sim.cash += 250;
+                  addHeat(18);
+                  setCallout('PIT MANEUVER! +$250', 'loot');
+                }
+                heistAudio.playPitImpact(soundRef.current);
+                spawnParticles((cv.x + drivingCar.x) * 0.5, 0.85, (cv.z + drivingCar.z) * 0.5, 16, 0xfbbf24, 11, 0.34);
+                spawnParticles(cv.x, 0.25, cv.z, 8, 0xcbd5e1, 4.5, 0.38);
+              } else {
+                // Check if police cruiser caught player's rear quarter for an enemy PIT tap
+                const pFwdX = Math.sin(drivingCar.yaw);
+                const pFwdZ = Math.cos(drivingCar.yaw);
+                const pRightX = Math.cos(drivingCar.yaw);
+                const pRightZ = -Math.sin(drivingCar.yaw);
+                const toCopX = -toPlayerX;
+                const toCopZ = -toPlayerZ;
+                const pFwdDot = toCopX * pFwdX + toCopZ * pFwdZ;
+                const pSideDot = toCopX * pRightX + toCopZ * pRightZ;
+                if (pFwdDot < -0.15 && Math.abs(pSideDot) > 0.35 && cv.speed > 13 && cv.spinOutTimer <= 0) {
+                  drivingCar.angVel += (pSideDot >= 0 ? -1 : 1) * 2.55;
+                  drivingCar.spinOutTimer = 0.55;
+                }
+
+                drivingCar.hp -= cv.kind === 'swat' ? 20 : 14;
+                cv.hp -= Math.max(24, relSpeed * 1.45 * boostFactor);
+                cv.vx -= pushX * 7.5 * boostFactor;
+                cv.vz -= pushZ * 7.5 * boostFactor;
+                drivingCar.vx += pushX * 8.5;
+                drivingCar.vz += pushZ * 8.5;
+                heistAudio.playHit(soundRef.current, true);
+                spawnParticles((cv.x + drivingCar.x) / 2, 0.9, (cv.z + drivingCar.z) / 2, 12, 0xfbbf24, 9, 0.3);
+              }
+              sim.shake = Math.min(0.85, sim.shake + 0.28);
             } else {
               damagePlayer(cv.kind === 'swat' ? 22 : 15);
               const pushX = (sim.playerX - cv.x) / Math.max(0.5, dist);
@@ -2231,10 +2851,10 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
           }
 
           cv.fireCd -= dt;
-          if (cv.fireCd <= 0 && dist < 29 && dist > 6) {
+          if (cv.fireCd <= 0 && dist < 29 && dist > 6 && cv.spinOutTimer <= 0) {
             cv.fireCd = cv.kind === 'swat' ? 0.65 : 1.05;
             if (!segmentIntersectsAabb(cv.x, cv.z, sim.playerX, sim.playerZ, buildings)) {
-              const shotAng = targetYaw + (Math.random() - 0.5) * 0.16;
+              const shotAng = Math.atan2(dx, dz) + (Math.random() - 0.5) * 0.16;
               spawnBullet(
                 false,
                 cv.x + Math.sin(shotAng) * 2.1,
@@ -2253,11 +2873,18 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
 
           if (cv.hp <= 0) {
             sim.copsDown += 2;
-            sim.cash += 400;
+            const pitBonus = cv.spinOutTimer > 0 ? 350 : 0;
+            sim.cash += 400 + pitBonus;
             addHeat(45);
+            if (pitBonus > 0) {
+              setCallout(`PIT TAKEDOWN! +$${400 + pitBonus}`, 'loot');
+            }
             heistAudio.playHit(soundRef.current, true);
             spawnParticles(cv.x, 1.1, cv.z, 32, 0xf97316, 15, 0.52);
             spawnParticles(cv.x, 1.3, cv.z, 20, 0xfacc15, 11, 0.38);
+            flashLight.color.setHex(0xf97316);
+            flashLight.position.set(cv.x, 2.2, cv.z);
+            flashLight.intensity = 18;
             if (cv.kind === 'swat') {
               spawnPickup('weapon', cv.x, cv.z, 'rifle');
             } else {
@@ -2268,6 +2895,52 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
             sim.copsVeh.splice(i, 1);
           }
         }
+
+        // Dynamic Red/Blue Siren Point Light on closest pursuing police cruiser
+        if (sim.copsVeh.length > 0 && nearestCopDist < 42) {
+          sirenLight.position.set(nearestCopX, 2.8, nearestCopZ);
+          sirenLight.color.setHex(flashOnRed ? 0xef4444 : 0x3b82f6);
+          sirenLight.intensity = 7.5;
+        } else {
+          sirenLight.intensity = 0;
+        }
+
+        // 4-Star & 5-Star Police Chopper Searchlight Sweep
+        if (sim.wantedStars >= 4) {
+          chopperRig.group.visible = true;
+          chopperRig.groundSpot.visible = true;
+          const orbitAng = now * 0.00055;
+          const chX = sim.playerX + Math.cos(orbitAng) * 18;
+          const chZ = sim.playerZ + Math.sin(orbitAng) * 18;
+          chopperRig.group.position.set(chX, 25, chZ);
+          chopperRig.group.rotation.y = Math.atan2(sim.playerX - chX, sim.playerZ - chZ);
+          chopperRig.mainRotor.rotation.y += dt * 26;
+          chopperRig.tailRotor.rotation.x += dt * 32;
+          const spotX = sim.playerX + Math.sin(now * 0.0018) * 5.2;
+          const spotZ = sim.playerZ + Math.cos(now * 0.0015) * 5.2;
+          chopperRig.groundSpot.position.set(spotX, 0.07, spotZ);
+          chopperRig.searchBeam.lookAt(spotX, 0, spotZ);
+        } else {
+          chopperRig.group.visible = false;
+          chopperRig.groundSpot.visible = false;
+        }
+
+        // Subtle Night Rain Streaks around Camera
+        for (let r = 0; r < RAIN_COUNT; r++) {
+          const drop = rainDrops[r];
+          drop.oy -= drop.speed * dt;
+          if (drop.oy < 0.2) drop.oy += 18;
+          dummy.position.set(
+            camera.position.x + drop.ox,
+            drop.oy,
+            camera.position.z + drop.oz
+          );
+          dummy.rotation.set(0.08, 0, 0.05);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          rainInst.setMatrixAt(r, dummy.matrix);
+        }
+        rainInst.instanceMatrix.needsUpdate = true;
 
         // --- Bullets Update ---
         let activeBulletCount = 0;
@@ -2367,7 +3040,7 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
           dummy.scale.set(1, 1, b.scaleZ);
           dummy.updateMatrix();
           bulletInst.setMatrixAt(activeBulletCount, dummy.matrix);
-          tmpColor.setHex(b.color);
+          tmpColor.setHex(b.color).multiplyScalar(1.65);
           bulletInst.setColorAt(activeBulletCount, tmpColor);
           activeBulletCount += 1;
         }
@@ -2410,7 +3083,8 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
         }
       }
 
-      renderer.render(scene, camera);
+      if (composer) composer.render();
+      else renderer.render(scene, camera);
       afterDraw(tick);
     };
 
@@ -2427,14 +3101,17 @@ export const HeistViewport: React.FC<HeistViewportProps> = ({
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
       renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
       renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
 
       disposeObjectTree(scene);
-      asphaltTex.dispose();
+      asphaltTextures.map.dispose();
+      asphaltTextures.roughnessMap.dispose();
       facadeTex.dispose();
       envTarget.dispose();
       pmrem.dispose();
+      composer?.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === container) {
         container.removeChild(renderer.domElement);

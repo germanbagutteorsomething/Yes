@@ -65,6 +65,104 @@ const OPENING_BOOKS: Record<string, Record<string, string[]>> = {
     'd2d4 c2c4': ['g7g6'],
     'd2d4 g8f6 c2c4': ['g7g6', 'e7e6'],
   },
+  gambit: {
+    '': ['e2e4', 'd2d4'],
+    'e2e4 e7e5': ['f2f4', 'd2d4'],
+    'e2e4 e7e5 d2d4 e5d4': ['c2c3'],
+    'e2e4 c7c5': ['b2b4'],
+    'd2d4 d7d5': ['c2c4'],
+    'e2e4': ['e7e5', 'c7c5'],
+    'e2e4 g1f3': ['b8c6'],
+    'd2d4': ['c7c5', 'e7e5'],
+    'd2d4 g8f6 c2c4': ['c7c5'],
+  },
+  fiona: {
+    '': ['g1f3', 'c2c4', 'd2d4'],
+    'd2d4 d7d5': ['c2c4', 'g2g3'],
+    'd2d4 g8f6': ['c2c4', 'g2g3'],
+    'd2d4 g8f6 c2c4 e7e6': ['g2g3'],
+    'e2e4': ['d7d6', 'g7g6'],
+    'd2d4': ['g8f6', 'g7g6'],
+    'd2d4 c2c4': ['g7g6'],
+  },
+  carla: {
+    '': ['e2e4'],
+    'e2e4 c7c5': ['g1f3'],
+    'e2e4': ['c7c5', 'f7f5'],
+    'e2e4 c7c5 g1f3': ['d7d6', 'g7g6'],
+    'e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3': ['a7a6', 'g7g6'],
+    'd2d4': ['f7f5', 'c7c5'],
+  },
+  victor: {
+    '': ['e2e4'],
+    'e2e4 e7e5': ['g1f3'],
+    'e2e4 e7e5 g1f3 b8c6': ['f1c4'],
+    'e2e4 e7e5 g1f3 b8c6 f1c4 g8f6': ['f3g5'],
+    'e2e4': ['e7e5', 'g8f6'],
+    'e2e4 e7e5 g1f3 b8c6 f1c4': ['f8c5', 'g8f6'],
+    'd2d4': ['g8f6'],
+    'd2d4 g8f6 c2c4': ['e7e5'],
+  },
+  elena: {
+    '': ['e2e4', 'd2d4'],
+    'e2e4 e7e5': ['g1f3'],
+    'e2e4 e7e5 g1f3 b8c6 f1b5': ['a7a6', 'g8f6'],
+    'd2d4 d7d5': ['c2c4'],
+    'e2e4': ['e7e5', 'c7c6'],
+    'd2d4': ['d7d5'],
+  },
+  nolan: {
+    '': ['d2d4', 'c2c4'],
+    'd2d4 g8f6 c2c4': ['e7e6'],
+    'd2d4 g8f6 c2c4 e7e6 b1c3': ['f8b4'],
+    'e2e4': ['e7e6', 'e7e5'],
+    'd2d4': ['g8f6', 'd7d5'],
+  },
+  sasha: {
+    '': ['e2e4'],
+    'e2e4 e7e5': ['g1f3'],
+    'e2e4 e7e5 g1f3 b8c6': ['d2d4'],
+    'e2e4 e7e5 g1f3 b8c6 d2d4 e5d4': ['f1c4'],
+    'e2e4': ['c7c5', 'e7e5'],
+    'd2d4': ['g8f6', 'f7f5'],
+  },
+  ivan: {
+    '': ['d2d4', 'e2e4'],
+    'e2e4': ['e7e5', 'c7c6'],
+    'e2e4 e7e5 g1f3': ['g8f6', 'b8c6'],
+    'e2e4 e7e5 g1f3 b8c6 f1b5': ['g8f6'],
+    'd2d4': ['d7d5'],
+    'd2d4 d7d5 c2c4': ['c7c6'],
+  },
+  garry: {
+    '': ['e2e4', 'd2d4'],
+    'e2e4 c7c5': ['g1f3'],
+    'e2e4': ['c7c5', 'e7e5'],
+    'e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3': ['a7a6'],
+    'd2d4': ['g8f6'],
+    'd2d4 g8f6 c2c4': ['g7g6'],
+  },
+  anatoly: {
+    '': ['d2d4', 'e2e4'],
+    'e2e4': ['c7c6', 'e7e5'],
+    'd2d4': ['g8f6', 'd7d5'],
+    'd2d4 g8f6 c2c4 e7e6': ['b7b6'],
+  },
+  magnus: {
+    '': ['e2e4', 'd2d4', 'c2c4'],
+    'e2e4': ['c7c5', 'e7e5', 'e7e6'],
+    'd2d4': ['g8f6', 'd7d5'],
+  },
+  judit: {
+    '': ['e2e4'],
+    'e2e4': ['c7c5', 'e7e5'],
+    'd2d4': ['g8f6'],
+  },
+  zero: {
+    '': ['d2d4', 'e2e4', 'c2c4'],
+    'e2e4': ['c7c5', 'e7e5'],
+    'd2d4': ['g8f6', 'd7d5'],
+  },
 };
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -117,13 +215,13 @@ function tryBookMove(
   return toEngineMove(picked);
 }
 
-function pickRandomMove(chess: Chess): EngineBestMove {
+function pickRandomMove(chess: Chess, captureRate = 0.28): EngineBestMove {
   const legalMoves = chess.moves({ verbose: true });
   if (legalMoves.length === 0) {
     throw new Error('No legal moves available.');
   }
   const activeMoves = legalMoves.filter((m) => m.isCapture() || chess.inCheck() || m.san.includes('+'));
-  if (activeMoves.length > 0 && Math.random() < 0.28) {
+  if (activeMoves.length > 0 && Math.random() < captureRate) {
     return toEngineMove(activeMoves[Math.floor(Math.random() * activeMoves.length)]);
   }
   return toEngineMove(legalMoves[Math.floor(Math.random() * legalMoves.length)]);
@@ -141,7 +239,7 @@ function evaluateMaterialBalance(chess: Chess, perspective: 'w' | 'b'): number {
   return score;
 }
 
-function pickGreedyMove(chess: Chess): EngineBestMove {
+function pickGreedyMove(chess: Chess, botId?: string): EngineBestMove {
   const legalMoves = chess.moves({ verbose: true });
   if (legalMoves.length === 0) {
     throw new Error('No legal moves available.');
@@ -178,17 +276,24 @@ function pickGreedyMove(chess: Chess): EngineBestMove {
           score -= 50000;
         }
       }
-      score -= worstCaptureLoss * 0.75;
+      const cautionFactor = botId === 'penny' ? 0.35 : botId === 'ned' ? 0.55 : 0.75;
+      score -= worstCaptureLoss * cautionFactor;
 
       // Greedy bonuses: captures, checks, promotions, center control
       if (executed.captured) {
         score += PIECE_CP[executed.captured] * 0.2 + 20;
       }
       if (chess.isCheck()) {
-        score += 35;
+        score += botId === 'chloe' ? 145 : 35;
       }
       if (executed.promotion) {
         score += PIECE_CP[executed.promotion] * 0.5;
+      }
+      if (botId === 'penny' && executed.piece === 'p') {
+        score += 85;
+      }
+      if (botId === 'ned' && executed.piece === 'n') {
+        score += 95;
       }
       if (CENTER_SQUARES.has(executed.to)) {
         score += 18;
@@ -222,7 +327,8 @@ function candidateEffectiveCp(c: CandidateMove): number {
 
 function selectAggressiveCandidate(
   chess: Chess,
-  candidates: CandidateMove[]
+  candidates: CandidateMove[],
+  toleranceCp = 45
 ): EngineBestMove {
   const best = candidates[0];
   const bestScore = candidateEffectiveCp(best);
@@ -230,7 +336,7 @@ function selectAggressiveCandidate(
 
   for (const cand of candidates) {
     const score = candidateEffectiveCp(cand);
-    if (bestScore - score > 45) continue;
+    if (bestScore - score > toleranceCp) continue;
     // Never pick a blunder into mate if #1 avoids mate
     if (cand.mate !== null && cand.mate < 0 && !(best.mate !== null && best.mate < 0)) {
       continue;
@@ -247,7 +353,8 @@ function selectAggressiveCandidate(
 
 function selectSolidCandidate(
   chess: Chess,
-  candidates: CandidateMove[]
+  candidates: CandidateMove[],
+  preferTrades = false
 ): EngineBestMove {
   const best = candidates[0];
   const bestScore = candidateEffectiveCp(best);
@@ -261,6 +368,9 @@ function selectSolidCandidate(
     }
     const moveObj = legalMoves.find((m) => m.lan === cand.uci);
     if (!moveObj) continue;
+    if (preferTrades && moveObj.isCapture()) {
+      return stockfishService.parseUciMove(cand.uci);
+    }
     if (
       moveObj.isKingsideCastle() ||
       moveObj.isQueensideCastle() ||
@@ -336,12 +446,12 @@ export async function getBotMove(
       );
     }
   } else if (bot.style === 'random') {
-    chosenMove = pickRandomMove(chess);
+    chosenMove = pickRandomMove(chess, bot.id === 'martin' ? 0.1 : 0.3);
   } else if (bot.style === 'greedy') {
-    chosenMove = pickGreedyMove(chess);
+    chosenMove = pickGreedyMove(chess, bot.id);
   } else {
     // Check opening book only from standard initial position
-    const useBookChance = bot.id === 'sam' ? 0.8 : 0.75;
+    const useBookChance = bot.id === 'sam' || bot.id === 'ivan' || bot.id === 'nolan' ? 0.85 : 0.78;
     if (isStandardStart && variant === 'standard' && Math.random() < useBookChance) {
       chosenMove = tryBookMove(chess, lanHistory, bot.id);
     }
@@ -359,7 +469,8 @@ export async function getBotMove(
           },
           signal
         );
-        chosenMove = selectAggressiveCandidate(chess, candidates);
+        const tol = bot.id === 'gambit' || bot.id === 'sasha' ? 65 : 42;
+        chosenMove = selectAggressiveCandidate(chess, candidates, tol);
       } else if (bot.style === 'solid') {
         const candidates = await stockfishService.getTopCandidates(
           lanHistory,
@@ -372,7 +483,7 @@ export async function getBotMove(
           },
           signal
         );
-        chosenMove = selectSolidCandidate(chess, candidates);
+        chosenMove = selectSolidCandidate(chess, candidates, bot.id === 'elena');
       } else {
         chosenMove = await stockfishService.getBestMove(lanHistory, bot, signal, startFen);
       }

@@ -172,6 +172,9 @@ export interface HeistHudSnapshot {
   armor: number;
   maxArmor: number;
   dashReadyPct: number;
+  nitroPct: number;
+  vehicleBoostActive: boolean;
+  pitCount: number;
   inVehicle: boolean;
   vehicleName: string;
   vehicleHp: number;
@@ -194,6 +197,7 @@ export interface HeistHudSnapshot {
   calloutText: string;
   calloutTone: 'loot' | 'heat' | 'weapon' | 'danger';
   calloutNonce: number;
+  damageFlashNonce: number;
   playerX: number;
   playerZ: number;
   playerYaw: number;
@@ -209,6 +213,7 @@ export interface HeistRunSummary {
   heistsCompleted: number;
   copsDown: number;
   maxWantedStars: number;
+  pitCount: number;
 }
 
 export interface HeistInputState {

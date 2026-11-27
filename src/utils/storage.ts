@@ -4,9 +4,11 @@ import type {
   PieceSet,
   SavedMatch,
   StockfishLevelNumber,
+  StoredChessElo,
 } from '../types/chess';
 import type { SkiGhostSample, SkiMapId, StoredSkiProgress } from '../types/ski';
 import type { StoredHeistProgress } from '../types/heist';
+import { calculateEloUpdate, createInitialChessElo, DEFAULT_CHESS_ELO } from './elo';
 
 const MATCHES_KEY = 'squareeight_matches_v1';
 const DEFEATED_BOTS_KEY = 'squareeight_defeated_bots_v1';
@@ -304,4 +306,74 @@ export function recordHeistRunResult(params: {
   };
   safeWriteJson(HEIST_PROGRESS_KEY, next);
   return { progress: next, isNewBest };
+}
+
+const CHESS_ELO_KEY = 'squareeight_chess_elo_v1';
+
+export function loadChessElo(): StoredChessElo {
+  const base = createInitialChessElo();
+  const raw = safeReadJson<Partial<StoredChessElo>>(CHESS_ELO_KEY, {});
+  const rating = typeof raw.rating === 'number' && Number.isFinite(raw.rating) ? raw.rating : DEFAULT_CHESS_ELO;
+  const peakRating =
+    typeof raw.peakRating === 'number' && Number.isFinite(raw.peakRating)
+      ? Math.max(rating, raw.peakRating)
+      : rating;
+  return {
+    rating,
+    peakRating,
+    gamesRated: typeof raw.gamesRated === 'number' ? raw.gamesRated : base.gamesRated,
+    wins: typeof raw.wins === 'number' ? raw.wins : base.wins,
+    draws: typeof raw.draws === 'number' ? raw.draws : base.draws,
+    losses: typeof raw.losses === 'number' ? raw.losses : base.losses,
+    history: Array.isArray(raw.history) ? raw.history.slice(0, 30) : [],
+  };
+}
+
+export function recordChessEloResult(params: {
+  opponentRating: number;
+  opponentLabel: string;
+  outcome: 'win' | 'draw' | 'loss';
+}): {
+  state: StoredChessElo;
+  prevRating: number;
+  nextRating: number;
+  delta: number;
+  opponentRating: number;
+} {
+  const prev = loadChessElo();
+  const score: 1 | 0.5 | 0 = params.outcome === 'win' ? 1 : params.outcome === 'draw' ? 0.5 : 0;
+  const { nextRating, delta } = calculateEloUpdate({
+    playerRating: prev.rating,
+    opponentRating: params.opponentRating,
+    score,
+    gamesRated: prev.gamesRated,
+  });
+
+  const next: StoredChessElo = {
+    rating: nextRating,
+    peakRating: Math.max(prev.peakRating, nextRating),
+    gamesRated: prev.gamesRated + 1,
+    wins: prev.wins + (params.outcome === 'win' ? 1 : 0),
+    draws: prev.draws + (params.outcome === 'draw' ? 1 : 0),
+    losses: prev.losses + (params.outcome === 'loss' ? 1 : 0),
+    history: [
+      {
+        rating: nextRating,
+        delta,
+        opponentLabel: params.opponentLabel,
+        result: params.outcome,
+        playedAt: new Date().toISOString(),
+      },
+      ...prev.history,
+    ].slice(0, 30),
+  };
+
+  safeWriteJson(CHESS_ELO_KEY, next);
+  return {
+    state: next,
+    prevRating: prev.rating,
+    nextRating,
+    delta,
+    opponentRating: params.opponentRating,
+  };
 }

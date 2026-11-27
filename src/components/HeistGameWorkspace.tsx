@@ -8,6 +8,8 @@ import {
   DollarSign,
   Gamepad2,
   Heart,
+  Maximize2,
+  Minimize2,
   Pause,
   Play,
   RotateCcw,
@@ -16,7 +18,9 @@ import {
   Star,
   Timer,
   Trophy,
+  Zap,
 } from 'lucide-react';
+import { useFullscreen } from '../hooks/useFullscreen';
 import { HeistViewport } from '../heist/HeistViewport';
 import {
   HEIST_WEAPON_ORDER,
@@ -51,6 +55,9 @@ const INITIAL_HUD: HeistHudSnapshot = {
   armor: 25,
   maxArmor: 100,
   dashReadyPct: 100,
+  nitroPct: 100,
+  vehicleBoostActive: false,
+  pitCount: 0,
   inVehicle: false,
   vehicleName: '',
   vehicleHp: 0,
@@ -71,6 +78,7 @@ const INITIAL_HUD: HeistHudSnapshot = {
   calloutText: '',
   calloutTone: 'loot',
   calloutNonce: 0,
+  damageFlashNonce: 0,
   playerX: 0,
   playerZ: 0,
   playerYaw: 0,
@@ -104,6 +112,13 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
   );
   const [visibleCallout, setVisibleCallout] = useState<string>('');
   const calloutTimerRef = useRef<number | null>(null);
+  const [damageFlash, setDamageFlash] = useState(false);
+  const damageTimerRef = useRef<number | null>(null);
+  const {
+    containerRef: heistFullscreenRef,
+    isFullscreen,
+    toggleFullscreen,
+  } = useFullscreen<HTMLDivElement>();
 
   const inputRef = useRef<HeistInputState>({
     moveX: 0,
@@ -121,9 +136,11 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
     weaponQueued: null,
   });
 
-  // Track touch joystick visuals
+  // Track touch joystick & fire drag visuals
   const [joyKnob, setJoyKnob] = useState({ x: 0, y: 0 });
   const joyOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const joyPointerIdRef = useRef<number | null>(null);
+  const fireDragRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
 
   useEffect(() => {
     if (!hud.calloutText) return;
@@ -137,13 +154,62 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
     };
   }, [hud.calloutNonce, hud.calloutText]);
 
+  useEffect(() => {
+    if (hud.damageFlashNonce <= 0) return;
+    setDamageFlash(true);
+    if (damageTimerRef.current) window.clearTimeout(damageTimerRef.current);
+    damageTimerRef.current = window.setTimeout(() => {
+      setDamageFlash(false);
+    }, 220);
+    return () => {
+      if (damageTimerRef.current) window.clearTimeout(damageTimerRef.current);
+    };
+  }, [hud.damageFlashNonce]);
+
+  const updateJoystickFromPointer = useCallback((clientX: number, clientY: number) => {
+    if (!joyOriginRef.current) return;
+    const dx = clientX - joyOriginRef.current.x;
+    const dy = clientY - joyOriginRef.current.y;
+    const maxR = 42;
+    const dist = Math.hypot(dx, dy);
+    const clamped = dist > maxR ? maxR / dist : 1;
+    const kx = dx * clamped;
+    const ky = dy * clamped;
+    setJoyKnob({ x: kx, y: ky });
+
+    const norm = Math.min(1, dist / maxR);
+    const deadzone = 0.12;
+    if (norm < deadzone || dist < 0.001) {
+      inputRef.current.moveX = 0;
+      inputRef.current.moveY = 0;
+      return;
+    }
+    const scaled = (norm - deadzone) / (1 - deadzone);
+    inputRef.current.moveX = (dx / dist) * scaled;
+    inputRef.current.moveY = (dy / dist) * scaled;
+  }, []);
+
+  const resetJoystick = useCallback((pointerId?: number) => {
+    if (pointerId !== undefined && joyPointerIdRef.current !== pointerId) return;
+    joyPointerIdRef.current = null;
+    joyOriginRef.current = null;
+    setJoyKnob({ x: 0, y: 0 });
+    inputRef.current.moveX = 0;
+    inputRef.current.moveY = 0;
+  }, []);
+
   const handleStartRun = useCallback(() => {
     setLastSummary(null);
     setLastRunNewBest(false);
     setLastXpEarned(0);
+    setDamageFlash(false);
+    resetJoystick();
+    inputRef.current.firing = false;
+    inputRef.current.sprint = false;
+    inputRef.current.handbrake = false;
     setRunNonce((n) => n + 1);
     setPhase('playing');
-  }, []);
+  }, [resetJoystick]);
 
   const handleTogglePause = useCallback(() => {
     setPhase((prev) => {
@@ -201,9 +267,16 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
     inputRef.current.weaponQueued = wid;
   };
 
-  // Auto-aim helper for touch fire button
-  const handleTouchFireStart = () => {
-    if (hud.minimapCops.length > 0) {
+  // Auto-aim helper for touch fire button (in 3P/overhead; in 1st-person swipe-to-aim is used)
+  const handleTouchFireStart = (e: React.PointerEvent<HTMLButtonElement>) => {
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    fireDragRef.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+
+    if (cameraMode !== 'first-person' && hud.minimapCops.length > 0) {
       let nearest = hud.minimapCops[0];
       let bestD = Infinity;
       for (const c of hud.minimapCops) {
@@ -222,7 +295,20 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
     inputRef.current.firing = true;
   };
 
-  const handleTouchFireEnd = () => {
+  const handleTouchFireMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (!fireDragRef.current || fireDragRef.current.pointerId !== e.pointerId) return;
+    const dx = e.clientX - fireDragRef.current.x;
+    const dy = e.clientY - fireDragRef.current.y;
+    fireDragRef.current.x = e.clientX;
+    fireDragRef.current.y = e.clientY;
+    inputRef.current.lookDeltaX += dx;
+    inputRef.current.lookDeltaY += dy;
+  };
+
+  const handleTouchFireEnd = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (fireDragRef.current?.pointerId === e.pointerId) {
+      fireDragRef.current = null;
+    }
     inputRef.current.firing = false;
     inputRef.current.aimActive = false;
   };
@@ -245,6 +331,7 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
   const heistRadarPos = hud.activeHeist
     ? toRadar(hud.playerX + hud.activeHeist.dx, hud.playerZ + hud.activeHeist.dz)
     : null;
+  const playerRadarDeg = 180 - (hud.playerYaw * 180) / Math.PI;
 
   return (
     <div className="space-y-3">
@@ -302,6 +389,25 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
             <span>{touchMode ? 'Touch Pad On' : 'Touch Pad'}</span>
           </button>
 
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 px-2.5 py-1.5 text-xs font-semibold text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors whitespace-nowrap"
+          >
+            {isFullscreen ? (
+              <>
+                <Minimize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Exit Full</span>
+              </>
+            ) : (
+              <>
+                <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Fullscreen</span>
+              </>
+            )}
+          </button>
+
           {phase === 'playing' || phase === 'paused' ? (
             <>
               <button
@@ -344,7 +450,55 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
       </div>
 
       {/* Main 3D Viewport Container */}
-      <div className="relative h-[560px] sm:h-[620px] w-full rounded-xl border border-stone-800 bg-stone-950 overflow-hidden shadow-lg">
+      <div
+        ref={heistFullscreenRef}
+        className={
+          isFullscreen
+            ? 'fixed inset-0 z-50 h-[100dvh] w-screen bg-stone-950 overflow-hidden'
+            : 'relative h-[560px] sm:h-[620px] w-full rounded-xl border border-stone-800 bg-stone-950 overflow-hidden shadow-lg'
+        }
+      >
+        {isFullscreen && (
+          <div className="pointer-events-auto absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 rounded-lg border border-stone-700/90 bg-stone-950/90 px-2 py-1 text-white">
+            <button
+              type="button"
+              onClick={handleCycleCamera}
+              className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold text-stone-200 hover:bg-stone-800 whitespace-nowrap"
+            >
+              <Camera className="w-3 h-3" aria-hidden="true" />
+              <span>{cameraModeLabel}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTouchMode((v) => !v)}
+              className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold whitespace-nowrap ${
+                touchMode ? 'bg-emerald-950 text-emerald-300' : 'text-stone-300 hover:bg-stone-800'
+              }`}
+            >
+              <Gamepad2 className="w-3 h-3" aria-hidden="true" />
+              <span>Touch</span>
+            </button>
+            {phase === 'playing' && (
+              <button
+                type="button"
+                onClick={handleTogglePause}
+                className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold text-stone-200 hover:bg-stone-800 whitespace-nowrap"
+              >
+                <Pause className="w-3 h-3" aria-hidden="true" />
+                <span>Pause</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              className="inline-flex items-center gap-1 rounded bg-stone-800 px-2 py-1 text-[11px] font-semibold text-white hover:bg-stone-700 whitespace-nowrap"
+            >
+              <Minimize2 className="w-3 h-3" aria-hidden="true" />
+              <span>Exit</span>
+            </button>
+          </div>
+        )}
+
         <HeistViewport
           phase={phase}
           cameraMode={cameraMode}
@@ -356,6 +510,14 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
           onPauseRequest={handleTogglePause}
           onCameraCycle={handleCycleCamera}
         />
+
+        {/* Damage Vignette Flash */}
+        {damageFlash && phase === 'playing' && (
+          <div
+            className="pointer-events-none absolute inset-0 z-10 border-4 border-rose-500/75"
+            style={{ boxShadow: 'inset 0 0 65px rgba(225, 29, 72, 0.55)' }}
+          />
+        )}
 
         {/* First-Person Centered Reticle */}
         {phase === 'playing' && cameraMode === 'first-person' && (
@@ -514,16 +676,30 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
                       />
                     )}
 
-                    {/* Player */}
-                    <circle cx="52" cy="52" r="3.4" fill="#ffffff" stroke="#e11d48" strokeWidth="1.5" />
+                    {/* Player Directional Arrow */}
+                    <g transform={`translate(52, 52) rotate(${playerRadarDeg.toFixed(1)})`}>
+                      <polygon
+                        points="0,-5.5 4.2,4.5 0,2.2 -4.2,4.5"
+                        fill="#ffffff"
+                        stroke="#e11d48"
+                        strokeWidth="1.2"
+                      />
+                    </g>
                   </svg>
                 </div>
 
-                {progress.bestScore > 0 && (
-                  <div className="rounded-md border border-stone-700/80 bg-stone-950/90 px-2.5 py-1 font-mono text-[11px] text-amber-300 tabular-nums">
-                    Best: {progress.bestScore.toLocaleString()}
-                  </div>
-                )}
+                <div className="flex flex-col items-end gap-1">
+                  {progress.bestScore > 0 && (
+                    <div className="rounded-md border border-stone-700/80 bg-stone-950/90 px-2.5 py-1 font-mono text-[11px] text-amber-300 tabular-nums">
+                      Best: {progress.bestScore.toLocaleString()}
+                    </div>
+                  )}
+                  {hud.pitCount > 0 && (
+                    <div className="rounded-md border border-sky-500/50 bg-stone-950/90 px-2.5 py-0.5 font-mono text-[11px] text-sky-300 tabular-nums">
+                      PITs: {hud.pitCount}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -563,7 +739,7 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
                   </button>
                 )}
 
-                <div className="rounded-lg border border-stone-700/90 bg-stone-950/90 px-3 py-2 text-white w-[220px] space-y-1.5">
+                <div className="rounded-lg border border-stone-700/90 bg-stone-950/90 px-3 py-2 text-white w-[185px] sm:w-[225px] space-y-1.5">
                   {/* HP */}
                   <div className="flex items-center gap-2">
                     <Heart className="w-3.5 h-3.5 text-rose-500 shrink-0" aria-hidden="true" />
@@ -585,6 +761,36 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
                       />
                     </div>
                     <span className="font-mono text-[11px] w-7 text-right tabular-nums">{hud.armor}</span>
+                  </div>
+                  {/* Nitro (driving) or Dash (on foot) */}
+                  <div className="flex items-center gap-2">
+                    <Zap
+                      className={`w-3.5 h-3.5 shrink-0 ${
+                        hud.inVehicle
+                          ? hud.vehicleBoostActive
+                            ? 'text-cyan-300'
+                            : 'text-amber-400'
+                          : 'text-emerald-400'
+                      }`}
+                      aria-hidden="true"
+                    />
+                    <div className="h-1.5 flex-1 rounded-xs bg-stone-800 overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-75 ${
+                          hud.inVehicle
+                            ? hud.vehicleBoostActive
+                              ? 'bg-cyan-400'
+                              : 'bg-amber-400'
+                            : 'bg-emerald-400'
+                        }`}
+                        style={{
+                          width: `${Math.round(hud.inVehicle ? hud.nitroPct : hud.dashReadyPct)}%`,
+                        }}
+                      />
+                    </div>
+                    <span className="font-mono text-[10px] text-stone-300 w-10 text-right tabular-nums">
+                      {hud.inVehicle ? 'NITRO' : 'DASH'}
+                    </span>
                   </div>
                   {/* Vehicle Hull when driving */}
                   {hud.inVehicle && (
@@ -608,7 +814,7 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
               </div>
 
               {/* Bottom-Right: 4-Slot Weapon Bar */}
-              <div className="pointer-events-auto grid grid-cols-4 gap-1.5">
+              <div className="pointer-events-auto grid grid-cols-4 gap-1 sm:gap-1.5">
                 {HEIST_WEAPON_ORDER.map((wid) => {
                   const spec = HEIST_WEAPONS[wid];
                   const st = hud.weapons[wid];
@@ -619,7 +825,7 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
                       type="button"
                       disabled={!st?.unlocked}
                       onClick={() => selectWeapon(wid)}
-                      className={`rounded-lg border px-2.5 py-1.5 text-left transition-colors min-w-[78px] sm:min-w-[92px] ${
+                      className={`rounded-lg border px-2 sm:px-2.5 py-1.5 text-left transition-colors min-w-[68px] sm:min-w-[92px] ${
                         !st?.unlocked
                           ? 'border-stone-800 bg-stone-950/75 text-stone-600 cursor-not-allowed'
                           : active
@@ -650,79 +856,123 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
 
         {/* Optional Touch Controls Overlay */}
         {phase === 'playing' && touchMode && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-20 z-10 flex items-end justify-between px-4">
+          <div className="pointer-events-none absolute inset-x-0 bottom-36 sm:bottom-24 z-10 flex items-end justify-between px-4">
             {/* Left Virtual Stick */}
             <div
-              className="pointer-events-auto relative h-28 w-28 rounded-full border-2 border-stone-500/60 bg-stone-900/70 touch-none"
+              className="pointer-events-auto relative h-28 w-28 rounded-full border-2 border-stone-500/70 bg-stone-900/75 touch-none select-none"
               onPointerDown={(e) => {
-                e.currentTarget.setPointerCapture(e.pointerId);
+                if (joyPointerIdRef.current !== null) return;
+                joyPointerIdRef.current = e.pointerId;
+                try {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                } catch {
+                  // ignore
+                }
                 const rect = e.currentTarget.getBoundingClientRect();
                 joyOriginRef.current = {
                   x: rect.left + rect.width / 2,
                   y: rect.top + rect.height / 2,
                 };
+                updateJoystickFromPointer(e.clientX, e.clientY);
               }}
               onPointerMove={(e) => {
-                if (!joyOriginRef.current) return;
-                const dx = e.clientX - joyOriginRef.current.x;
-                const dy = e.clientY - joyOriginRef.current.y;
-                const maxR = 42;
-                const dist = Math.hypot(dx, dy);
-                const clamped = dist > maxR ? maxR / dist : 1;
-                const kx = dx * clamped;
-                const ky = dy * clamped;
-                setJoyKnob({ x: kx, y: ky });
-                inputRef.current.moveX = kx / maxR;
-                inputRef.current.moveY = ky / maxR;
+                if (joyPointerIdRef.current !== e.pointerId) return;
+                updateJoystickFromPointer(e.clientX, e.clientY);
               }}
-              onPointerUp={() => {
-                joyOriginRef.current = null;
-                setJoyKnob({ x: 0, y: 0 });
-                inputRef.current.moveX = 0;
-                inputRef.current.moveY = 0;
-              }}
-              onPointerCancel={() => {
-                joyOriginRef.current = null;
-                setJoyKnob({ x: 0, y: 0 });
-                inputRef.current.moveX = 0;
-                inputRef.current.moveY = 0;
-              }}
+              onPointerUp={(e) => resetJoystick(e.pointerId)}
+              onPointerCancel={(e) => resetJoystick(e.pointerId)}
+              onLostPointerCapture={(e) => resetJoystick(e.pointerId)}
             >
               <div
-                className="absolute left-1/2 top-1/2 h-11 w-11 -translate-x-1/2 -translate-y-1/2 rounded-full bg-stone-300/90"
-                style={{ transform: `translate(calc(-50% + ${joyKnob.x}px), calc(-50% + ${joyKnob.y}px))` }}
+                className="pointer-events-none absolute left-1/2 top-1/2 -ml-[22px] -mt-[22px] h-11 w-11 rounded-full bg-stone-200/95 shadow-md ring-2 ring-stone-950/60"
+                style={{ transform: `translate3d(${joyKnob.x}px, ${joyKnob.y}px, 0)` }}
               />
             </div>
 
             {/* Right Action Buttons */}
-            <div className="pointer-events-auto flex items-center gap-2.5">
-              <button
-                type="button"
-                onClick={() => {
-                  inputRef.current.reloadQueued = true;
-                }}
-                className="h-12 w-12 rounded-lg border border-stone-600 bg-stone-900/90 text-xs font-bold text-stone-200"
-              >
-                RLD
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  inputRef.current.interactQueued = true;
-                }}
-                className="h-12 w-12 rounded-lg border border-amber-500/70 bg-stone-900/90 text-xs font-bold text-amber-300"
-              >
-                CAR
-              </button>
-              <button
-                type="button"
-                onPointerDown={handleTouchFireStart}
-                onPointerUp={handleTouchFireEnd}
-                onPointerCancel={handleTouchFireEnd}
-                className="h-16 w-16 rounded-full border-2 border-rose-400 bg-rose-600/90 text-xs font-bold text-white shadow-lg"
-              >
-                FIRE
-              </button>
+            <div className="pointer-events-auto flex flex-col items-end gap-2">
+              {cameraMode === 'first-person' && (
+                <div className="rounded-md bg-stone-950/85 px-2 py-0.5 text-[10px] font-mono text-stone-300">
+                  Swipe screen or FIRE to look
+                </div>
+              )}
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    try {
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                    } catch {
+                      // ignore
+                    }
+                    inputRef.current.sprint = true;
+                  }}
+                  onPointerUp={() => {
+                    inputRef.current.sprint = false;
+                  }}
+                  onPointerCancel={() => {
+                    inputRef.current.sprint = false;
+                  }}
+                  onLostPointerCapture={() => {
+                    inputRef.current.sprint = false;
+                  }}
+                  className="h-11 px-2.5 rounded-lg border border-cyan-500/70 bg-stone-900/90 text-[11px] font-bold text-cyan-300 touch-none select-none"
+                >
+                  {hud.inVehicle ? 'NITRO' : 'SPRINT'}
+                </button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    try {
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                    } catch {
+                      // ignore
+                    }
+                    inputRef.current.handbrake = true;
+                  }}
+                  onPointerUp={() => {
+                    inputRef.current.handbrake = false;
+                  }}
+                  onPointerCancel={() => {
+                    inputRef.current.handbrake = false;
+                  }}
+                  onLostPointerCapture={() => {
+                    inputRef.current.handbrake = false;
+                  }}
+                  className="h-11 px-2.5 rounded-lg border border-sky-500/70 bg-stone-900/90 text-[11px] font-bold text-sky-300 touch-none select-none"
+                >
+                  {hud.inVehicle ? 'DRIFT' : 'JUMP'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    inputRef.current.reloadQueued = true;
+                  }}
+                  className="h-11 w-11 rounded-lg border border-stone-600 bg-stone-900/90 text-[11px] font-bold text-stone-200 select-none"
+                >
+                  RLD
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    inputRef.current.interactQueued = true;
+                  }}
+                  className="h-11 w-11 rounded-lg border border-amber-500/70 bg-stone-900/90 text-[11px] font-bold text-amber-300 select-none"
+                >
+                  CAR
+                </button>
+                <button
+                  type="button"
+                  onPointerDown={handleTouchFireStart}
+                  onPointerMove={handleTouchFireMove}
+                  onPointerUp={handleTouchFireEnd}
+                  onPointerCancel={handleTouchFireEnd}
+                  onLostPointerCapture={handleTouchFireEnd}
+                  className="h-16 w-16 rounded-full border-2 border-rose-400 bg-rose-600/90 text-xs font-bold text-white shadow-lg touch-none select-none"
+                >
+                  FIRE
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -770,9 +1020,9 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
 
               {/* Compact Controls */}
               <div className="rounded-lg border border-stone-800 bg-stone-950/90 p-3 text-xs text-stone-300 space-y-1 font-mono">
-                <div><span className="text-white font-bold">WASD</span> Move / Drive · <span className="text-white font-bold">Shift</span> Sprint · <span className="text-white font-bold">Space</span> Jump / Drift</div>
+                <div><span className="text-white font-bold">WASD</span> Move / Drive · <span className="text-white font-bold">Shift</span> Sprint / Nitro · <span className="text-white font-bold">Space</span> Jump / Drift</div>
                 <div><span className="text-white font-bold">Click</span> Shoot · <span className="text-white font-bold">Right-Drag / Q·Z</span> Orbit Look · <span className="text-white font-bold">V</span> Camera</div>
-                <div><span className="text-white font-bold">E</span> Enter/Exit Car · <span className="text-white font-bold">1–4</span> Guns · <span className="text-white font-bold">R</span> Reload</div>
+                <div><span className="text-white font-bold">E</span> Enter/Exit Car · <span className="text-white font-bold">1–4</span> Guns · <span className="text-white font-bold">R</span> Reload · Side-swipe rear cop quarters for <span className="text-sky-300 font-bold">PIT Spinouts</span></div>
               </div>
 
               <button
@@ -846,7 +1096,7 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
                 <div className="rounded-lg border border-stone-800 bg-stone-950 p-2.5">
                   <div className="text-[10px] text-stone-400 inline-flex items-center gap-1">
                     <DollarSign className="w-3 h-3 text-emerald-400" />
@@ -872,6 +1122,12 @@ export const HeistGameWorkspace: React.FC<HeistGameWorkspaceProps> = ({
                   <div className="text-[10px] text-stone-400">Cops Down</div>
                   <div className="font-mono text-sm font-bold text-rose-400 tabular-nums mt-0.5">
                     {lastSummary.copsDown}
+                  </div>
+                </div>
+                <div className="col-span-2 sm:col-span-1 rounded-lg border border-stone-800 bg-stone-950 p-2.5">
+                  <div className="text-[10px] text-stone-400">PITs</div>
+                  <div className="font-mono text-sm font-bold text-cyan-300 tabular-nums mt-0.5">
+                    {lastSummary.pitCount}
                   </div>
                 </div>
               </div>

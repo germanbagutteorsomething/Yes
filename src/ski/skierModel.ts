@@ -528,7 +528,7 @@ export function createSkyDome(map: SkiMapConfig): {
       float fbm(vec2 p) {
         float v = 0.0;
         float a = 0.5;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 3; i++) {
           v += a * valueNoise(p);
           p = p * 2.04 + vec2(1.7, 9.2);
           a *= 0.5;
@@ -1533,8 +1533,8 @@ export function buildMountainEnvironment(
   const zMax = range ? range.zEnd : map.lengthMeters + 125;
   const totalWidth = (map.halfWidth + 84) * 2;
   const totalLength = zMax - zMin;
-  const segX = 96;
-  const segZ = Math.min(480, Math.max(52, Math.round(totalLength / 3.2)));
+  const segX = 64;
+  const segZ = Math.min(320, Math.max(44, Math.round(totalLength / 4.4)));
 
   const terrainGeo = track(new THREE.PlaneGeometry(totalWidth, totalLength, segX, segZ));
   terrainGeo.rotateX(-Math.PI / 2);
@@ -1581,18 +1581,13 @@ export function buildMountainEnvironment(
   };
 
   const terrainMat = track(
-    new THREE.MeshPhysicalMaterial({
+    new THREE.MeshStandardMaterial({
       map: snowTex,
       normalMap: snowNormalTex,
       normalScale: new THREE.Vector2(0.62, 0.48),
       vertexColors: true,
       roughness: 0.66,
       metalness: 0.02,
-      clearcoat: 0.14,
-      clearcoatRoughness: 0.36,
-      sheen: 0.26,
-      sheenRoughness: 0.48,
-      sheenColor: new THREE.Color(map.isNight ? '#7DD3FC' : '#BAE6FD'),
       envMapIntensity: 0.24,
     })
   );
@@ -2567,8 +2562,6 @@ export function buildMountainEnvironment(
     const tipMesh = track(new THREE.InstancedMesh(crownTipGeo, foliageMat, count));
     const capMesh = track(new THREE.InstancedMesh(snowCapGeo, capMat, count));
     lowerMesh.castShadow = true;
-    midMesh.castShadow = true;
-    upperMesh.castShadow = true;
 
     const dummy = new THREE.Object3D();
     const baseTint = new THREE.Color(map.isNight ? '#19352F' : '#1E4D3B');
